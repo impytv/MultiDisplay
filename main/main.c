@@ -56,18 +56,41 @@ static const char *TAG = "lvgl9_demo";
 #define HOUR_ROW_Y (WIND_CHART_Y + WIND_CHART_H + 6)
 
 /* Chart value markers. Temperature: the global high and low are always
- * labelled; precipitation: the global wettest hour is always labelled.
- * Further local extrema get a label only once at least MARKER_MIN_GAP_H
- * hours have passed since the previously shown marker of the same kind, so a
- * long forecast gets intermediate labels without them crowding. Pools are
- * sized for the worst case (48 h / 6 h, plus the globals). */
-#define MARKER_MIN_GAP_H 6
-/* When a marker is about to be placed, if a more extreme local extremum of
- * the same kind sits within this many hours, the label moves there instead -
- * even if that breaks the MARKER_MIN_GAP_H spacing. */
-#define MARKER_SNAP_H 3
-#define TEMP_MARKER_POOL 10
-#define PRECIP_MARKER_POOL 9
+ * labelled; precipitation/wind: the global peak is always labelled. Further
+ * local extrema get a label only once at least MARKER_MIN_GAP_H hours have
+ * passed since the previously shown marker OF THE SAME TYPE (a max only
+ * spaces against the previous max, a min against the previous min). So a fast
+ * swing can still show a peak and the trough right after it, while a long,
+ * gently varying forecast stays uncrowded - which also keeps the label pools
+ * (and their scarce internal-DRAM widgets) small. */
+#define MARKER_MIN_GAP_H 8
+/* A non-global local temperature extremum earns a label only if it stands at
+ * least this far (deg C) clear of its surroundings - keeps a shallow wiggle
+ * next to a real peak or trough from getting its own number. */
+#define MARKER_TEMP_MIN_SWING 1.0f
+/* Pools sized for the realistic worst case under the 8 h same-type spacing
+ * over a ~48 h forecast (a handful of maxima + minima for temperature; fewer
+ * peaks for the smoother precipitation and wind series). An overflow just
+ * drops the least important trailing label - no crash. */
+#define TEMP_MARKER_POOL 8
+#define PRECIP_MARKER_POOL 6
+#define WIND_MARKER_POOL 5
+
+/* Overview screen: a table with one row per location and OV_COLS time columns
+ * OV_STEP_H hours apart. Each cell shows the weather icon, the temperature at
+ * that hour and the precipitation summed over the following OV_STEP_H hours.
+ * It is the first stop when cycling with a left-half tap (only shown when two
+ * or more locations are configured). */
+#define OV_COLS     4
+#define OV_STEP_H   6
+#define OV_X        10
+#define OV_NAME_W   118
+#define OV_COL_W    165            /* (800 - OV_X*2 - OV_NAME_W) / OV_COLS   */
+#define OV_TITLE_Y  6
+#define OV_HDR_Y    42
+#define OV_BODY_Y   64
+#define OV_ROW_H    80
+#define OV_ICON     34
 
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
@@ -76,15 +99,31 @@ static const lv_font_t *s_font_large;
  * or the compiled-in defaults. Loaded once in app_main. */
 static app_config_t s_cfg;
 
-/* Index into s_cfg.locations of the location currently on screen. Advanced by
- * the touch handler (tap the left half of the screen); the weather task
- * notices the change, re-points at the new coordinates and refetches. */
-static volatile int s_loc_index;
+/* Which "stop" is on screen, advanced by a left-half tap. 0 is the overview
+ * table (only a real stop when >= 2 locations); 1..location_count are the
+ * per-location detail screens. The weather task watches this and re-renders. */
+static volatile int s_view_index;
 static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
+static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
+static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
+
+/* Overview table widgets (built only when >= 2 locations). */
+static lv_obj_t *s_ov_title;
+static lv_obj_t *s_ov_hdr[OV_COLS];
+static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
+static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
+static lv_obj_t *s_ov_cell[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
+
+/* Per-location hourly forecast cache (PSRAM), kept warm for every location so
+ * the overview can show them all at once. s_fc_cache[i] is allocated in the
+ * weather task; s_fc_valid[i] gates reads; s_fc_tk[i] is its last refresh. */
+static yr_forecast_t *s_fc_cache[APP_CONFIG_MAX_LOCATIONS];
+static bool s_fc_valid[APP_CONFIG_MAX_LOCATIONS];
+static TickType_t s_fc_tk[APP_CONFIG_MAX_LOCATIONS];
 
 static lv_obj_t *s_precip_chart;
 static lv_chart_series_t *s_precip_series;
@@ -94,7 +133,7 @@ static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
 
 static lv_obj_t *s_wind_chart;
 static lv_chart_series_t *s_wind_series;
-static lv_obj_t *s_wind_max_label;
+static lv_obj_t *s_wind_markers[WIND_MARKER_POOL];
 static lv_obj_t *s_wind_dir_arrows[NUM_HOUR_LABELS];
 
 static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
@@ -169,14 +208,15 @@ static void init_fonts(void)
     assert(s_font_large != NULL);
 }
 
-/* Tap on the left half of the screen: switch to the next stored location and
- * wake the weather task so it refetches. Runs in the LVGL context (which
- * already holds the adapter lock), so it only pokes volatiles + a notify. */
+/* Tap on the left half of the screen: advance to the next stop (overview ->
+ * location 1 -> location 2 -> ... -> overview) and wake the weather task so it
+ * re-renders / refetches. Runs in the LVGL context (which already holds the
+ * adapter lock), so it only pokes volatiles + a notify. */
 static void screen_touch_cb(lv_event_t *e)
 {
     (void)e;
     if (s_cfg.location_count <= 1) {
-        return;
+        return; /* nothing to cycle through */
     }
     lv_indev_t *indev = lv_indev_active();
     if (indev == NULL) {
@@ -185,11 +225,11 @@ static void screen_touch_cb(lv_event_t *e)
     lv_point_t p;
     lv_indev_get_point(indev, &p);
     if (p.x >= EXAMPLE_LCD_H_RES / 2) {
-        return; /* only the left half cycles locations */
+        return; /* only the left half cycles */
     }
 
     /* Ignore a second press within 400 ms - covers finger bounce and keeps a
-     * quick double-tap from skipping two locations by accident. */
+     * quick double-tap from skipping two stops by accident. */
     static uint32_t last_tap_ms;
     uint32_t now_ms = lv_tick_get();
     if (now_ms - last_tap_ms < 400) {
@@ -197,14 +237,80 @@ static void screen_touch_cb(lv_event_t *e)
     }
     last_tap_ms = now_ms;
 
-    int next = s_loc_index + 1;
-    if (next >= s_cfg.location_count) {
+    int stops = s_cfg.location_count + 1; /* overview + one per location */
+    int next = s_view_index + 1;
+    if (next >= stops) {
         next = 0;
     }
-    s_loc_index = next;
-    ESP_LOGI(TAG, "Left-half tap: switching to location %d/%d", next + 1, s_cfg.location_count);
+    s_view_index = next;
+    ESP_LOGI(TAG, "Left-half tap: view %d (0=overview, 1..%d=locations)",
+             next, s_cfg.location_count);
     if (s_yr_task != NULL) {
         xTaskNotifyGive(s_yr_task);
+    }
+}
+
+/* Show either the overview table or the per-location detail screen. The
+ * status label and tap layer sit above both and are left alone. */
+static void show_overview(bool on)
+{
+    lv_obj_t *shown = on ? s_overview_root : s_detail_root;
+    lv_obj_t *hidden = on ? s_detail_root : s_overview_root;
+    if (hidden) {
+        lv_obj_add_flag(hidden, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (shown) {
+        lv_obj_clear_flag(shown, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Build the overview table into `root`: a title, a header row of clock hours
+ * (filled in each refresh), then one row per location with a name cell and
+ * OV_COLS cells of {weather icon, temperature, precipitation}. Only called
+ * when at least two locations are configured. */
+static void build_overview(lv_obj_t *root)
+{
+    s_ov_title = lv_label_create(root);
+    lv_obj_set_style_text_font(s_ov_title, s_font_large, 0);
+    lv_obj_set_pos(s_ov_title, OV_X, OV_TITLE_Y);
+    lv_label_set_text(s_ov_title, "Oversikt");
+
+    lv_obj_t *sted = lv_label_create(root);
+    lv_obj_set_pos(sted, OV_X, OV_HDR_Y);
+    lv_label_set_text(sted, "Sted");
+
+    for (int c = 0; c < OV_COLS; c++) {
+        s_ov_hdr[c] = lv_label_create(root);
+        lv_obj_set_pos(s_ov_hdr[c], OV_X + OV_NAME_W + c * OV_COL_W, OV_HDR_Y);
+        lv_obj_set_width(s_ov_hdr[c], OV_COL_W);
+        lv_label_set_text(s_ov_hdr[c], "");
+    }
+
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        int row_y = OV_BODY_Y + i * OV_ROW_H;
+
+        s_ov_name[i] = lv_label_create(root);
+        lv_obj_set_pos(s_ov_name[i], OV_X, row_y + OV_ICON / 2 - 4);
+        lv_obj_set_width(s_ov_name[i], OV_NAME_W - 4);
+        lv_obj_set_style_text_align(s_ov_name[i], LV_TEXT_ALIGN_LEFT, 0);
+        lv_label_set_long_mode(s_ov_name[i], LV_LABEL_LONG_MODE_DOTS);
+        lv_label_set_text(s_ov_name[i], s_cfg.locations[i].name);
+
+        for (int c = 0; c < OV_COLS; c++) {
+            int cell_x = OV_X + OV_NAME_W + c * OV_COL_W;
+
+            s_ov_icon[i][c] = lv_image_create(root);
+            lv_obj_set_pos(s_ov_icon[i][c], cell_x + (OV_COL_W - OV_ICON) / 2, row_y);
+            lv_obj_set_size(s_ov_icon[i][c], OV_ICON, OV_ICON);
+            lv_image_set_inner_align(s_ov_icon[i][c], LV_IMAGE_ALIGN_CENTER);
+            lv_image_set_scale(s_ov_icon[i][c], 256 * OV_ICON / ICON_SIZE);
+            lv_obj_add_flag(s_ov_icon[i][c], LV_OBJ_FLAG_HIDDEN);
+
+            s_ov_cell[i][c] = lv_label_create(root);
+            lv_obj_set_pos(s_ov_cell[i][c], cell_x, row_y + OV_ICON + 1);
+            lv_obj_set_width(s_ov_cell[i][c], OV_COL_W);
+            lv_label_set_text(s_ov_cell[i][c], "");
+        }
     }
 }
 
@@ -214,16 +320,33 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_location_label = lv_label_create(screen);
+    /* Two full-screen transparent layers, one per view; only one is ever
+     * visible. Every detail widget below is created inside s_detail_root. */
+    s_detail_root = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_detail_root);
+    lv_obj_set_pos(s_detail_root, 0, 0);
+    lv_obj_set_size(s_detail_root, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(s_detail_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+
+    s_overview_root = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_overview_root);
+    lv_obj_set_pos(s_overview_root, 0, 0);
+    lv_obj_set_size(s_overview_root, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(s_overview_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    /* Centre text in every overview cell by inheritance - avoids a per-label
+     * style property on ~30 widgets, which matters for internal DRAM. */
+    lv_obj_set_style_text_align(s_overview_root, LV_TEXT_ALIGN_CENTER, 0);
+
+    s_location_label = lv_label_create(s_detail_root);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
     lv_obj_set_pos(s_location_label, 12, 4);
     lv_label_set_text(s_location_label, s_cfg.locations[0].name);
 
-    s_updated_label = lv_label_create(screen);
+    s_updated_label = lv_label_create(s_detail_root);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
     lv_label_set_text(s_updated_label, "");
 
-    lv_obj_t *icon_row = lv_obj_create(screen);
+    lv_obj_t *icon_row = lv_obj_create(s_detail_root);
     lv_obj_set_pos(icon_row, CHART_X, ICON_ROW_Y);
     lv_obj_set_size(icon_row, CHART_W, ICON_SIZE);
     lv_obj_set_style_border_width(icon_row, 0, 0);
@@ -243,7 +366,7 @@ static void build_ui(lv_obj_t *screen)
     /* Precipitation bar chart acts as the single visual chart frame
      * (background, border, gridlines); the temperature line is overlaid
      * directly on top of it to make the two read as one merged chart. */
-    s_precip_chart = lv_chart_create(screen);
+    s_precip_chart = lv_chart_create(s_detail_root);
     lv_obj_set_pos(s_precip_chart, CHART_X, CHART_Y);
     lv_obj_set_size(s_precip_chart, CHART_W, CHART_H);
     lv_obj_set_style_pad_left(s_precip_chart, 4, 0);
@@ -254,7 +377,7 @@ static void build_ui(lv_obj_t *screen)
     lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
     s_precip_series = lv_chart_add_series(s_precip_chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
 
-    s_temp_line = lv_line_create(screen);
+    s_temp_line = lv_line_create(s_detail_root);
     lv_obj_set_pos(s_temp_line, CHART_X, CHART_Y);
     lv_obj_set_size(s_temp_line, CHART_W, CHART_H);
     lv_obj_set_style_bg_opa(s_temp_line, LV_OPA_TRANSP, 0);
@@ -272,14 +395,14 @@ static void build_ui(lv_obj_t *screen)
      * depends on the forecast (see place_temp_markers / place_precip_markers).
      * Any left over are kept hidden. */
     for (int i = 0; i < TEMP_MARKER_POOL; i++) {
-        s_temp_markers[i] = lv_label_create(screen);
+        s_temp_markers[i] = lv_label_create(s_detail_root);
         lv_obj_set_style_text_color(s_temp_markers[i], lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
         lv_label_set_text(s_temp_markers[i], "");
         lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
-        s_precip_markers[i] = lv_label_create(screen);
+        s_precip_markers[i] = lv_label_create(s_detail_root);
         lv_obj_set_style_text_color(s_precip_markers[i], lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
         lv_label_set_text(s_precip_markers[i], "");
         lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
@@ -287,7 +410,7 @@ static void build_ui(lv_obj_t *screen)
 
     /* Wind direction: a row of arrows (one per sampled column) rotated to
      * point the way the wind blows, sitting just above the wind-speed chart. */
-    lv_obj_t *wind_dir_row = lv_obj_create(screen);
+    lv_obj_t *wind_dir_row = lv_obj_create(s_detail_root);
     lv_obj_set_pos(wind_dir_row, CHART_X, WIND_DIR_ROW_Y);
     lv_obj_set_size(wind_dir_row, CHART_W, WIND_ARROW_SIZE);
     lv_obj_set_style_border_width(wind_dir_row, 0, 0);
@@ -307,7 +430,7 @@ static void build_ui(lv_obj_t *screen)
     }
 
     /* Wind-speed bar chart (m/s), same x-scale as the main chart above. */
-    s_wind_chart = lv_chart_create(screen);
+    s_wind_chart = lv_chart_create(s_detail_root);
     lv_obj_set_pos(s_wind_chart, CHART_X, WIND_CHART_Y);
     lv_obj_set_size(s_wind_chart, CHART_W, WIND_CHART_H);
     lv_obj_set_style_pad_left(s_wind_chart, 4, 0);
@@ -319,12 +442,16 @@ static void build_ui(lv_obj_t *screen)
     s_wind_series = lv_chart_add_series(s_wind_chart, lv_palette_main(LV_PALETTE_TEAL),
                                        LV_CHART_AXIS_PRIMARY_Y);
 
-    s_wind_max_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(s_wind_max_label, lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
-    lv_label_set_text(s_wind_max_label, "");
-    lv_obj_add_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
+    /* Wind-speed value markers - same pooled scheme as the precipitation
+     * markers (see place_wind_markers / place_precip_markers). */
+    for (int i = 0; i < WIND_MARKER_POOL; i++) {
+        s_wind_markers[i] = lv_label_create(s_detail_root);
+        lv_obj_set_style_text_color(s_wind_markers[i], lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
+        lv_label_set_text(s_wind_markers[i], "");
+        lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
 
-    lv_obj_t *hour_row = lv_obj_create(screen);
+    lv_obj_t *hour_row = lv_obj_create(s_detail_root);
     lv_obj_set_pos(hour_row, CHART_X, HOUR_ROW_Y);
     lv_obj_set_size(hour_row, CHART_W, 24);
     lv_obj_set_style_border_width(hour_row, 0, 0);
@@ -339,8 +466,13 @@ static void build_ui(lv_obj_t *screen)
         lv_label_set_text(s_hour_labels[i], "");
     }
 
-    /* Created last so it sits on top of the chart: loading/error text, shown
-     * centered over the (empty) chart area until a forecast lands. */
+    /* The overview table is only a cycling stop with two or more locations. */
+    if (s_cfg.location_count >= 2) {
+        build_overview(s_overview_root);
+    }
+
+    /* Created after both view layers so it sits on top of whichever is shown:
+     * loading/error text, centered over the screen until data lands. */
     s_status_label = lv_label_create(screen);
     lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
     lv_label_set_text(s_status_label, "Kobler til WiFi...");
@@ -359,6 +491,10 @@ static void build_ui(lv_obj_t *screen)
     /* PRESSED (not CLICKED): fires on touch-down regardless of tiny finger
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
+
+    /* Start on the overview when there is more than one location, else on the
+     * single location's detail screen. */
+    show_overview(s_cfg.location_count >= 2);
 }
 
 /* Centers label horizontally on chart_x (absolute) and places it either
@@ -383,18 +519,20 @@ static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y
 
 static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
 static float pt_precip(const yr_forecast_point_t *p) { return p->precipitation_mm; }
+static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
 
-/* A label was about to be placed at points[idx]. If a strictly more extreme
- * local extremum of the same kind (higher for a max, lower for a min) sits
- * within MARKER_SNAP_H hours after it, return that index instead so the
- * label lands on the real peak/trough. This deliberately overrides the
- * MARKER_MIN_GAP_H spacing rule. */
+/* A label is about to be placed at points[idx]. Look ahead one whole spacing
+ * window (MARKER_MIN_GAP_H hours) and, if a stronger local extremum of the
+ * same kind (higher for a max, lower for a min) sits in it, return that index
+ * instead. Because the caller then jumps past the returned index, this
+ * collapses a cluster of small wiggles - or a lesser peak sitting just before
+ * the real one - into a single label on the true peak/trough. */
 static int snap_to_better_extremum(const yr_forecast_t *fc, int idx, bool want_max,
                                    float (*get)(const yr_forecast_point_t *))
 {
     int best = idx;
     float best_val = get(&fc->points[idx]);
-    int64_t limit = fc->points[idx].epoch_utc + (int64_t)MARKER_SNAP_H * 3600;
+    int64_t limit = fc->points[idx].epoch_utc + (int64_t)MARKER_MIN_GAP_H * 3600;
 
     for (int j = idx + 1; j < fc->point_count && fc->points[j].epoch_utc <= limit; j++) {
         float v = get(&fc->points[j]);
@@ -410,67 +548,113 @@ static int snap_to_better_extremum(const yr_forecast_t *fc, int idx, bool want_m
     return best;
 }
 
-/* Place the temperature value markers. Always labels the global high
- * (temp_max_idx, above the line) and global low (temp_min_idx, below); then
- * walks the series and adds a marker at each further local extremum whose
- * time is >= MARKER_MIN_GAP_H hours after the last marker already placed, so
- * intermediate peaks/dips get a value without crowding. Each marker snaps to
- * a better nearby extremum (see snap_to_better_extremum). Unused pool labels
- * are hidden. */
+/* How far points[idx] stands out as an extremum of the given type: walk out
+ * each side (up to MARKER_MIN_GAP_H hours) until the series climbs back above
+ * (for a max) or drops back below (for a min) points[idx], tracking the
+ * turning point reached on each side; the prominence is the height above the
+ * higher bounding valley (a max) or the depth below the lower bounding peak
+ * (a min). A shallow wiggle sitting next to a strong opposite extremum scores
+ * near zero. */
+static float temp_prominence(const yr_forecast_t *fc, int idx, bool want_max)
+{
+    const float t = fc->points[idx].air_temperature_c;
+    const int64_t lo = fc->points[idx].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
+    const int64_t hi = fc->points[idx].epoch_utc + (int64_t)MARKER_MIN_GAP_H * 3600;
+    float left = t, right = t;
+
+    for (int j = idx - 1; j >= 0 && fc->points[j].epoch_utc >= lo; j--) {
+        float v = fc->points[j].air_temperature_c;
+        if (want_max ? (v > t) : (v < t)) break;
+        if (want_max ? (v < left) : (v > left)) left = v;
+    }
+    for (int j = idx + 1; j < fc->point_count && fc->points[j].epoch_utc <= hi; j++) {
+        float v = fc->points[j].air_temperature_c;
+        if (want_max ? (v > t) : (v < t)) break;
+        if (want_max ? (v < right) : (v > right)) right = v;
+    }
+    return want_max ? (t - (left > right ? left : right))
+                    : ((left < right ? left : right) - t);
+}
+
+/* Emit one temperature marker at points[m] (above = label over the line, a
+ * max; else under it, a min), recording its epoch so later markers can space
+ * themselves against it. No-op once the pool is full. */
+static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
+                      int64_t placed_max[], int *n_max,
+                      int64_t placed_min[], int *n_min)
+{
+    if (*used >= TEMP_MARKER_POOL) {
+        return;
+    }
+    lv_obj_t *label = s_temp_markers[(*used)++];
+    lv_label_set_text_fmt(label, "%.1f\xC2\xB0", (double)fc->points[m].air_temperature_c);
+    lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+    place_marker_label(label, CHART_X + s_temp_line_points[m].x,
+                       CHART_Y + s_temp_line_points[m].y, above);
+    if (above) {
+        placed_max[(*n_max)++] = fc->points[m].epoch_utc;
+    } else {
+        placed_min[(*n_min)++] = fc->points[m].epoch_utc;
+    }
+}
+
+/* Place the temperature value markers. The global high and low - and the
+ * leftmost "now" point - are labelled first so they are never crowded out by
+ * lesser extrema. A left-to-right pass then adds other local extrema, each
+ * kept at least MARKER_MIN_GAP_H hours from every already-placed marker OF THE
+ * SAME TYPE and required to be prominent enough
+ * (temp_prominence >= MARKER_TEMP_MIN_SWING) to be worth a number; each is
+ * consolidated onto the strongest same-type extremum in the window ahead
+ * (snap_to_better_extremum). Unused pool labels are hidden. */
 static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int temp_max_idx)
 {
-    int used = 0;
-    int64_t last_shown_epoch = fc->points[0].epoch_utc;
+    int used = 0, n_max = 0, n_min = 0;
+    int64_t placed_max[TEMP_MARKER_POOL];
+    int64_t placed_min[TEMP_MARKER_POOL];
 
-    for (int i = 0; i < fc->point_count && used < TEMP_MARKER_POOL; i++) {
-        const float t = fc->points[i].air_temperature_c;
+    /* 1. Globals and "now" - unconditionally. */
+    temp_emit(fc, temp_max_idx, true, &used, placed_max, &n_max, placed_min, &n_min);
+    if (temp_min_idx != temp_max_idx) {
+        temp_emit(fc, temp_min_idx, false, &used, placed_max, &n_max, placed_min, &n_min);
+    }
+    if (fc->point_count > 1 && temp_max_idx != 0 && temp_min_idx != 0) {
+        bool now_above = fc->points[0].air_temperature_c > fc->points[1].air_temperature_c;
+        temp_emit(fc, 0, now_above, &used, placed_max, &n_max, placed_min, &n_min);
+    }
 
-        bool local_max = false;
-        bool local_min = false;
-        if (i > 0 && i < fc->point_count - 1) {
-            float prev = fc->points[i - 1].air_temperature_c;
-            float next = fc->points[i + 1].air_temperature_c;
-            local_max = (t > prev && t >= next);
-            local_min = (t < prev && t <= next);
-        } else if (i == fc->point_count - 1 && i > 0) {
-            float prev = fc->points[i - 1].air_temperature_c;
-            local_max = (t > prev);
-            local_min = (t < prev);
-        } else if (i == 0 && fc->point_count > 1) {
-            /* The leftmost point ("now") is a turning point whenever the
-             * trend starts up or down from it - label it like an extremum. */
-            float next = fc->points[1].air_temperature_c;
-            local_max = (t > next);
-            local_min = (t < next);
-        }
-
-        /* Globals and the leftmost point are shown regardless of spacing. */
-        bool forced = (i == temp_min_idx || i == temp_max_idx || i == 0);
-        if (!forced && !local_max && !local_min) {
+    /* 2. Other local extrema, spaced per type and filtered by prominence. */
+    for (int i = 1; i < fc->point_count - 1 && used < TEMP_MARKER_POOL; i++) {
+        if (i == temp_max_idx || i == temp_min_idx) {
             continue;
         }
-
-        int64_t epoch = fc->points[i].epoch_utc;
-        bool far_enough = (epoch - last_shown_epoch) >= (int64_t)MARKER_MIN_GAP_H * 3600;
-        if (!forced && !far_enough) {
+        float prev = fc->points[i - 1].air_temperature_c;
+        float t = fc->points[i].air_temperature_c;
+        float next = fc->points[i + 1].air_temperature_c;
+        bool above = (t > prev && t >= next);
+        bool below = (t < prev && t <= next);
+        if (!above && !below) {
             continue;
         }
-
-        bool above = (i == temp_max_idx) ? true
-                   : (i == temp_min_idx) ? false
-                   : local_max;
 
         int m = snap_to_better_extremum(fc, i, above, pt_temp);
+        int64_t ep = fc->points[m].epoch_utc;
 
-        lv_obj_t *label = s_temp_markers[used++];
-        lv_label_set_text_fmt(label, "%.1f%s", (double)fc->points[m].air_temperature_c, "\xC2\xB0");
-        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-        place_marker_label(label, CHART_X + s_temp_line_points[m].x,
-                            CHART_Y + s_temp_line_points[m].y, above);
+        const int64_t *arr = above ? placed_max : placed_min;
+        int n = above ? n_max : n_min;
+        bool too_close = false;
+        for (int k = 0; k < n; k++) {
+            int64_t d = ep - arr[k];
+            if ((d < 0 ? -d : d) < (int64_t)MARKER_MIN_GAP_H * 3600) {
+                too_close = true;
+                break;
+            }
+        }
 
-        last_shown_epoch = fc->points[m].epoch_utc;
+        if (!too_close && temp_prominence(fc, m, above) >= MARKER_TEMP_MIN_SWING) {
+            temp_emit(fc, m, above, &used, placed_max, &n_max, placed_min, &n_min);
+        }
         if (m > i) {
-            i = m; /* don't re-label the span we snapped across */
+            i = m; /* skip past the span we consolidated across */
         }
     }
 
@@ -482,15 +666,18 @@ static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int te
 /* Precipitation value markers. Labels the global wettest hour, then adds a
  * label at each further local precipitation peak that falls at least
  * MARKER_MIN_GAP_H hours after the previously shown precip label, so a long
- * on/off rain spell gets called out without crowding. Dry hours are never
- * marked, and if the whole forecast is dry every pool label stays hidden. */
+ * on/off rain spell gets called out without crowding. Each label consolidates
+ * to the wettest hour within the next window (snap_to_better_extremum), so it
+ * lands on the tallest bar of its shower, not the first bar of it. Dry hours
+ * are never marked; an all-dry forecast hides every pool label. */
 static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, int32_t precip_range_max)
 {
     int used = 0;
 
     if (round_to_int(fc->points[precip_max_idx].precipitation_mm * 10.0f) > 0) {
         int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
-        int64_t last_shown_epoch = fc->points[0].epoch_utc;
+        /* One window before "now" - see place_temp_markers. */
+        int64_t last_shown_epoch = fc->points[0].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
 
         for (int i = 0; i < fc->point_count && used < PRECIP_MARKER_POOL; i++) {
             float mm = fc->points[i].precipitation_mm;
@@ -532,6 +719,60 @@ static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, in
 
     for (int i = used; i < PRECIP_MARKER_POOL; i++) {
         lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Wind-speed value markers on the wind chart - the same scheme as
+ * place_precip_markers: label the windiest hour, then each further local wind
+ * peak that falls at least MARKER_MIN_GAP_H hours after the previously shown
+ * wind label, each consolidated to the strongest gust in the next window. If
+ * the whole forecast is calm every pool label stays hidden. */
+static void place_wind_markers(const yr_forecast_t *fc, int wind_max_idx, int32_t wind_range_max)
+{
+    int used = 0;
+
+    if (round_to_int(fc->points[wind_max_idx].wind_speed_ms * 10.0f) > 0) {
+        /* One window before "now" - see place_temp_markers. */
+        int64_t last_shown_epoch = fc->points[0].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
+
+        for (int i = 0; i < fc->point_count && used < WIND_MARKER_POOL; i++) {
+            float ws = fc->points[i].wind_speed_ms;
+
+            float prev = (i > 0) ? fc->points[i - 1].wind_speed_ms : -1.0f;
+            float next = (i < fc->point_count - 1) ? fc->points[i + 1].wind_speed_ms : -1.0f;
+            bool local_peak = (ws >= prev && ws >= next && (ws > prev || ws > next));
+            bool is_global = (i == wind_max_idx);
+            if (!is_global && !local_peak) {
+                continue;
+            }
+
+            int64_t epoch = fc->points[i].epoch_utc;
+            if (!is_global && (epoch - last_shown_epoch) < (int64_t)MARKER_MIN_GAP_H * 3600) {
+                continue;
+            }
+
+            int m = snap_to_better_extremum(fc, i, true, pt_wind);
+
+            int32_t x = (fc->point_count > 1)
+                            ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1)
+                            : 0;
+            int32_t y = WIND_CHART_H - (int32_t)(((float)s_wind_chart_data[m] /
+                                                  (float)wind_range_max) * WIND_CHART_H);
+
+            lv_obj_t *label = s_wind_markers[used++];
+            lv_label_set_text_fmt(label, "%.0f m/s", (double)fc->points[m].wind_speed_ms);
+            lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+            place_marker_label(label, CHART_X + x, WIND_CHART_Y + y, true);
+
+            last_shown_epoch = fc->points[m].epoch_utc;
+            if (m > i) {
+                i = m; /* don't re-label the span we snapped across */
+            }
+        }
+    }
+
+    for (int i = used; i < WIND_MARKER_POOL; i++) {
+        lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -630,18 +871,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
     lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
 
-    if (wind_max > 0.0f) {
-        int32_t wx = (fc->point_count > 1)
-                         ? (int32_t)wind_max_idx * (CHART_W - 1) / (fc->point_count - 1)
-                         : 0;
-        int32_t wy = WIND_CHART_H - (int32_t)(((float)s_wind_chart_data[wind_max_idx] /
-                                               (float)wind_range_max) * WIND_CHART_H);
-        lv_label_set_text_fmt(s_wind_max_label, "%.0f m/s", (double)wind_max);
-        lv_obj_clear_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
-        place_marker_label(s_wind_max_label, CHART_X + wx, WIND_CHART_Y + wy, true);
-    } else {
-        lv_obj_add_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
-    }
+    place_wind_markers(fc, wind_max_idx, wind_range_max);
 
     char last_label[6] = "";
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
@@ -666,8 +896,6 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         lv_obj_clear_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
-
-static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
 
 /* Linear-interpolate a per-point float field of the hourly forecast at an
  * arbitrary epoch - used to give the finer Nowcast points a temperature and
@@ -714,6 +942,82 @@ static const yr_forecast_point_t *nearest_base_point(const yr_forecast_t *base, 
         }
     }
     return best;
+}
+
+static bool any_cache_valid(void)
+{
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        if (s_fc_valid[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Repaint the overview table from the per-location caches. Uses the most
+ * recent cache's first point as "now" (the device has no wall clock), aligns
+ * it to the hour, and for each column samples the nearest hourly point for
+ * temperature + weather symbol and sums precipitation over the next OV_STEP_H
+ * hours. Missing caches show dashes. Must be called under the adapter lock. */
+static void update_overview(void)
+{
+    int64_t now_epoch = 0;
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        if (s_fc_valid[i] && s_fc_cache[i]->point_count > 0) {
+            int64_t e = s_fc_cache[i]->points[0].epoch_utc;
+            if (e > now_epoch) {
+                now_epoch = e;
+            }
+        }
+    }
+    if (now_epoch == 0) {
+        return;
+    }
+    int64_t t0 = (now_epoch / 3600) * 3600;
+
+    for (int c = 0; c < OV_COLS; c++) {
+        time_t tt = (time_t)(t0 + (int64_t)c * OV_STEP_H * 3600);
+        struct tm lt;
+        localtime_r(&tt, &lt);
+        lv_label_set_text_fmt(s_ov_hdr[c], "kl %02d", lt.tm_hour);
+    }
+
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        lv_label_set_text(s_ov_name[i], s_cfg.locations[i].name);
+
+        const bool ok = s_fc_valid[i] && s_fc_cache[i]->point_count > 0;
+        const yr_forecast_t *fc = ok ? s_fc_cache[i] : NULL;
+
+        for (int c = 0; c < OV_COLS; c++) {
+            lv_obj_t *icon = s_ov_icon[i][c];
+            lv_obj_t *cell = s_ov_cell[i][c];
+
+            if (!ok) {
+                lv_label_set_text(cell, "\xE2\x80\x93"); /* en dash */
+                lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+                continue;
+            }
+
+            int64_t block_start = t0 + (int64_t)c * OV_STEP_H * 3600;
+            const yr_forecast_point_t *np = nearest_base_point(fc, block_start);
+
+            float psum = 0.0f;
+            for (int k = 0; k < fc->point_count; k++) {
+                int64_t e = fc->points[k].epoch_utc;
+                if (e >= block_start && e < block_start + OV_STEP_H * 3600) {
+                    psum += fc->points[k].precipitation_mm;
+                }
+            }
+
+            if (psum >= 0.05f) {
+                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0\n%.1f mm",
+                                      (double)np->air_temperature_c, (double)psum);
+            } else {
+                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0", (double)np->air_temperature_c);
+            }
+            set_weather_icon(icon, np->symbol_code);
+        }
+    }
 }
 
 /* Build the rendered series: the Nowcast's near-term steps (10-min spacing,
@@ -799,106 +1103,164 @@ static void yr_weather_task(void *arg)
     }
 
     /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
-     * scarce internal DRAM. `base` holds the last good hourly forecast
-     * across iterations; `merged` is what actually gets rendered. */
-    yr_forecast_t *base = heap_caps_malloc(sizeof(*base), MALLOC_CAP_SPIRAM);
+     * scarce internal DRAM. `scratch` receives each fetch (yr_client zeroes
+     * its output, so fetching straight into a cache would wipe the last good
+     * copy on a network hiccup); `merged` holds the nowcast-spliced series
+     * that the detail view renders; s_fc_cache[i] keeps each location's last
+     * good hourly forecast for the overview. */
+    yr_forecast_t *scratch = heap_caps_malloc(sizeof(*scratch), MALLOC_CAP_SPIRAM);
     yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
     yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
-    if (base == NULL || merged == NULL || nowcast == NULL) {
+    bool caches_ok = (scratch != NULL && merged != NULL && nowcast != NULL);
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
+        if (s_fc_cache[i] == NULL) {
+            caches_ok = false;
+        }
+    }
+    if (!caches_ok) {
         ESP_LOGE(TAG, "Out of memory allocating forecast buffers");
-        free(base);
-        free(merged);
-        free(nowcast);
         vTaskDelete(NULL);
         return;
     }
-    base->point_count = 0;
 
-    bool have_forecast = false;
-    TickType_t last_forecast_tk = 0;
-    int active_index = -1;
-    double lat = 0.0, lon = 0.0;
+    int active_view = -1;   /* -1 forces a first render; else == s_view_index  */
+    bool overview = false;
+    int sel = 0;            /* selected location index when not on the overview */
 
     while (1) {
-        /* Adopt a location switch from the touch handler: re-point at the new
-         * coordinates, drop the old forecast and show it's loading. */
-        int want_index = s_loc_index;
-        if (want_index != active_index) {
-            active_index = want_index;
-            const app_location_t *loc = &s_cfg.locations[active_index];
-            lat = atof(loc->lat);
-            lon = atof(loc->lon);
-            have_forecast = false;
-            base->point_count = 0;
-            last_forecast_tk = 0;
+        /* Adopt a view switch from the touch handler. */
+        int want_view = s_view_index;
+        if (want_view != active_view) {
+            active_view = want_view;
+            overview = (s_cfg.location_count >= 2 && want_view == 0);
+            sel = overview ? 0
+                : (s_cfg.location_count >= 2 ? want_view - 1 : 0);
+
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                if (s_cfg.location_count > 1) {
-                    lv_label_set_text_fmt(s_location_label, "%s  %d/%d", loc->name,
-                                          active_index + 1, s_cfg.location_count);
+                show_overview(overview);
+                if (overview) {
+                    if (any_cache_valid()) {
+                        lv_label_set_text(s_status_label, "");
+                        update_overview();
+                    } else {
+                        lv_label_set_text(s_status_label, "Henter oversikt...");
+                    }
                 } else {
-                    lv_label_set_text(s_location_label, loc->name);
+                    const app_location_t *loc = &s_cfg.locations[sel];
+                    if (s_cfg.location_count > 1) {
+                        lv_label_set_text_fmt(s_location_label, "%s  %d/%d", loc->name,
+                                              sel + 1, s_cfg.location_count);
+                    } else {
+                        lv_label_set_text(s_location_label, loc->name);
+                    }
+                    if (s_fc_valid[sel] && s_fc_cache[sel]->point_count > 0) {
+                        lv_label_set_text(s_status_label, "");
+                        update_ui_with_forecast(s_fc_cache[sel]); /* cached, nowcast added below */
+                    } else {
+                        lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
+                    }
                 }
-                lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
                 esp_lv_adapter_unlock();
             }
         }
 
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
 
-        /* Refetch the slow-moving hourly forecast on its own long cadence (or
-         * if we've never managed to get one). Fetch into `merged` as scratch
-         * and only commit a good result to `base` - yr_client_fetch_forecast()
-         * zeroes its output buffer up front, so fetching straight into `base`
-         * would wipe the last good forecast whenever the network hiccups. */
-        if (!have_forecast ||
-            (now_tk - last_forecast_tk) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS)) {
-            if (yr_client_fetch_forecast(lat, lon, merged) == ESP_OK &&
-                merged->valid && merged->point_count > 0) {
-                *base = *merged;
-                have_forecast = true;
-                last_forecast_tk = now_tk;
-                ESP_LOGI(TAG, "Forecast updated: %d points, kl. %s (free heap: %u int / %u total)",
-                         base->point_count, base->updated_hour_minute,
-                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                         (unsigned)esp_get_free_heap_size());
+        /* Refresh any stale or missing location forecast. The selected one is
+         * done first so the detail view updates promptly; the rest keep the
+         * overview warm. N <= 5 and the cadence is 10 min, so this is a fetch
+         * or two per wake at most. */
+        for (int k = 0; k < s_cfg.location_count; k++) {
+            if (s_view_index != active_view) {
+                break; /* view changed mid-scan - restart the loop */
+            }
+            int i = (sel + k) % s_cfg.location_count;
+            bool stale = !s_fc_valid[i] ||
+                         (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
+            if (!stale) {
+                continue;
+            }
+
+            double lat = atof(s_cfg.locations[i].lat);
+            double lon = atof(s_cfg.locations[i].lon);
+            if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
+                scratch->valid && scratch->point_count > 0) {
+                *s_fc_cache[i] = *scratch;
+                s_fc_valid[i] = true;
+                s_fc_tk[i] = now_tk;
+                ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
+                         i, s_cfg.locations[i].name, s_fc_cache[i]->point_count,
+                         s_fc_cache[i]->updated_hour_minute,
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             } else {
-                ESP_LOGW(TAG, "Forecast refetch failed; keeping last good copy");
+                ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous",
+                         i, s_cfg.locations[i].name);
+            }
+
+            /* Fill the overview row-by-row as each location lands. */
+            if (overview && s_view_index == active_view &&
+                esp_lv_adapter_lock(-1) == ESP_OK) {
+                if (any_cache_valid()) {
+                    lv_label_set_text(s_status_label, "");
+                    update_overview();
+                }
+                esp_lv_adapter_unlock();
             }
         }
 
-        /* The nowcast refreshes every 5 min upstream - fetch it every cycle. */
-        bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
-                      nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
-
-        /* If the location was switched while those fetches ran, the data we
-         * just got is for the old place - skip the render and restart. */
-        if (s_loc_index != active_index) {
+        if (s_view_index != active_view) {
             continue;
         }
 
-        if (have_forecast && base->point_count > 0) {
-            const yr_forecast_t *to_render = base;
-            if (nc_ok) {
-                merge_nowcast(merged, base, nowcast);
-                to_render = merged;
-                ESP_LOGI(TAG, "Nowcast merged: %d steps @ kl. %s -> %d points",
-                         nowcast->point_count, nowcast->updated_hour_minute, merged->point_count);
-            }
-            if (to_render->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
-                lv_label_set_text(s_status_label, "");
-                update_ui_with_forecast(to_render);
+        if (overview) {
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                if (any_cache_valid()) {
+                    lv_label_set_text(s_status_label, "");
+                    update_overview();
+                } else {
+                    lv_label_set_text(s_status_label, "Henter oversikt...");
+                }
                 esp_lv_adapter_unlock();
             }
-        } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            lv_label_set_text(s_status_label, "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
-            esp_lv_adapter_unlock();
+        } else {
+            /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
+            double lat = atof(s_cfg.locations[sel].lat);
+            double lon = atof(s_cfg.locations[sel].lon);
+            bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
+                          nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
+
+            if (s_view_index != active_view) {
+                continue;
+            }
+
+            if (s_fc_valid[sel] && s_fc_cache[sel]->point_count > 0) {
+                const yr_forecast_t *to_render = s_fc_cache[sel];
+                if (nc_ok) {
+                    merge_nowcast(merged, s_fc_cache[sel], nowcast);
+                    to_render = merged;
+                    ESP_LOGI(TAG, "Nowcast merged for %s: %d steps -> %d points",
+                             s_cfg.locations[sel].name, nowcast->point_count,
+                             merged->point_count);
+                }
+                if (to_render->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
+                    lv_label_set_text(s_status_label, "");
+                    update_ui_with_forecast(to_render);
+                    esp_lv_adapter_unlock();
+                }
+            } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                lv_label_set_text(s_status_label,
+                                  "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
+                esp_lv_adapter_unlock();
+            }
         }
 
-        /* Poll on the nowcast cadence once we have something to show;
-         * retry fast while still waiting for the first forecast. A tap that
-         * switches location sends a notification, cutting the wait short. */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_forecast ? NOWCAST_REFRESH_INTERVAL_MS
-                                                             : WEATHER_RETRY_INTERVAL_MS));
+        /* Poll on the nowcast cadence once something is on screen; retry fast
+         * while still waiting for the first data. A tap notifies us, cutting
+         * the wait short. */
+        bool ready = overview ? any_cache_valid() : s_fc_valid[sel];
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ready ? NOWCAST_REFRESH_INTERVAL_MS
+                                                     : WEATHER_RETRY_INTERVAL_MS));
     }
 }
 
@@ -950,8 +1312,10 @@ void app_main(void)
      * internal heap - enough that esp_wifi_init() and FreeType glyph
      * rendering start failing their allocations. 16 lines (~25 KB) leaves the
      * headroom; the cost is more (smaller) flush cycles, which is fine for a
-     * near-static weather screen. */
-    disp_config.profile.buffer_height = 16;
+     * near-static weather screen. Trimmed further (16 -> 10) to make room for
+     * the overview screen and the wind markers - below ~10 the WiFi PHY's own
+     * esp_timer_create() starts failing its allocation at startup. */
+    disp_config.profile.buffer_height = 10;
 
     lv_display_t *disp = esp_lv_adapter_register_display(&disp_config);
     assert(disp != NULL);

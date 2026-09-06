@@ -38,10 +38,19 @@ every 10 minutes.
 
 ### Multiple locations
 
-Up to 5 forecast locations can be stored. The screen shows one at a time;
-**tap the left half of the screen** to cycle to the next one (the top-left
-label shows e.g. `Oslo  2/3`). Switching triggers an immediate refetch for
-the newly selected location.
+Up to 5 forecast locations can be stored. **Tap the left half of the screen**
+to cycle through the stops:
+
+1. **Oversikt** – an overview table with one row per location and 6-hour
+   columns, each showing the weather icon, temperature and the precipitation
+   summed over that 6-hour block. This is the first stop.
+2. One detail screen per location (chart + wind), in order. The top-left
+   label shows e.g. `Oslo  2/3`.
+
+The overview stop only appears when two or more locations are configured.
+All locations' hourly forecasts are kept refreshed in the background so the
+table is always current; the detail screens additionally splice in the
+5-minute nowcast for the selected location.
 
 ### Setup portal (WiFi + locations)
 
