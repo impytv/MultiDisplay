@@ -36,9 +36,16 @@ The "YR" tab connects to WiFi and shows the current forecast from the
 [MET Norway Locationforecast API](https://developer.yr.no/doc/), refreshed
 every 10 minutes.
 
-### Setup portal (WiFi + location)
+### Multiple locations
 
-WiFi credentials and the forecast location are configured at runtime and
+Up to 5 forecast locations can be stored. The screen shows one at a time;
+**tap the left half of the screen** to cycle to the next one (the top-left
+label shows e.g. `Oslo  2/3`). Switching triggers an immediate refetch for
+the newly selected location.
+
+### Setup portal (WiFi + locations)
+
+WiFi credentials and the forecast locations are configured at runtime and
 stored in NVS — no rebuild needed to change them.
 
 On a fresh flash (WiFi SSID still the `myssid` placeholder in `sdkconfig`),
@@ -48,8 +55,9 @@ WiFi fails to connect, the device starts a setup access point:
 1. Connect a phone/laptop to the WiFi network **`MultiDisplay-XXXX`** (open).
 2. A "sign in to network" page opens automatically (captive portal); if not,
    browse to **`http://192.168.4.1/`**.
-3. Pick your WiFi network, enter the password, set the location name and
-   latitude/longitude, and **Save**. The device reboots and connects.
+3. Pick your WiFi network, enter the password, then fill in one or more
+   **Location** blocks (name + latitude/longitude). Leave a block empty to
+   skip it. Press **Save** — the device reboots and connects.
 
 Once connected, the same page is reachable at the device's IP on your LAN
 (shown in the router's client list, or the serial log: `Got IP: …`) for

@@ -2,6 +2,7 @@
 #define _APP_CONFIG_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 /* Field sizes include room for the trailing NUL. WiFi SSID is 32 bytes,
@@ -11,24 +12,34 @@
 #define APP_CONFIG_NAME_MAX  40
 #define APP_CONFIG_COORD_MAX 16
 
+/* How many forecast locations can be stored. The display shows one at a
+ * time and cycles to the next when the left half of the screen is tapped. */
+#define APP_CONFIG_MAX_LOCATIONS 5
+
+typedef struct {
+    char name[APP_CONFIG_NAME_MAX];
+    char lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
+    char lon[APP_CONFIG_COORD_MAX];
+} app_location_t;
+
 typedef struct {
     char wifi_ssid[APP_CONFIG_SSID_MAX];
     char wifi_pass[APP_CONFIG_PASS_MAX];
-    char loc_name[APP_CONFIG_NAME_MAX];
-    char loc_lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
-    char loc_lon[APP_CONFIG_COORD_MAX];
+    app_location_t locations[APP_CONFIG_MAX_LOCATIONS];
+    uint8_t location_count; /* always in [1, APP_CONFIG_MAX_LOCATIONS] */
 } app_config_t;
 
 /**
  * Load the runtime configuration. Fields saved through the setup portal come
  * from NVS; anything never saved falls back to the compiled-in Kconfig
  * default (CONFIG_EXAMPLE_*). Always succeeds - a blank NVS just yields the
- * defaults.
+ * defaults (a single location from the Kconfig coordinates).
  */
 esp_err_t app_config_load(app_config_t *out);
 
 /**
  * Persist the configuration to NVS and mark the device as provisioned.
+ * location_count is clamped into [1, APP_CONFIG_MAX_LOCATIONS].
  */
 esp_err_t app_config_save(const app_config_t *cfg);
 

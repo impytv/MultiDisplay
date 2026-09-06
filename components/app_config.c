@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,43 +11,63 @@ static const char *TAG = "app_config";
 
 #define NVS_NS "multidisplay"
 
-/* Copy an NVS string key into dst, or fall back to `dflt` if the key is
- * absent. dst is always NUL-terminated. */
-static void load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_len,
-                     const char *dflt)
+/* Overwrite dst with NVS string key `key` only if it is present and fits;
+ * otherwise dst keeps whatever default was seeded into it. */
+static void load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_len)
 {
-    size_t len = dst_len;
-    esp_err_t err = nvs_get_str(h, key, dst, &len);
-    if (err != ESP_OK) {
-        snprintf(dst, dst_len, "%s", dflt);
+    size_t len = 0;
+    if (nvs_get_str(h, key, NULL, &len) != ESP_OK || len == 0 || len > dst_len) {
+        return;
     }
+    nvs_get_str(h, key, dst, &len);
+}
+
+static void seed_defaults(app_config_t *out)
+{
+    snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", CONFIG_EXAMPLE_WIFI_SSID);
+    snprintf(out->wifi_pass, sizeof(out->wifi_pass), "%s", CONFIG_EXAMPLE_WIFI_PASSWORD);
+    snprintf(out->locations[0].name, sizeof(out->locations[0].name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
+    snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
+    snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
+    out->location_count = 1;
 }
 
 esp_err_t app_config_load(app_config_t *out)
 {
     memset(out, 0, sizeof(*out));
+    seed_defaults(out);
 
     nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &h);
-    if (err != ESP_OK) {
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
         /* Never opened / never written - everything is default. */
-        snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", CONFIG_EXAMPLE_WIFI_SSID);
-        snprintf(out->wifi_pass, sizeof(out->wifi_pass), "%s", CONFIG_EXAMPLE_WIFI_PASSWORD);
-        snprintf(out->loc_name, sizeof(out->loc_name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
-        snprintf(out->loc_lat, sizeof(out->loc_lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
-        snprintf(out->loc_lon, sizeof(out->loc_lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
         return ESP_OK;
     }
 
-    load_str(h, "ssid", out->wifi_ssid, sizeof(out->wifi_ssid), CONFIG_EXAMPLE_WIFI_SSID);
-    load_str(h, "pass", out->wifi_pass, sizeof(out->wifi_pass), CONFIG_EXAMPLE_WIFI_PASSWORD);
-    load_str(h, "name", out->loc_name, sizeof(out->loc_name), CONFIG_EXAMPLE_YR_LOCATION_NAME);
-    load_str(h, "lat", out->loc_lat, sizeof(out->loc_lat), CONFIG_EXAMPLE_YR_LATITUDE);
-    load_str(h, "lon", out->loc_lon, sizeof(out->loc_lon), CONFIG_EXAMPLE_YR_LONGITUDE);
+    load_str(h, "ssid", out->wifi_ssid, sizeof(out->wifi_ssid));
+    load_str(h, "pass", out->wifi_pass, sizeof(out->wifi_pass));
+
+    size_t blob_len = sizeof(out->locations);
+    if (nvs_get_blob(h, "locs", out->locations, &blob_len) == ESP_OK) {
+        uint8_t cnt = 1;
+        nvs_get_u8(h, "loccnt", &cnt);
+        if (cnt < 1) {
+            cnt = 1;
+        } else if (cnt > APP_CONFIG_MAX_LOCATIONS) {
+            cnt = APP_CONFIG_MAX_LOCATIONS;
+        }
+        out->location_count = cnt;
+    } else {
+        /* Legacy single-location layout (firmware before multi-location). */
+        load_str(h, "name", out->locations[0].name, sizeof(out->locations[0].name));
+        load_str(h, "lat", out->locations[0].lat, sizeof(out->locations[0].lat));
+        load_str(h, "lon", out->locations[0].lon, sizeof(out->locations[0].lon));
+        out->location_count = 1;
+    }
     nvs_close(h);
 
-    ESP_LOGI(TAG, "loaded: ssid='%s' loc='%s' (%s, %s)",
-             out->wifi_ssid, out->loc_name, out->loc_lat, out->loc_lon);
+    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s)",
+             out->wifi_ssid, out->location_count, out->locations[0].name,
+             out->locations[0].lat, out->locations[0].lon);
     return ESP_OK;
 }
 
@@ -58,18 +79,30 @@ esp_err_t app_config_save(const app_config_t *cfg)
         return err;
     }
 
+    uint8_t cnt = cfg->location_count;
+    if (cnt < 1) {
+        cnt = 1;
+    } else if (cnt > APP_CONFIG_MAX_LOCATIONS) {
+        cnt = APP_CONFIG_MAX_LOCATIONS;
+    }
+
     err = nvs_set_str(h, "ssid", cfg->wifi_ssid);
     if (err == ESP_OK) err = nvs_set_str(h, "pass", cfg->wifi_pass);
-    if (err == ESP_OK) err = nvs_set_str(h, "name", cfg->loc_name);
-    if (err == ESP_OK) err = nvs_set_str(h, "lat", cfg->loc_lat);
-    if (err == ESP_OK) err = nvs_set_str(h, "lon", cfg->loc_lon);
+    if (err == ESP_OK) err = nvs_set_blob(h, "locs", cfg->locations, sizeof(cfg->locations));
+    if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
     if (err == ESP_OK) err = nvs_set_u8(h, "prov", 1);
+    /* Retire the legacy single-location keys, if this NVS was written by an
+     * older firmware. Missing keys just return NOT_FOUND - ignore. */
+    nvs_erase_key(h, "name");
+    nvs_erase_key(h, "lat");
+    nvs_erase_key(h, "lon");
     if (err == ESP_OK) err = nvs_commit(h);
 
     nvs_close(h);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "saved: ssid='%s' loc='%s' (%s, %s)",
-                 cfg->wifi_ssid, cfg->loc_name, cfg->loc_lat, cfg->loc_lon);
+        ESP_LOGI(TAG, "saved: ssid='%s', %u location(s), first='%s' (%s, %s)",
+                 cfg->wifi_ssid, cnt, cfg->locations[0].name,
+                 cfg->locations[0].lat, cfg->locations[0].lon);
     } else {
         ESP_LOGE(TAG, "save failed: %s", esp_err_to_name(err));
     }

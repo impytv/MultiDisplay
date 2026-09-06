@@ -72,9 +72,15 @@ static const char *TAG = "lvgl9_demo";
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
 
-/* Runtime settings (WiFi + forecast location), from NVS via the setup portal
+/* Runtime settings (WiFi + forecast locations), from NVS via the setup portal
  * or the compiled-in defaults. Loaded once in app_main. */
 static app_config_t s_cfg;
+
+/* Index into s_cfg.locations of the location currently on screen. Advanced by
+ * the touch handler (tap the left half of the screen); the weather task
+ * notices the change, re-points at the new coordinates and refetches. */
+static volatile int s_loc_index;
+static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_location_label;
@@ -163,15 +169,55 @@ static void init_fonts(void)
     assert(s_font_large != NULL);
 }
 
+/* Tap on the left half of the screen: switch to the next stored location and
+ * wake the weather task so it refetches. Runs in the LVGL context (which
+ * already holds the adapter lock), so it only pokes volatiles + a notify. */
+static void screen_touch_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_cfg.location_count <= 1) {
+        return;
+    }
+    lv_indev_t *indev = lv_indev_active();
+    if (indev == NULL) {
+        return;
+    }
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+    if (p.x >= EXAMPLE_LCD_H_RES / 2) {
+        return; /* only the left half cycles locations */
+    }
+
+    /* Ignore a second press within 400 ms - covers finger bounce and keeps a
+     * quick double-tap from skipping two locations by accident. */
+    static uint32_t last_tap_ms;
+    uint32_t now_ms = lv_tick_get();
+    if (now_ms - last_tap_ms < 400) {
+        return;
+    }
+    last_tap_ms = now_ms;
+
+    int next = s_loc_index + 1;
+    if (next >= s_cfg.location_count) {
+        next = 0;
+    }
+    s_loc_index = next;
+    ESP_LOGI(TAG, "Left-half tap: switching to location %d/%d", next + 1, s_cfg.location_count);
+    if (s_yr_task != NULL) {
+        xTaskNotifyGive(s_yr_task);
+    }
+}
+
 static void build_ui(lv_obj_t *screen)
 {
     lv_obj_set_style_text_font(screen, s_font_body, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
     s_location_label = lv_label_create(screen);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
     lv_obj_set_pos(s_location_label, 12, 4);
-    lv_label_set_text(s_location_label, s_cfg.loc_name);
+    lv_label_set_text(s_location_label, s_cfg.locations[0].name);
 
     s_updated_label = lv_label_create(screen);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
@@ -298,6 +344,21 @@ static void build_ui(lv_obj_t *screen)
     s_status_label = lv_label_create(screen);
     lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
     lv_label_set_text(s_status_label, "Kobler til WiFi...");
+
+    /* Full-screen transparent tap catcher. In LVGL 9 every lv_obj/lv_chart is
+     * clickable by default, so a tap lands on whichever chart or row widget
+     * covers that point and never reaches the screen. This overlay is the
+     * topmost child, so it catches every tap; the handler looks at the x
+     * coordinate to decide (left half -> next location). */
+    lv_obj_t *tap_layer = lv_obj_create(screen);
+    lv_obj_remove_style_all(tap_layer);
+    lv_obj_set_pos(tap_layer, 0, 0);
+    lv_obj_set_size(tap_layer, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(tap_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(tap_layer, LV_OBJ_FLAG_SCROLLABLE);
+    /* PRESSED (not CLICKED): fires on touch-down regardless of tiny finger
+     * movement, so a quick tap is never lost to scroll/gesture detection. */
+    lv_obj_add_event_cb(tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 }
 
 /* Centers label horizontally on chart_x (absolute) and places it either
@@ -737,9 +798,6 @@ static void yr_weather_task(void *arg)
         esp_lv_adapter_unlock();
     }
 
-    const double lat = atof(s_cfg.loc_lat);
-    const double lon = atof(s_cfg.loc_lon);
-
     /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
      * scarce internal DRAM. `base` holds the last good hourly forecast
      * across iterations; `merged` is what actually gets rendered. */
@@ -758,8 +816,33 @@ static void yr_weather_task(void *arg)
 
     bool have_forecast = false;
     TickType_t last_forecast_tk = 0;
+    int active_index = -1;
+    double lat = 0.0, lon = 0.0;
 
     while (1) {
+        /* Adopt a location switch from the touch handler: re-point at the new
+         * coordinates, drop the old forecast and show it's loading. */
+        int want_index = s_loc_index;
+        if (want_index != active_index) {
+            active_index = want_index;
+            const app_location_t *loc = &s_cfg.locations[active_index];
+            lat = atof(loc->lat);
+            lon = atof(loc->lon);
+            have_forecast = false;
+            base->point_count = 0;
+            last_forecast_tk = 0;
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                if (s_cfg.location_count > 1) {
+                    lv_label_set_text_fmt(s_location_label, "%s  %d/%d", loc->name,
+                                          active_index + 1, s_cfg.location_count);
+                } else {
+                    lv_label_set_text(s_location_label, loc->name);
+                }
+                lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
+                esp_lv_adapter_unlock();
+            }
+        }
+
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
 
         /* Refetch the slow-moving hourly forecast on its own long cadence (or
@@ -787,6 +870,12 @@ static void yr_weather_task(void *arg)
         bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
                       nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
 
+        /* If the location was switched while those fetches ran, the data we
+         * just got is for the old place - skip the render and restart. */
+        if (s_loc_index != active_index) {
+            continue;
+        }
+
         if (have_forecast && base->point_count > 0) {
             const yr_forecast_t *to_render = base;
             if (nc_ok) {
@@ -806,9 +895,10 @@ static void yr_weather_task(void *arg)
         }
 
         /* Poll on the nowcast cadence once we have something to show;
-         * retry fast while still waiting for the first forecast. */
-        vTaskDelay(pdMS_TO_TICKS(have_forecast ? NOWCAST_REFRESH_INTERVAL_MS
-                                               : WEATHER_RETRY_INTERVAL_MS));
+         * retry fast while still waiting for the first forecast. A tap that
+         * switches location sends a notification, cutting the wait short. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(have_forecast ? NOWCAST_REFRESH_INTERVAL_MS
+                                                             : WEATHER_RETRY_INTERVAL_MS));
     }
 }
 
@@ -885,5 +975,5 @@ void app_main(void)
      * nvs_flash_init()/esp_wifi via wifi_connect_sta(), and flash/NVS
      * access briefly freezes the cache, which asserts that the calling
      * task's own stack isn't in PSRAM (it would become unreadable). */
-    xTaskCreate(yr_weather_task, "yr_weather", YR_TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, NULL);
+    xTaskCreate(yr_weather_task, "yr_weather", YR_TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &s_yr_task);
 }

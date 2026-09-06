@@ -117,6 +117,8 @@ static const char PAGE_HEAD[] =
     "input{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem}"
     "button{margin-top:1.3rem;width:100%;padding:.7rem;font-size:1rem;border:0;border-radius:.4rem;background:#2d5a86;color:#fff}"
     ".row{display:flex;gap:.6rem}.row>div{flex:1}small{color:#666}"
+    "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
+    "legend{padding:0 .4rem;color:#555;font-weight:600}"
     "</style><h1>MultiDisplay setup</h1><form method=post action=/save>";
 
 static const char PAGE_TAIL[] =
@@ -127,7 +129,7 @@ static const char PAGE_TAIL[] =
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 4096;
+    const size_t cap = 6144;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -147,17 +149,31 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->wifi_pass);
     p += snprintf(p, end - p, "\"><small>Leave blank for an open network</small>");
 
-    p += snprintf(p, end - p, "<label>Location name</label><input name=name value=\"");
-    p = html_escape_append(p, end, cfg->loc_name);
-    p += snprintf(p, end - p, "\">");
+    p += snprintf(p, end - p,
+                  "<p style='margin:1.4rem 0 .2rem'><small>One or more forecast "
+                  "locations. The screen shows one at a time; tap its left half "
+                  "to cycle to the next. Leave a block empty to skip it.</small>");
 
-    p += snprintf(p, end - p, "<div class=row><div><label>Latitude</label>"
-                  "<input name=lat inputmode=decimal value=\"");
-    p = html_escape_append(p, end, cfg->loc_lat);
-    p += snprintf(p, end - p, "\"></div><div><label>Longitude</label>"
-                  "<input name=lon inputmode=decimal value=\"");
-    p = html_escape_append(p, end, cfg->loc_lon);
-    p += snprintf(p, end - p, "\"></div></div>");
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        bool filled = (i < cfg->location_count);
+        p += snprintf(p, end - p,
+                      "<fieldset><legend>Location %d</legend>"
+                      "<label>Name</label><input name=name%d value=\"", i + 1, i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->locations[i].name);
+        }
+        p += snprintf(p, end - p, "\"><div class=row><div><label>Latitude</label>"
+                      "<input name=lat%d inputmode=decimal value=\"", i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->locations[i].lat);
+        }
+        p += snprintf(p, end - p, "\"></div><div><label>Longitude</label>"
+                      "<input name=lon%d inputmode=decimal value=\"", i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->locations[i].lon);
+        }
+        p += snprintf(p, end - p, "\"></div></div></fieldset>");
+    }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
     return buf;
@@ -232,7 +248,7 @@ static void reboot_task(void *arg)
 
 static esp_err_t h_save(httpd_req_t *req)
 {
-    char body[768];
+    char body[1600];
     int total = 0;
     while (total < req->content_len && total < (int)sizeof(body) - 1) {
         int r = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
@@ -244,26 +260,65 @@ static esp_err_t h_save(httpd_req_t *req)
     body[total] = '\0';
 
     app_config_t cfg;
-    app_config_load(&cfg); /* keep unspecified fields at their current value */
+    app_config_load(&cfg); /* keep the WiFi fields at their current value if omitted */
     form_field(body, "ssid", cfg.wifi_ssid, sizeof(cfg.wifi_ssid));
     form_field(body, "pass", cfg.wifi_pass, sizeof(cfg.wifi_pass));
-    form_field(body, "name", cfg.loc_name, sizeof(cfg.loc_name));
-    form_field(body, "lat", cfg.loc_lat, sizeof(cfg.loc_lat));
-    form_field(body, "lon", cfg.loc_lon, sizeof(cfg.loc_lon));
 
     httpd_resp_set_type(req, "text/html");
-    if (cfg.wifi_ssid[0] == '\0' ||
-        !app_config_coord_valid(cfg.loc_lat, true) ||
-        !app_config_coord_valid(cfg.loc_lon, false)) {
+    if (cfg.wifi_ssid[0] == '\0') {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req,
-            "<meta charset=utf-8><p>Invalid entry: a WiFi network is required and "
-            "latitude/longitude must be numbers within &plusmn;90 / &plusmn;180."
+            "<meta charset=utf-8><p>Invalid entry: a WiFi network is required."
             "<p><a href=/>Back</a>");
     }
-    if (cfg.loc_name[0] == '\0') {
-        snprintf(cfg.loc_name, sizeof(cfg.loc_name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
+
+    /* Collect the numbered location blocks (name0/lat0/lon0, ...). A block
+     * with all three fields empty is skipped; the rest are compacted so the
+     * stored list has no gaps. */
+    app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    int n = 0;
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        char key[8];
+        char name[APP_CONFIG_NAME_MAX];
+        char lat[APP_CONFIG_COORD_MAX];
+        char lon[APP_CONFIG_COORD_MAX];
+
+        snprintf(key, sizeof(key), "name%d", i);
+        form_field(body, key, name, sizeof(name));
+        snprintf(key, sizeof(key), "lat%d", i);
+        form_field(body, key, lat, sizeof(lat));
+        snprintf(key, sizeof(key), "lon%d", i);
+        form_field(body, key, lon, sizeof(lon));
+
+        if (name[0] == '\0' && lat[0] == '\0' && lon[0] == '\0') {
+            continue;
+        }
+        if (!app_config_coord_valid(lat, true) || !app_config_coord_valid(lon, false)) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req,
+                "<meta charset=utf-8><p>Invalid entry: every location needs a "
+                "latitude within &plusmn;90 and a longitude within &plusmn;180."
+                "<p><a href=/>Back</a>");
+        }
+        if (name[0] == '\0') {
+            snprintf(name, sizeof(name), "Sted %d", n + 1);
+        }
+        snprintf(locs[n].name, sizeof(locs[n].name), "%s", name);
+        snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
+        snprintf(locs[n].lon, sizeof(locs[n].lon), "%s", lon);
+        n++;
     }
+
+    if (n == 0) {
+        /* Nothing entered - fall back to the compiled-in default location. */
+        snprintf(locs[0].name, sizeof(locs[0].name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
+        snprintf(locs[0].lat, sizeof(locs[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
+        snprintf(locs[0].lon, sizeof(locs[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
+        n = 1;
+    }
+
+    memcpy(cfg.locations, locs, sizeof(cfg.locations));
+    cfg.location_count = (uint8_t)n;
 
     if (app_config_save(&cfg) != ESP_OK) {
         return httpd_resp_send_500(req);
@@ -291,7 +346,8 @@ static void start_web_server(void)
         return;
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    config.stack_size = 4608;
+    /* h_save keeps the POST body (~1.6 KB) plus an app_config_t on its stack. */
+    config.stack_size = 6144;
     config.max_uri_handlers = 8;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
