@@ -19,6 +19,7 @@ typedef struct {
     int64_t epoch_utc;          /* seconds since the Unix epoch, for time-delta arithmetic */
     float air_temperature_c;
     float wind_speed_ms;
+    float wind_from_deg;        /* direction the wind blows FROM, degrees clockwise from north */
     float precipitation_mm;     /* best-effort 1h precipitation (see yr_client.c) */
     char symbol_code[48];       /* e.g. "partlycloudy_day" */
 } yr_forecast_point_t;
@@ -36,8 +37,10 @@ typedef struct {
     bool is_first_of_day;
     int64_t epoch_utc;
     float precipitation_rate;   /* mm/h, radar nowcast (comparable unit to the hourly amounts) */
-    float air_temperature_c;    /* only meaningful when has_air_temperature (first step only) */
-    bool has_air_temperature;
+    float air_temperature_c;    /* only meaningful when has_instant_details (first step only) */
+    float wind_speed_ms;        /* only meaningful when has_instant_details */
+    float wind_from_deg;        /* only meaningful when has_instant_details */
+    bool has_instant_details;   /* true for the steps that carry temperature/wind (the first) */
     char symbol_code[48];       /* usually only the first step carries one; "" otherwise */
 } yr_nowcast_point_t;
 

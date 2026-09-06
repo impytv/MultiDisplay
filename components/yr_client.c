@@ -206,6 +206,10 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
         if (cJSON_IsNumber(wind)) {
             point->wind_speed_ms = (float)wind->valuedouble;
         }
+        cJSON *wind_dir = cJSON_GetObjectItemCaseSensitive(instant_details, "wind_from_direction");
+        if (cJSON_IsNumber(wind_dir)) {
+            point->wind_from_deg = (float)wind_dir->valuedouble;
+        }
 
         parse_period_fallback(data, &point->precipitation_mm, point->symbol_code, sizeof(point->symbol_code));
 
@@ -357,7 +361,16 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
         cJSON *temp = cJSON_GetObjectItemCaseSensitive(idetails, "air_temperature");
         if (cJSON_IsNumber(temp)) {
             point->air_temperature_c = (float)temp->valuedouble;
-            point->has_air_temperature = true;
+            point->has_instant_details = true;
+
+            cJSON *wind = cJSON_GetObjectItemCaseSensitive(idetails, "wind_speed");
+            if (cJSON_IsNumber(wind)) {
+                point->wind_speed_ms = (float)wind->valuedouble;
+            }
+            cJSON *wind_dir = cJSON_GetObjectItemCaseSensitive(idetails, "wind_from_direction");
+            if (cJSON_IsNumber(wind_dir)) {
+                point->wind_from_deg = (float)wind_dir->valuedouble;
+            }
         }
 
         cJSON *n1h = cJSON_GetObjectItemCaseSensitive(data, "next_1_hours");

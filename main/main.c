@@ -32,16 +32,26 @@ static const char *TAG = "lvgl9_demo";
 #define YR_TASK_STACK_SIZE 8192
 
 #define ICON_ROW_Y 44
-#define ICON_SIZE 64
+#define ICON_SIZE 48
 
 #define CHART_X 20
-#define CHART_Y 116
 #define CHART_W 760
-#define CHART_H 316
+/* Main temperature/precipitation chart. */
+#define CHART_Y 100
+#define CHART_H 244
 /* Precipitation bars are drawn on a taller-than-needed axis so they only
  * occupy the bottom fraction of the shared chart, leaving the rest of the
  * height for the temperature line to read clearly. */
 #define PRECIP_AXIS_COMPRESSION 3
+
+/* Wind section stacked below the main chart: a row of direction arrows over a
+ * short wind-speed bar chart, sharing the main chart's x-scale. */
+#define WIND_DIR_ROW_Y (CHART_Y + CHART_H + 4)
+#define WIND_ARROW_SIZE 28
+#define WIND_CHART_Y (WIND_DIR_ROW_Y + WIND_ARROW_SIZE + 2)
+#define WIND_CHART_H 54
+
+#define HOUR_ROW_Y (WIND_CHART_Y + WIND_CHART_H + 6)
 
 /* Chart value markers. Temperature: the global high and low are always
  * labelled; precipitation: the global wettest hour is always labelled.
@@ -70,10 +80,16 @@ static lv_obj_t *s_temp_line;
 static lv_obj_t *s_temp_markers[TEMP_MARKER_POOL];
 static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
 
+static lv_obj_t *s_wind_chart;
+static lv_chart_series_t *s_wind_series;
+static lv_obj_t *s_wind_max_label;
+static lv_obj_t *s_wind_dir_arrows[NUM_HOUR_LABELS];
+
 static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
 static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 
 static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
+static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
 
 static int32_t round_to_int(float v)
@@ -217,8 +233,47 @@ static void build_ui(lv_obj_t *screen)
         lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 
+    /* Wind direction: a row of arrows (one per sampled column) rotated to
+     * point the way the wind blows, sitting just above the wind-speed chart. */
+    lv_obj_t *wind_dir_row = lv_obj_create(screen);
+    lv_obj_set_pos(wind_dir_row, CHART_X, WIND_DIR_ROW_Y);
+    lv_obj_set_size(wind_dir_row, CHART_W, WIND_ARROW_SIZE);
+    lv_obj_set_style_border_width(wind_dir_row, 0, 0);
+    lv_obj_set_style_pad_all(wind_dir_row, 0, 0);
+    lv_obj_set_style_bg_opa(wind_dir_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_flex_flow(wind_dir_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(wind_dir_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(wind_dir_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < NUM_HOUR_LABELS; i++) {
+        s_wind_dir_arrows[i] = lv_image_create(wind_dir_row);
+        lv_obj_set_size(s_wind_dir_arrows[i], WIND_ARROW_SIZE, WIND_ARROW_SIZE);
+        lv_image_set_src(s_wind_dir_arrows[i], "F:arrow.png");
+        lv_image_set_inner_align(s_wind_dir_arrows[i], LV_IMAGE_ALIGN_CENTER);
+        lv_image_set_pivot(s_wind_dir_arrows[i], WIND_ARROW_SIZE / 2, WIND_ARROW_SIZE / 2);
+        lv_obj_add_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    /* Wind-speed bar chart (m/s), same x-scale as the main chart above. */
+    s_wind_chart = lv_chart_create(screen);
+    lv_obj_set_pos(s_wind_chart, CHART_X, WIND_CHART_Y);
+    lv_obj_set_size(s_wind_chart, CHART_W, WIND_CHART_H);
+    lv_obj_set_style_pad_left(s_wind_chart, 4, 0);
+    lv_obj_set_style_pad_right(s_wind_chart, 4, 0);
+    lv_chart_set_type(s_wind_chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_div_line_count(s_wind_chart, 2, NUM_HOUR_LABELS - 1);
+    lv_chart_set_point_count(s_wind_chart, YR_FORECAST_MAX_POINTS);
+    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+    s_wind_series = lv_chart_add_series(s_wind_chart, lv_palette_main(LV_PALETTE_TEAL),
+                                       LV_CHART_AXIS_PRIMARY_Y);
+
+    s_wind_max_label = lv_label_create(screen);
+    lv_obj_set_style_text_color(s_wind_max_label, lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
+    lv_label_set_text(s_wind_max_label, "");
+    lv_obj_add_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_t *hour_row = lv_obj_create(screen);
-    lv_obj_set_pos(hour_row, CHART_X, CHART_Y + CHART_H + 8);
+    lv_obj_set_pos(hour_row, CHART_X, HOUR_ROW_Y);
     lv_obj_set_size(hour_row, CHART_W, 24);
     lv_obj_set_style_border_width(hour_row, 0, 0);
     lv_obj_set_style_pad_all(hour_row, 0, 0);
@@ -433,10 +488,11 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
 
     lv_label_set_text_fmt(s_updated_label, "Oppdatert kl. %s", fc->updated_hour_minute);
 
-    int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0;
+    int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0, wind_max_idx = 0;
     float temp_min = now->air_temperature_c;
     float temp_max = now->air_temperature_c;
     float precip_max = 0.0f;
+    float wind_max = 0.0f;
 
     for (int i = 0; i < fc->point_count; i++) {
         const yr_forecast_point_t *p = &fc->points[i];
@@ -452,11 +508,17 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
             precip_max = p->precipitation_mm;
             precip_max_idx = i;
         }
+        if (p->wind_speed_ms > wind_max) {
+            wind_max = p->wind_speed_ms;
+            wind_max_idx = i;
+        }
 
         /* A dry hour draws no bar at all (LV_CHART_POINT_NONE), rather than a
          * flat zero-height stub sitting on the axis. */
         int32_t precip_tenths = round_to_int(p->precipitation_mm * 10.0f);
         s_precip_chart_data[i] = (precip_tenths > 0) ? precip_tenths : LV_CHART_POINT_NONE;
+
+        s_wind_chart_data[i] = round_to_int(p->wind_speed_ms * 10.0f);
     }
 
     int32_t temp_range_min = round_to_int(temp_min) - 1;
@@ -491,6 +553,29 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     place_temp_markers(fc, temp_min_idx, temp_max_idx);
     place_precip_markers(fc, precip_max_idx, precip_range_max);
 
+    /* Wind-speed bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
+     * calm forecast still has a sensible axis. */
+    int32_t wind_range_max = round_to_int(wind_max * 10.0f) + 20;
+    if (wind_range_max < 60) {
+        wind_range_max = 60;
+    }
+    lv_chart_set_point_count(s_wind_chart, fc->point_count);
+    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
+    lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
+
+    if (wind_max > 0.0f) {
+        int32_t wx = (fc->point_count > 1)
+                         ? (int32_t)wind_max_idx * (CHART_W - 1) / (fc->point_count - 1)
+                         : 0;
+        int32_t wy = WIND_CHART_H - (int32_t)(((float)s_wind_chart_data[wind_max_idx] /
+                                               (float)wind_range_max) * WIND_CHART_H);
+        lv_label_set_text_fmt(s_wind_max_label, "%.0f m/s", (double)wind_max);
+        lv_obj_clear_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
+        place_marker_label(s_wind_max_label, CHART_X + wx, WIND_CHART_Y + wy, true);
+    } else {
+        lv_obj_add_flag(s_wind_max_label, LV_OBJ_FLAG_HIDDEN);
+    }
+
     char last_label[6] = "";
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
         int idx = (fc->point_count - 1) * i / (NUM_HOUR_LABELS - 1);
@@ -505,52 +590,60 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         }
 
         set_weather_icon(s_icon_slots[i], fc->points[idx].symbol_code);
+
+        /* Wind direction arrow: the PNG points north at rotation 0; rotate it
+         * to the direction the wind blows TO (from-direction + 180). LVGL
+         * rotation is in 0.1-degree units, clockwise. */
+        int32_t to_deg = ((int32_t)fc->points[idx].wind_from_deg + 180) % 360;
+        lv_image_set_rotation(s_wind_dir_arrows[i], to_deg * 10);
+        lv_obj_clear_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 
-/* Linear-interpolate the hourly forecast temperature at an arbitrary epoch
- * (used to give the finer Nowcast points a temperature - the Nowcast itself
- * only carries one for its first step). */
-static float interp_base_temp(const yr_forecast_t *base, int64_t epoch)
+static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
+
+/* Linear-interpolate a per-point float field of the hourly forecast at an
+ * arbitrary epoch - used to give the finer Nowcast points a temperature and
+ * wind speed (the Nowcast itself only carries them for its first step). */
+static float interp_base(const yr_forecast_t *base, int64_t epoch,
+                         float (*get)(const yr_forecast_point_t *))
 {
     if (base->point_count == 0) {
         return 0.0f;
     }
     if (epoch <= base->points[0].epoch_utc) {
-        return base->points[0].air_temperature_c;
+        return get(&base->points[0]);
     }
     for (int i = 1; i < base->point_count; i++) {
         int64_t e1 = base->points[i].epoch_utc;
         if (epoch <= e1) {
             int64_t e0 = base->points[i - 1].epoch_utc;
-            float t0 = base->points[i - 1].air_temperature_c;
-            float t1 = base->points[i].air_temperature_c;
+            float v0 = get(&base->points[i - 1]);
+            float v1 = get(&base->points[i]);
             if (e1 == e0) {
-                return t1;
+                return v1;
             }
-            return t0 + (float)(epoch - e0) / (float)(e1 - e0) * (t1 - t0);
+            return v0 + (float)(epoch - e0) / (float)(e1 - e0) * (v1 - v0);
         }
     }
-    return base->points[base->point_count - 1].air_temperature_c;
+    return get(&base->points[base->point_count - 1]);
 }
 
-/* Nearest hourly-forecast symbol_code to an epoch, for Nowcast steps that
- * don't carry their own (all but the first usually don't). */
-static const char *nearest_base_symbol(const yr_forecast_t *base, int64_t epoch)
+/* Nearest hourly-forecast point to an epoch (by time), for Nowcast fields
+ * that don't interpolate cleanly - the weather symbol, and wind direction
+ * (angles wrap at 360). Returns NULL only if base is empty. */
+static const yr_forecast_point_t *nearest_base_point(const yr_forecast_t *base, int64_t epoch)
 {
-    const char *best = "";
+    const yr_forecast_point_t *best = NULL;
     int64_t best_dist = INT64_MAX;
     for (int i = 0; i < base->point_count; i++) {
-        if (base->points[i].symbol_code[0] == '\0') {
-            continue;
-        }
         int64_t d = base->points[i].epoch_utc - epoch;
         if (d < 0) {
             d = -d;
         }
         if (d < best_dist) {
             best_dist = d;
-            best = base->points[i].symbol_code;
+            best = &base->points[i];
         }
     }
     return best;
@@ -576,10 +669,20 @@ static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const y
         p.is_first_of_day = s->is_first_of_day;
         p.epoch_utc = s->epoch_utc;
         p.precipitation_mm = s->precipitation_rate;
-        p.air_temperature_c = s->has_air_temperature ? s->air_temperature_c
-                                                     : interp_base_temp(base, s->epoch_utc);
+
+        const yr_forecast_point_t *nb = nearest_base_point(base, s->epoch_utc);
+        if (s->has_instant_details) {
+            p.air_temperature_c = s->air_temperature_c;
+            p.wind_speed_ms = s->wind_speed_ms;
+            p.wind_from_deg = s->wind_from_deg;
+        } else {
+            p.air_temperature_c = interp_base(base, s->epoch_utc, pt_temp);
+            p.wind_speed_ms = interp_base(base, s->epoch_utc, pt_wind);
+            p.wind_from_deg = nb ? nb->wind_from_deg : 0.0f;
+        }
+
         const char *sym = s->symbol_code[0] ? s->symbol_code
-                                            : nearest_base_symbol(base, s->epoch_utc);
+                                            : (nb ? nb->symbol_code : "");
         snprintf(p.symbol_code, sizeof(p.symbol_code), "%s", sym);
 
         dst->points[m++] = p;
@@ -695,7 +798,7 @@ void app_main(void)
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
 
-    const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_180;
+    const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_0;
     const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;
     const uint8_t frame_buffer_count = esp_lv_adapter_get_required_frame_buffer_count(tear_mode, rotation);
 
