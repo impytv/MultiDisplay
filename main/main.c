@@ -744,19 +744,24 @@ static void yr_weather_task(void *arg)
     while (1) {
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
 
-        /* Refetch the slow-moving hourly forecast on its own long cadence
-         * (or if we've never managed to get one). A failure keeps the last
-         * good copy. */
+        /* Refetch the slow-moving hourly forecast on its own long cadence (or
+         * if we've never managed to get one). Fetch into `merged` as scratch
+         * and only commit a good result to `base` - yr_client_fetch_forecast()
+         * zeroes its output buffer up front, so fetching straight into `base`
+         * would wipe the last good forecast whenever the network hiccups. */
         if (!have_forecast ||
             (now_tk - last_forecast_tk) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS)) {
-            if (yr_client_fetch_forecast(lat, lon, base) == ESP_OK &&
-                base->valid && base->point_count > 0) {
+            if (yr_client_fetch_forecast(lat, lon, merged) == ESP_OK &&
+                merged->valid && merged->point_count > 0) {
+                *base = *merged;
                 have_forecast = true;
                 last_forecast_tk = now_tk;
                 ESP_LOGI(TAG, "Forecast updated: %d points, kl. %s (free heap: %u int / %u total)",
                          base->point_count, base->updated_hour_minute,
                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                          (unsigned)esp_get_free_heap_size());
+            } else {
+                ESP_LOGW(TAG, "Forecast refetch failed; keeping last good copy");
             }
         }
 
@@ -764,7 +769,7 @@ static void yr_weather_task(void *arg)
         bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
                       nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
 
-        if (have_forecast) {
+        if (have_forecast && base->point_count > 0) {
             const yr_forecast_t *to_render = base;
             if (nc_ok) {
                 merge_nowcast(merged, base, nowcast);
@@ -772,7 +777,7 @@ static void yr_weather_task(void *arg)
                 ESP_LOGI(TAG, "Nowcast merged: %d steps @ kl. %s -> %d points",
                          nowcast->point_count, nowcast->updated_hour_minute, merged->point_count);
             }
-            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (to_render->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
                 lv_label_set_text(s_status_label, "");
                 update_ui_with_forecast(to_render);
                 esp_lv_adapter_unlock();
@@ -823,6 +828,14 @@ void app_main(void)
         EXAMPLE_LCD_V_RES,
         rotation);
     disp_config.profile.use_psram = true;
+    /* DEFAULT_RGB (TRIPLE_PARTIAL) allocates a hor_res * buffer_height partial
+     * draw buffer, and the adapter hardcodes it to *internal* DRAM regardless
+     * of use_psram. At the default 50 lines that's ~80 KB of the ~230 KB
+     * internal heap - enough that esp_wifi_init() and FreeType glyph
+     * rendering start failing their allocations. 16 lines (~25 KB) leaves the
+     * headroom; the cost is more (smaller) flush cycles, which is fine for a
+     * near-static weather screen. */
+    disp_config.profile.buffer_height = 16;
 
     lv_display_t *disp = esp_lv_adapter_register_display(&disp_config);
     assert(disp != NULL);
