@@ -5,7 +5,13 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define YR_FORECAST_MAX_POINTS 48
+/* Hourly points taken from the Locationforecast API. */
+#define YR_FORECAST_BASE_POINTS 48
+/* Array capacity: base hourly points plus the finer Nowcast points that get
+ * spliced in ahead of them for the next ~2 hours (see main.c merge_nowcast). */
+#define YR_FORECAST_MAX_POINTS 72
+/* 5-minute Nowcast steps (~2 hours of radar precipitation nowcast). */
+#define YR_NOWCAST_MAX_POINTS 30
 
 typedef struct {
     char hour_minute[6];        /* "HH:MM", Europe/Oslo local time, for axis labels */
@@ -25,12 +31,37 @@ typedef struct {
     yr_forecast_point_t points[YR_FORECAST_MAX_POINTS];
 } yr_forecast_t;
 
+typedef struct {
+    char hour_minute[6];        /* "HH:MM", Europe/Oslo local time */
+    bool is_first_of_day;
+    int64_t epoch_utc;
+    float precipitation_rate;   /* mm/h, radar nowcast (comparable unit to the hourly amounts) */
+    float air_temperature_c;    /* only meaningful when has_air_temperature (first step only) */
+    bool has_air_temperature;
+    char symbol_code[48];       /* usually only the first step carries one; "" otherwise */
+} yr_nowcast_point_t;
+
+typedef struct {
+    bool valid;
+    bool radar_ok;                 /* properties.meta.radar_coverage == "ok" */
+    char updated_hour_minute[6];   /* "HH:MM", Europe/Oslo local time, of the nowcast issue time */
+    int point_count;
+    yr_nowcast_point_t points[YR_NOWCAST_MAX_POINTS];
+} yr_nowcast_t;
+
 /**
- * Fetch up to the next YR_FORECAST_MAX_POINTS hourly forecast points for
- * (lat, lon) from the MET Norway (yr.no) Locationforecast API.
+ * Fetch up to YR_FORECAST_BASE_POINTS hourly forecast points for (lat, lon)
+ * from the MET Norway (yr.no) Locationforecast API.
  *
  * lat/lon are formatted with at most 4 decimals as required by the API.
  */
 esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out);
+
+/**
+ * Fetch the MET Norway Nowcast (5-minute radar precipitation nowcast for the
+ * next ~2 hours). Nordic coverage only; check out->radar_ok before trusting
+ * the precipitation values.
+ */
+esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out);
 
 #endif

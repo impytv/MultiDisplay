@@ -17,8 +17,17 @@
 
 static const char *TAG = "lvgl9_demo";
 
+/* The hourly Locationforecast is updated seldom upstream - poll it slowly.
+ * The Nowcast (radar precipitation for the next ~2 h) refreshes every 5 min,
+ * so poll it on its own faster cadence and splice it in ahead of the hourly
+ * points. */
 #define WEATHER_REFRESH_INTERVAL_MS (10 * 60 * 1000)
+#define NOWCAST_REFRESH_INTERVAL_MS (5 * 60 * 1000)
 #define WEATHER_RETRY_INTERVAL_MS (20 * 1000)
+/* Take every Nth nowcast step (5 min apart) into the merged series: every
+ * 2nd = 10-minute resolution for the near term, still 6x finer than hourly
+ * without over-compressing the rest of the chart. */
+#define NOWCAST_MERGE_STRIDE 2
 #define NUM_HOUR_LABELS 8
 #define YR_TASK_STACK_SIZE 8192
 
@@ -187,7 +196,8 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_set_style_line_rounded(s_temp_line, true, 0);
     lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_CLICKABLE);
-    lv_line_set_points_mutable(s_temp_line, s_temp_line_points, YR_FORECAST_MAX_POINTS);
+    /* Actual point count is set each refresh in update_ui_with_forecast. */
+    lv_line_set_points_mutable(s_temp_line, s_temp_line_points, 0);
 
     /* Value markers for temperature and precipitation extrema, positioned
      * directly on the chart each refresh. Both are pools: how many are used
@@ -304,16 +314,23 @@ static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int te
             float prev = fc->points[i - 1].air_temperature_c;
             local_max = (t > prev);
             local_min = (t < prev);
+        } else if (i == 0 && fc->point_count > 1) {
+            /* The leftmost point ("now") is a turning point whenever the
+             * trend starts up or down from it - label it like an extremum. */
+            float next = fc->points[1].air_temperature_c;
+            local_max = (t > next);
+            local_min = (t < next);
         }
 
-        bool is_global = (i == temp_min_idx || i == temp_max_idx);
-        if (!is_global && !local_max && !local_min) {
+        /* Globals and the leftmost point are shown regardless of spacing. */
+        bool forced = (i == temp_min_idx || i == temp_max_idx || i == 0);
+        if (!forced && !local_max && !local_min) {
             continue;
         }
 
         int64_t epoch = fc->points[i].epoch_utc;
         bool far_enough = (epoch - last_shown_epoch) >= (int64_t)MARKER_MIN_GAP_H * 3600;
-        if (!is_global && !far_enough) {
+        if (!forced && !far_enough) {
             continue;
         }
 
@@ -396,6 +413,20 @@ static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, in
     }
 }
 
+/* Format a UTC epoch as "HH:00" local time, rounded to the nearest whole
+ * hour, for the x-axis labels. The merged series is non-uniform in time
+ * (10-min nowcast steps, then hourly), so an evenly-sampled point rarely
+ * lands on the hour - showing its rounded hour keeps the axis readable.
+ * Oslo's UTC offset is a whole number of hours, so rounding the epoch is
+ * equivalent to rounding the local clock. */
+static void format_hour_label(int64_t epoch, char *out, size_t out_len)
+{
+    time_t rounded = (time_t)(((epoch + 1800) / 3600) * 3600);
+    struct tm lt;
+    localtime_r(&rounded, &lt);
+    snprintf(out, out_len, "%02d:00", lt.tm_hour);
+}
+
 static void update_ui_with_forecast(const yr_forecast_t *fc)
 {
     const yr_forecast_point_t *now = &fc->points[0];
@@ -450,15 +481,124 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         s_temp_line_points[i].x = x;
         s_temp_line_points[i].y = y;
     }
+    /* Re-point every refresh: the merged series length varies (nowcast steps
+     * + hourly points), and drawing the full YR_FORECAST_MAX_POINTS array
+     * would trail a line back through the stale/zero tail entries. */
+    lv_line_set_points_mutable(s_temp_line, s_temp_line_points,
+                               fc->point_count > 1 ? (uint32_t)fc->point_count : 0);
     lv_obj_invalidate(s_temp_line);
 
     place_temp_markers(fc, temp_min_idx, temp_max_idx);
     place_precip_markers(fc, precip_max_idx, precip_range_max);
 
+    char last_label[6] = "";
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
         int idx = (fc->point_count - 1) * i / (NUM_HOUR_LABELS - 1);
-        lv_label_set_text(s_hour_labels[i], fc->points[idx].hour_minute);
+
+        char hour[6];
+        format_hour_label(fc->points[idx].epoch_utc, hour, sizeof(hour));
+        /* Adjacent slots can round to the same hour where the near term is
+         * compressed - blank the duplicate rather than print it twice. */
+        lv_label_set_text(s_hour_labels[i], strcmp(hour, last_label) == 0 ? "" : hour);
+        if (strcmp(hour, last_label) != 0) {
+            snprintf(last_label, sizeof(last_label), "%s", hour);
+        }
+
         set_weather_icon(s_icon_slots[i], fc->points[idx].symbol_code);
+    }
+}
+
+/* Linear-interpolate the hourly forecast temperature at an arbitrary epoch
+ * (used to give the finer Nowcast points a temperature - the Nowcast itself
+ * only carries one for its first step). */
+static float interp_base_temp(const yr_forecast_t *base, int64_t epoch)
+{
+    if (base->point_count == 0) {
+        return 0.0f;
+    }
+    if (epoch <= base->points[0].epoch_utc) {
+        return base->points[0].air_temperature_c;
+    }
+    for (int i = 1; i < base->point_count; i++) {
+        int64_t e1 = base->points[i].epoch_utc;
+        if (epoch <= e1) {
+            int64_t e0 = base->points[i - 1].epoch_utc;
+            float t0 = base->points[i - 1].air_temperature_c;
+            float t1 = base->points[i].air_temperature_c;
+            if (e1 == e0) {
+                return t1;
+            }
+            return t0 + (float)(epoch - e0) / (float)(e1 - e0) * (t1 - t0);
+        }
+    }
+    return base->points[base->point_count - 1].air_temperature_c;
+}
+
+/* Nearest hourly-forecast symbol_code to an epoch, for Nowcast steps that
+ * don't carry their own (all but the first usually don't). */
+static const char *nearest_base_symbol(const yr_forecast_t *base, int64_t epoch)
+{
+    const char *best = "";
+    int64_t best_dist = INT64_MAX;
+    for (int i = 0; i < base->point_count; i++) {
+        if (base->points[i].symbol_code[0] == '\0') {
+            continue;
+        }
+        int64_t d = base->points[i].epoch_utc - epoch;
+        if (d < 0) {
+            d = -d;
+        }
+        if (d < best_dist) {
+            best_dist = d;
+            best = base->points[i].symbol_code;
+        }
+    }
+    return best;
+}
+
+/* Build the rendered series: the Nowcast's near-term steps (10-min spacing,
+ * radar precipitation as mm/h - directly comparable to the hourly amounts),
+ * followed by the hourly forecast points that start after the Nowcast window.
+ * `dst` and `base` must be different buffers; `nc` is assumed valid with
+ * radar coverage. */
+static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const yr_nowcast_t *nc)
+{
+    *dst = *base;
+
+    int64_t last_nc_epoch = base->points[0].epoch_utc;
+    int m = 0;
+
+    for (int i = 0; i < nc->point_count && m < YR_FORECAST_MAX_POINTS; i += NOWCAST_MERGE_STRIDE) {
+        const yr_nowcast_point_t *s = &nc->points[i];
+        yr_forecast_point_t p = { 0 };
+
+        snprintf(p.hour_minute, sizeof(p.hour_minute), "%s", s->hour_minute);
+        p.is_first_of_day = s->is_first_of_day;
+        p.epoch_utc = s->epoch_utc;
+        p.precipitation_mm = s->precipitation_rate;
+        p.air_temperature_c = s->has_air_temperature ? s->air_temperature_c
+                                                     : interp_base_temp(base, s->epoch_utc);
+        const char *sym = s->symbol_code[0] ? s->symbol_code
+                                            : nearest_base_symbol(base, s->epoch_utc);
+        snprintf(p.symbol_code, sizeof(p.symbol_code), "%s", sym);
+
+        dst->points[m++] = p;
+        last_nc_epoch = s->epoch_utc;
+    }
+
+    for (int i = 0; i < base->point_count && m < YR_FORECAST_MAX_POINTS; i++) {
+        if (base->points[i].epoch_utc <= last_nc_epoch) {
+            continue; /* this hour is inside the nowcast window */
+        }
+        dst->points[m++] = base->points[i];
+    }
+
+    dst->point_count = m;
+
+    /* The nowcast is the fresher data - show its issue time. */
+    if (nc->updated_hour_minute[0]) {
+        snprintf(dst->updated_hour_minute, sizeof(dst->updated_hour_minute), "%s",
+                 nc->updated_hour_minute);
     }
 }
 
@@ -479,42 +619,70 @@ static void yr_weather_task(void *arg)
     const double lat = atof(CONFIG_EXAMPLE_YR_LATITUDE);
     const double lon = atof(CONFIG_EXAMPLE_YR_LONGITUDE);
 
+    /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
+     * scarce internal DRAM. `base` holds the last good hourly forecast
+     * across iterations; `merged` is what actually gets rendered. */
+    yr_forecast_t *base = heap_caps_malloc(sizeof(*base), MALLOC_CAP_SPIRAM);
+    yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
+    yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
+    if (base == NULL || merged == NULL || nowcast == NULL) {
+        ESP_LOGE(TAG, "Out of memory allocating forecast buffers");
+        free(base);
+        free(merged);
+        free(nowcast);
+        vTaskDelete(NULL);
+        return;
+    }
+    base->point_count = 0;
+
+    bool have_forecast = false;
+    TickType_t last_forecast_tk = 0;
+
     while (1) {
-        /* Forecast buffer is small but there's no need for it to compete
-         * with mbedtls/TLS for scarce internal DRAM - keep it in PSRAM. */
-        yr_forecast_t *forecast = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
-        if (forecast == NULL) {
-            ESP_LOGE(TAG, "Out of memory allocating forecast buffer");
-            vTaskDelay(pdMS_TO_TICKS(WEATHER_RETRY_INTERVAL_MS));
-            continue;
-        }
+        TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
 
-        esp_err_t err = yr_client_fetch_forecast(lat, lon, forecast);
-        bool ok = (err == ESP_OK && forecast->valid && forecast->point_count > 0);
-
-        if (ok) {
-            ESP_LOGI(TAG, "Forecast updated: %d points, kl. %s (%s UTC) (free heap: %u int / %u total)",
-                     forecast->point_count, forecast->updated_hour_minute, forecast->updated_time,
-                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                     (unsigned)esp_get_free_heap_size());
-        }
-
-        if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            if (ok) {
-                lv_label_set_text(s_status_label, "");
-                update_ui_with_forecast(forecast);
-            } else {
-                lv_label_set_text(s_status_label, "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
+        /* Refetch the slow-moving hourly forecast on its own long cadence
+         * (or if we've never managed to get one). A failure keeps the last
+         * good copy. */
+        if (!have_forecast ||
+            (now_tk - last_forecast_tk) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS)) {
+            if (yr_client_fetch_forecast(lat, lon, base) == ESP_OK &&
+                base->valid && base->point_count > 0) {
+                have_forecast = true;
+                last_forecast_tk = now_tk;
+                ESP_LOGI(TAG, "Forecast updated: %d points, kl. %s (free heap: %u int / %u total)",
+                         base->point_count, base->updated_hour_minute,
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                         (unsigned)esp_get_free_heap_size());
             }
+        }
+
+        /* The nowcast refreshes every 5 min upstream - fetch it every cycle. */
+        bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
+                      nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
+
+        if (have_forecast) {
+            const yr_forecast_t *to_render = base;
+            if (nc_ok) {
+                merge_nowcast(merged, base, nowcast);
+                to_render = merged;
+                ESP_LOGI(TAG, "Nowcast merged: %d steps @ kl. %s -> %d points",
+                         nowcast->point_count, nowcast->updated_hour_minute, merged->point_count);
+            }
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                lv_label_set_text(s_status_label, "");
+                update_ui_with_forecast(to_render);
+                esp_lv_adapter_unlock();
+            }
+        } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            lv_label_set_text(s_status_label, "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
             esp_lv_adapter_unlock();
         }
 
-        free(forecast);
-
-        /* A failure right after boot is often transient (WiFi connection
-         * setup and TLS both compete hard for scarce internal DRAM at that
-         * moment) - retry soon rather than waiting a full refresh cycle. */
-        vTaskDelay(pdMS_TO_TICKS(ok ? WEATHER_REFRESH_INTERVAL_MS : WEATHER_RETRY_INTERVAL_MS));
+        /* Poll on the nowcast cadence once we have something to show;
+         * retry fast while still waiting for the first forecast. */
+        vTaskDelay(pdMS_TO_TICKS(have_forecast ? NOWCAST_REFRESH_INTERVAL_MS
+                                               : WEATHER_RETRY_INTERVAL_MS));
     }
 }
 

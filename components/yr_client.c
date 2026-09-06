@@ -178,7 +178,7 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
     cJSON *entry = NULL;
     cJSON_ArrayForEach(entry, timeseries)
     {
-        if (n >= YR_FORECAST_MAX_POINTS) {
+        if (n >= YR_FORECAST_BASE_POINTS) {
             break;
         }
 
@@ -226,24 +226,20 @@ done:
     return ok;
 }
 
-esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
+/* GET url into a freshly heap_caps_malloc'd (PSRAM) NUL-terminated buffer;
+ * caller frees *body on success. Returns ESP_OK only on HTTP 200 with a body.
+ *
+ * No crt_bundle_attach/cacert: esp-tls then configures MBEDTLS_SSL_VERIFY_NONE
+ * (its documented behavior with no CA configured), skipping certificate
+ * verification. Chosen deliberately - the HARICA/GEANT chain behind
+ * api.met.no needs a 4096-bit RSA verify that doesn't reliably fit in this
+ * board's internal RAM once LVGL+FreeType+WiFi have their share, and this is
+ * a read-only fetch of public weather data, not a channel carrying secrets. */
+static esp_err_t yr_http_get(const char *url, char **body)
 {
-    memset(out, 0, sizeof(*out));
-
-    char url[192];
-    snprintf(url, sizeof(url),
-             "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f",
-             lat, lon);
+    *body = NULL;
 
     yr_response_buf_t resp = { .buf = NULL, .len = 0 };
-
-    /* No crt_bundle_attach/cacert: esp-tls then configures
-     * MBEDTLS_SSL_VERIFY_NONE (its documented behavior with no CA
-     * configured), skipping certificate verification. Chosen deliberately -
-     * the HARICA/GEANT chain behind this host needs a 4096-bit RSA verify
-     * that doesn't reliably fit in this board's internal RAM once
-     * LVGL+FreeType+WiFi have their share, and this is a read-only fetch of
-     * public weather data, not a channel carrying secrets. */
     esp_http_client_config_t config = {
         .url = url,
         .event_handler = http_event_handler,
@@ -267,18 +263,143 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
         free(resp.buf);
         return err;
     }
-
     if (status != 200) {
         ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
         free(resp.buf);
         return ESP_FAIL;
     }
-
-    if (resp.buf == NULL || !parse_forecast(resp.buf, out)) {
-        free(resp.buf);
+    if (resp.buf == NULL) {
         return ESP_FAIL;
     }
 
-    free(resp.buf);
+    *body = resp.buf;
     return ESP_OK;
+}
+
+esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    char url[192];
+    snprintf(url, sizeof(url),
+             "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f",
+             lat, lon);
+
+    char *body = NULL;
+    esp_err_t err = yr_http_get(url, &body);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    bool ok = parse_forecast(body, out);
+    free(body);
+    return ok ? ESP_OK : ESP_FAIL;
+}
+
+static bool parse_nowcast(const char *json, yr_nowcast_t *out)
+{
+    cJSON *root = cJSON_Parse(json);
+    if (root == NULL) {
+        ESP_LOGE(TAG, "Failed to parse nowcast JSON");
+        return false;
+    }
+
+    bool ok = false;
+    cJSON *properties = cJSON_GetObjectItemCaseSensitive(root, "properties");
+    cJSON *meta = cJSON_GetObjectItemCaseSensitive(properties, "meta");
+
+    cJSON *radar = cJSON_GetObjectItemCaseSensitive(meta, "radar_coverage");
+    out->radar_ok = (cJSON_IsString(radar) && strcmp(radar->valuestring, "ok") == 0);
+
+    cJSON *updated_at = cJSON_GetObjectItemCaseSensitive(meta, "updated_at");
+    if (cJSON_IsString(updated_at)) {
+        format_local_hm(updated_at->valuestring, out->updated_hour_minute,
+                        sizeof(out->updated_hour_minute));
+    }
+
+    cJSON *timeseries = cJSON_GetObjectItemCaseSensitive(properties, "timeseries");
+    if (!cJSON_IsArray(timeseries) || cJSON_GetArraySize(timeseries) == 0) {
+        ESP_LOGE(TAG, "No nowcast timeseries entries");
+        goto done;
+    }
+
+    int n = 0;
+    cJSON *entry = NULL;
+    cJSON_ArrayForEach(entry, timeseries)
+    {
+        if (n >= YR_NOWCAST_MAX_POINTS) {
+            break;
+        }
+
+        yr_nowcast_point_t *point = &out->points[n];
+        memset(point, 0, sizeof(*point));
+
+        cJSON *time = cJSON_GetObjectItemCaseSensitive(entry, "time");
+        const char *time_str = cJSON_IsString(time) ? time->valuestring : NULL;
+        extract_hour_minute(time_str, point->hour_minute, sizeof(point->hour_minute),
+                             &point->is_first_of_day);
+        point->epoch_utc = iso_utc_to_epoch(time_str);
+        if (point->epoch_utc < 0) {
+            continue;
+        }
+
+        cJSON *data = cJSON_GetObjectItemCaseSensitive(entry, "data");
+        cJSON *instant = cJSON_GetObjectItemCaseSensitive(data, "instant");
+        cJSON *idetails = cJSON_GetObjectItemCaseSensitive(instant, "details");
+
+        cJSON *rate = cJSON_GetObjectItemCaseSensitive(idetails, "precipitation_rate");
+        if (!cJSON_IsNumber(rate)) {
+            /* Every real step carries at least this; skip anything that doesn't. */
+            continue;
+        }
+        point->precipitation_rate = (float)rate->valuedouble;
+
+        cJSON *temp = cJSON_GetObjectItemCaseSensitive(idetails, "air_temperature");
+        if (cJSON_IsNumber(temp)) {
+            point->air_temperature_c = (float)temp->valuedouble;
+            point->has_air_temperature = true;
+        }
+
+        cJSON *n1h = cJSON_GetObjectItemCaseSensitive(data, "next_1_hours");
+        cJSON *summary = cJSON_GetObjectItemCaseSensitive(n1h, "summary");
+        cJSON *symbol = cJSON_GetObjectItemCaseSensitive(summary, "symbol_code");
+        if (cJSON_IsString(symbol)) {
+            snprintf(point->symbol_code, sizeof(point->symbol_code), "%s", symbol->valuestring);
+        }
+
+        n++;
+    }
+
+    if (n == 0) {
+        ESP_LOGE(TAG, "No usable nowcast steps");
+        goto done;
+    }
+
+    out->point_count = n;
+    out->valid = true;
+    ok = true;
+
+done:
+    cJSON_Delete(root);
+    return ok;
+}
+
+esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out)
+{
+    memset(out, 0, sizeof(*out));
+
+    char url[192];
+    snprintf(url, sizeof(url),
+             "https://api.met.no/weatherapi/nowcast/2.0/complete?lat=%.4f&lon=%.4f",
+             lat, lon);
+
+    char *body = NULL;
+    esp_err_t err = yr_http_get(url, &body);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    bool ok = parse_nowcast(body, out);
+    free(body);
+    return ok ? ESP_OK : ESP_FAIL;
 }
