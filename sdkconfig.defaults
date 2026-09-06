@@ -1,0 +1,121 @@
+CONFIG_IDF_TARGET="esp32s3"
+
+# This board's flash chip is actually 16MB (the boot log reports
+# "Detected size(16384k)"), not the 2MB the default partition tables
+# assume. Use a custom table sized for the real chip so there's room for
+# the embedded FreeType font without fighting for flash space.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# FreeType (via esp_lvgl_adapter) is used to render Norwegian text (ae/oe/aa)
+# correctly - the bundled bitmap Montserrat fonts only cover ASCII plus a
+# small icon-symbol set. LVGL v9's FreeType binding only loads fonts from a
+# file path (not memory), so the .ttf is packaged into the "fonts" SPIFFS
+# partition (see main/CMakeLists.txt) and mounted at runtime via esp_lv_fs.
+CONFIG_LV_USE_FREETYPE=y
+CONFIG_LV_FREETYPE_USE_LVGL_PORT=y
+# Our on-screen text uses a small character set (digits, a handful of
+# Latin/Norwegian letters) across 2 font sizes; the 256-entry default glyph
+# cache was a large, otherwise-unaccounted-for internal DRAM consumer.
+CONFIG_LV_FREETYPE_CACHE_FT_GLYPH_CNT=96
+CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS=y
+CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE=y
+CONFIG_ESP_LVGL_ADAPTER_FREETYPE_MINIMAL_BUILD=y
+# FREETYPE_SMALL_RENDER_POOL (16KB -> 4KB) was tried to save RAM, but it also
+# strips LVGL's build-time check that the draw-thread stack is >=32KB when
+# FreeType is enabled. Without that check, the (default 8KB) draw-thread
+# stack overflowed during glyph rasterization, corrupting memory and
+# crashing with a different fault each run. Fix is to size the stack
+# properly instead of disabling the check.
+CONFIG_LV_DRAW_THREAD_STACK_SIZE=32768
+
+# That 32KB stack (up from 8KB) left too little internal DRAM for WiFi's
+# own static RX buffers ("esf_buf_setup_static: alloc eb fail") and later
+# for DNS/TLS during the weather fetch (getaddrinfo failures, largest free
+# block down to ~7KB). Trim WiFi's buffer counts to claw back headroom;
+# this is a small display fetching a REST API every 10 minutes, not a
+# high-throughput link, so reduced buffering doesn't cost anything real.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+
+# Deliberately skip TLS server certificate verification for the yr_client
+# fetch (see components/yr_client.c) - verifying api.met.no's 4096-bit RSA
+# chain doesn't reliably fit in this board's internal RAM once
+# LVGL+FreeType+WiFi have their share. This is a read-only fetch of public
+# weather data, confirmed acceptable with the user for this project.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
+# The HARICA/GEANT chain behind api.met.no uses 3072/4096-bit RSA certs.
+# "PK verify failed" == MBEDTLS_ERR_MPI_ALLOC_FAILED here is a heap
+# allocation failure, not an actual crypto/signature bug - internal DRAM is
+# scarce on this board (LVGL + WiFi + FreeType all compete for it).
+# LARGE_KEY_SOFTWARE_MPI (route big-key math through software instead of the
+# HW accelerator) was tried on the assumption the HW path was broken for
+# these key sizes, but that was never actually confirmed - and software MPI
+# needs several KB of heap-allocated scratch per big-number operation, which
+# made the heap pressure worse, not better. The HW accelerator uses its own
+# fixed-size peripheral memory instead of general heap, so leave it enabled
+# for all key sizes.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+# Free the CA certificate (and any client key/DHM data) right after the
+# handshake instead of holding it for the connection's lifetime - reclaims
+# memory exactly before the response-read phase, which is where fetches
+# were failing before this was added.
+CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
+CONFIG_MBEDTLS_DYNAMIC_FREE_CA_CERT=y
+# A smaller (8KB) RX buffer was tried first, but the HARICA/GEANT chain's
+# certificate message during the TLS handshake didn't fit in it (handshake
+# failed with MBEDTLS_ERR_SSL_BAD_INPUT_DATA before ever reaching the
+# read-response phase). 16KB is the size that actually works end-to-end;
+# free up internal DRAM elsewhere instead of shrinking this further.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_FREERTOS_HZ=1000
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+CONFIG_SPIRAM_MEMTEST=n
+# mbedtls's TLS scratch buffers (4-5KB each) were being forced into scarce
+# internal DRAM by the default 16KB threshold, even though they're pure
+# CPU-accessed buffers with no DMA/internal-RAM requirement and PSRAM had
+# plenty of room. Letting anything >=1KB spill to PSRAM fixed allocation
+# failures during the TLS handshake without touching any buffer's actual
+# size. Small/frequent allocations (<1KB, e.g. LVGL style internals) still
+# default to internal RAM for speed.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+CONFIG_LV_OS_FREERTOS=y
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_USE_CLIB_SPRINTF=y
+CONFIG_LV_DEF_REFR_PERIOD=15
+CONFIG_LV_OBJ_STYLE_CACHE=y
+# One draw thread instead of two: each needs a 32KB stack once FreeType is
+# enabled, and WiFi's static RX buffers were failing to allocate (ESP_ERR_NO_MEM)
+# with two. Not performance-critical for a mostly-static weather display.
+CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=1
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_USE_DEMO_WIDGETS=y
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_24=y
+# CONFIG_LV_MEM_CUSTOM is not set
+# CONFIG_LV_USE_FONT_COMPRESSED is not set
+# CONFIG_LV_USE_IMGFONT is not set
+# CONFIG_LV_COLOR_SCREEN_TRANSP is not set
+# CONFIG_LV_USE_LOG is not set
+# CONFIG_LV_LOG_PRINTF is not set
+# CONFIG_LV_USE_PERF_MONITOR is not set
+# CONFIG_LV_USE_DEMO_BENCHMARK is not set
+# CONFIG_LV_USE_DEMO_STRESS is not set
+# CONFIG_LV_USE_DEMO_MUSIC is not set
+# CONFIG_LV_DEMO_MUSIC_AUTO_PLAY is not set

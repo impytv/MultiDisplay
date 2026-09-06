@@ -1,0 +1,40 @@
+menu "HelloESPLVGLClaude Configuration"
+
+    config EXAMPLE_WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) to connect to.
+
+    config EXAMPLE_WIFI_PASSWORD
+        string "WiFi password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) to use.
+
+    config EXAMPLE_YR_LATITUDE
+        string "YR forecast latitude"
+        default "59.91"
+        help
+            Latitude passed to the MET Norway (yr.no) locationforecast API.
+            Use at most 4 decimals.
+
+    config EXAMPLE_YR_LONGITUDE
+        string "YR forecast longitude"
+        default "10.75"
+        help
+            Longitude passed to the MET Norway (yr.no) locationforecast API.
+            Use at most 4 decimals.
+
+    config EXAMPLE_YR_USER_AGENT
+        string "YR API User-Agent"
+        default "HelloESPLVGLClaude/1.0 (set-your-contact-here)"
+        help
+            api.met.no requires every client to identify itself with a
+            descriptive User-Agent containing app name and contact info
+            (e.g. a website or email). Requests with a missing or generic
+            User-Agent are rejected with 403 Forbidden. Update this to
+            identify yourself before using this outside of testing.
+            See https://developer.yr.no/doc/TermsOfService/
+
+endmenu
