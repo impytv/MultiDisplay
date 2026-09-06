@@ -2,13 +2,15 @@
 #define _YR_CLIENT_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 
 #define YR_FORECAST_MAX_POINTS 48
 
 typedef struct {
-    char hour_minute[6];        /* "HH:MM", local API time (UTC), for axis labels */
-    bool is_first_of_day;       /* true if this point is the first hour (00:xx) of a new day */
+    char hour_minute[6];        /* "HH:MM", Europe/Oslo local time, for axis labels */
+    bool is_first_of_day;       /* true if this point is the first hour (00:xx) of a new local day */
+    int64_t epoch_utc;          /* seconds since the Unix epoch, for time-delta arithmetic */
     float air_temperature_c;
     float wind_speed_ms;
     float precipitation_mm;     /* best-effort 1h precipitation (see yr_client.c) */
@@ -17,8 +19,9 @@ typedef struct {
 
 typedef struct {
     bool valid;
-    char updated_time[32];      /* ISO8601 timestamp of forecast issue time */
-    int point_count;            /* number of valid entries in points[] (<= YR_FORECAST_MAX_POINTS) */
+    char updated_time[32];         /* ISO8601 UTC timestamp of forecast issue time */
+    char updated_hour_minute[6];   /* "HH:MM", Europe/Oslo local time, of the issue time */
+    int point_count;               /* number of valid entries in points[] (<= YR_FORECAST_MAX_POINTS) */
     yr_forecast_point_t points[YR_FORECAST_MAX_POINTS];
 } yr_forecast_t;
 

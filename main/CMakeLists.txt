@@ -28,13 +28,15 @@ if(lvgl_lib)
     target_compile_options(${lvgl_lib} PRIVATE -Wno-format)
 endif()
 
-# Package the FreeType font (see fonts/OFL.txt for its license) into the
-# "fonts" SPIFFS partition. LVGL v9's FreeType binding (via esp_lvgl_adapter)
-# only accepts a file path, not an in-memory buffer, so it's mounted at
-# runtime as an esp_lv_fs drive instead of being linked into the app image.
+# Package the FreeType font (see fonts/OFL.txt for its license) and the
+# MET Norway weather icons (fonts/*.png, from github.com/metno/weathericons,
+# resized to 64x64) into the "fonts" SPIFFS partition. Mounted at runtime as
+# an esp_lv_fs drive ("F:") rather than linked into the app image: LVGL v9's
+# FreeType binding only accepts a file path, and the icons are then loaded
+# the same way (F:<symbol_code>.png) via esp_lv_decoder.
 spiffs_create_partition_assets(fonts "${CMAKE_CURRENT_SOURCE_DIR}/fonts"
     FLASH_IN_PROJECT
-    MMAP_FILE_SUPPORT_FORMAT ".ttf"
+    MMAP_FILE_SUPPORT_FORMAT ".ttf,.png"
     IMPORT_INC_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 add_dependencies(${COMPONENT_LIB} assets_fonts_bin)
 # add_dependencies() alone only orders the library's link step; main.c

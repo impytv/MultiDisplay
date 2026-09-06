@@ -1,4 +1,4 @@
-menu "HelloESPLVGLClaude Configuration"
+menu "MultiDisplay Configuration"
 
     config EXAMPLE_WIFI_SSID
         string "WiFi SSID"
@@ -11,6 +11,14 @@ menu "HelloESPLVGLClaude Configuration"
         default "mypassword"
         help
             WiFi password (WPA or WPA2) to use.
+
+    config EXAMPLE_YR_LOCATION_NAME
+        string "Forecast location name"
+        default "Oslo"
+        help
+            Human-readable name of the forecast location, shown on screen.
+            The MET Norway locationforecast API returns only coordinates, so
+            this label is configured here rather than derived from the data.
 
     config EXAMPLE_YR_LATITUDE
         string "YR forecast latitude"
@@ -28,7 +36,7 @@ menu "HelloESPLVGLClaude Configuration"
 
     config EXAMPLE_YR_USER_AGENT
         string "YR API User-Agent"
-        default "HelloESPLVGLClaude/1.0 (set-your-contact-here)"
+        default "MultiDisplay/1.0 (set-your-contact-here)"
         help
             api.met.no requires every client to identify itself with a
             descriptive User-Agent containing app name and contact info

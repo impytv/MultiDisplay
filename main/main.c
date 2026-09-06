@@ -1,7 +1,8 @@
 #include <assert.h>
-#include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -21,28 +22,44 @@ static const char *TAG = "lvgl9_demo";
 #define NUM_HOUR_LABELS 8
 #define YR_TASK_STACK_SIZE 8192
 
+#define ICON_ROW_Y 44
+#define ICON_SIZE 64
+
 #define CHART_X 20
-#define CHART_Y 150
+#define CHART_Y 116
 #define CHART_W 760
-#define CHART_H 250
+#define CHART_H 316
 /* Precipitation bars are drawn on a taller-than-needed axis so they only
  * occupy the bottom fraction of the shared chart, leaving the rest of the
  * height for the temperature line to read clearly. */
 #define PRECIP_AXIS_COMPRESSION 3
 
+/* Chart value markers. Temperature: the global high and low are always
+ * labelled; precipitation: the global wettest hour is always labelled.
+ * Further local extrema get a label only once at least MARKER_MIN_GAP_H
+ * hours have passed since the previously shown marker of the same kind, so a
+ * long forecast gets intermediate labels without them crowding. Pools are
+ * sized for the worst case (48 h / 6 h, plus the globals). */
+#define MARKER_MIN_GAP_H 6
+/* When a marker is about to be placed, if a more extreme local extremum of
+ * the same kind sits within this many hours, the label moves there instead -
+ * even if that breaks the MARKER_MIN_GAP_H spacing. */
+#define MARKER_SNAP_H 3
+#define TEMP_MARKER_POOL 10
+#define PRECIP_MARKER_POOL 9
+
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
 
 static lv_obj_t *s_status_label;
-static lv_obj_t *s_current_label;
+static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
 
 static lv_obj_t *s_precip_chart;
 static lv_chart_series_t *s_precip_series;
 static lv_obj_t *s_temp_line;
-static lv_obj_t *s_temp_max_label;
-static lv_obj_t *s_temp_min_label;
-static lv_obj_t *s_precip_max_label;
+static lv_obj_t *s_temp_markers[TEMP_MARKER_POOL];
+static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
 
 static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
 static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
@@ -50,235 +67,34 @@ static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
 
-typedef enum {
-    WICON_CLEAR,
-    WICON_FAIR,
-    WICON_CLOUDY,
-    WICON_FOG,
-    WICON_RAIN,
-    WICON_SLEET,
-    WICON_SNOW,
-    WICON_THUNDER,
-} weather_icon_t;
-
-typedef struct {
-    weather_icon_t icon;
-    char text_no[64];
-} symbol_info_t;
-
 static int32_t round_to_int(float v)
 {
     return (int32_t)(v + (v >= 0.0f ? 0.5f : -0.5f));
 }
 
-static bool strip_suffix(char *word, const char *suffix)
+/* Point the icon widget at the MET Norway PNG for this symbol_code (packed
+ * into the asset drive as "F:<symbol_code>.png"). An empty code just hides
+ * the widget. The file set is the full github.com/metno/weathericons list,
+ * so every code the API returns resolves directly. */
+static void set_weather_icon(lv_obj_t *img, const char *symbol_code)
 {
-    size_t wlen = strlen(word);
-    size_t slen = strlen(suffix);
-    if (wlen > slen && strcmp(word + wlen - slen, suffix) == 0) {
-        word[wlen - slen] = '\0';
-        return true;
-    }
-    return false;
-}
-
-static bool strip_prefix(char *word, const char *prefix)
-{
-    size_t plen = strlen(prefix);
-    size_t wlen = strlen(word);
-    if (wlen > plen && strncmp(word, prefix, plen) == 0) {
-        memmove(word, word + plen, wlen - plen + 1);
-        return true;
-    }
-    return false;
-}
-
-/* MET Norway symbol codes are built from a small, fixed vocabulary:
- * [heavy|light]<phenomenon>[showers][andthunder][_day|_night|_polartwilight].
- * Decomposing them (rather than a lookup table per combination) covers the
- * full real vocabulary with a Norwegian description and an icon category. */
-static void parse_symbol(const char *symbol_code, symbol_info_t *out)
-{
-    out->icon = WICON_CLEAR;
-    out->text_no[0] = '\0';
-
-    if (symbol_code[0] == '\0') {
+    if (symbol_code == NULL || symbol_code[0] == '\0') {
+        lv_obj_add_flag(img, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
-    char word[48];
-    snprintf(word, sizeof(word), "%s", symbol_code);
-
-    static const char *day_suffixes[] = { "_day", "_night", "_polartwilight" };
-    for (size_t i = 0; i < sizeof(day_suffixes) / sizeof(day_suffixes[0]); i++) {
-        if (strip_suffix(word, day_suffixes[i])) {
-            break;
-        }
-    }
-
-    if (strcmp(word, "clearsky") == 0) {
-        out->icon = WICON_CLEAR;
-        snprintf(out->text_no, sizeof(out->text_no), "Klarv\xC3\xA6r");
-        return;
-    }
-    if (strcmp(word, "fair") == 0) {
-        out->icon = WICON_FAIR;
-        snprintf(out->text_no, sizeof(out->text_no), "Lettskyet");
-        return;
-    }
-    if (strcmp(word, "partlycloudy") == 0) {
-        out->icon = WICON_FAIR;
-        snprintf(out->text_no, sizeof(out->text_no), "Delvis skyet");
-        return;
-    }
-    if (strcmp(word, "cloudy") == 0) {
-        out->icon = WICON_CLOUDY;
-        snprintf(out->text_no, sizeof(out->text_no), "Skyet");
-        return;
-    }
-    if (strcmp(word, "fog") == 0) {
-        out->icon = WICON_FOG;
-        snprintf(out->text_no, sizeof(out->text_no), "T\xC3\xA5ke");
-        return;
-    }
-
-    bool thunder = strip_suffix(word, "andthunder");
-    bool heavy = strip_prefix(word, "heavy");
-    bool light = !heavy && strip_prefix(word, "light");
-    bool showers = strip_suffix(word, "showers");
-
-    const char *noun;
-    weather_icon_t icon;
-    if (strcmp(word, "rain") == 0) {
-        noun = "regn";
-        icon = WICON_RAIN;
-    } else if (strcmp(word, "sleet") == 0) {
-        noun = "sludd";
-        icon = WICON_SLEET;
-    } else if (strcmp(word, "snow") == 0) {
-        noun = "sn\xC3\xB8";
-        icon = WICON_SNOW;
-    } else {
-        /* Unrecognized code: fall back to the raw (suffix-stripped) name
-         * rather than guessing further. */
-        snprintf(out->text_no, sizeof(out->text_no), "%s", word);
-        if (out->text_no[0]) {
-            out->text_no[0] = (char)toupper((unsigned char)out->text_no[0]);
-        }
-        return;
-    }
-    if (thunder) {
-        icon = WICON_THUNDER;
-    }
-    out->icon = icon;
-
-    char body[40];
-    snprintf(body, sizeof(body), "%s%s", noun, showers ? "byger" : "");
-
-    if (heavy) {
-        snprintf(out->text_no, sizeof(out->text_no), "Kraftig %s%s", body, thunder ? " med torden" : "");
-    } else if (light) {
-        snprintf(out->text_no, sizeof(out->text_no), "Lett %s%s", body, thunder ? " med torden" : "");
-    } else {
-        body[0] = (char)toupper((unsigned char)body[0]);
-        snprintf(out->text_no, sizeof(out->text_no), "%s%s", body, thunder ? " med torden" : "");
-    }
-}
-
-static lv_obj_t *add_shape_circle(lv_obj_t *parent, int32_t d, lv_color_t color)
-{
-    lv_obj_t *o = lv_obj_create(parent);
-    lv_obj_remove_style_all(o);
-    lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(o, color, 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_set_size(o, d, d);
-    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-    return o;
-}
-
-static lv_obj_t *add_shape_rect(lv_obj_t *parent, int32_t w, int32_t h, int32_t radius, lv_color_t color)
-{
-    lv_obj_t *o = lv_obj_create(parent);
-    lv_obj_remove_style_all(o);
-    lv_obj_set_style_radius(o, radius, 0);
-    lv_obj_set_style_bg_color(o, color, 0);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-    lv_obj_set_size(o, w, h);
-    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-    return o;
-}
-
-static void draw_weather_icon(lv_obj_t *slot, weather_icon_t icon)
-{
-    lv_obj_clean(slot);
-
-    lv_color_t cloud_color = lv_palette_main(LV_PALETTE_GREY);
-    lv_color_t sun_color = lv_palette_main(LV_PALETTE_ORANGE);
-    lv_color_t rain_color = lv_palette_main(LV_PALETTE_BLUE);
-    lv_color_t snow_color = lv_color_white();
-    lv_color_t thunder_color = lv_palette_main(LV_PALETTE_YELLOW);
-
-    switch (icon) {
-    case WICON_CLEAR: {
-        lv_obj_t *sun = add_shape_circle(slot, 20, sun_color);
-        lv_obj_center(sun);
-        break;
-    }
-    case WICON_FAIR: {
-        lv_obj_t *sun = add_shape_circle(slot, 14, sun_color);
-        lv_obj_align(sun, LV_ALIGN_TOP_LEFT, 1, 1);
-        lv_obj_t *cloud = add_shape_rect(slot, 22, 12, 6, cloud_color);
-        lv_obj_align(cloud, LV_ALIGN_BOTTOM_RIGHT, 0, -2);
-        break;
-    }
-    case WICON_CLOUDY: {
-        lv_obj_t *cloud = add_shape_rect(slot, 24, 14, 7, cloud_color);
-        lv_obj_center(cloud);
-        break;
-    }
-    case WICON_FOG: {
-        for (int i = 0; i < 3; i++) {
-            lv_obj_t *bar = add_shape_rect(slot, 20, 2, 1, cloud_color);
-            lv_obj_align(bar, LV_ALIGN_CENTER, 0, (i - 1) * 6);
-        }
-        break;
-    }
-    case WICON_RAIN:
-    case WICON_SLEET: {
-        lv_obj_t *cloud = add_shape_rect(slot, 22, 12, 6, cloud_color);
-        lv_obj_align(cloud, LV_ALIGN_TOP_MID, 0, 1);
-        for (int i = 0; i < 3; i++) {
-            lv_color_t c = (icon == WICON_SLEET && (i % 2 == 0)) ? snow_color : rain_color;
-            lv_obj_t *drop = add_shape_rect(slot, 3, 7, 1, c);
-            lv_obj_align(drop, LV_ALIGN_BOTTOM_MID, (i - 1) * 7, 0);
-        }
-        break;
-    }
-    case WICON_SNOW: {
-        lv_obj_t *cloud = add_shape_rect(slot, 22, 12, 6, cloud_color);
-        lv_obj_align(cloud, LV_ALIGN_TOP_MID, 0, 1);
-        for (int i = 0; i < 3; i++) {
-            lv_obj_t *flake = add_shape_circle(slot, 4, snow_color);
-            lv_obj_align(flake, LV_ALIGN_BOTTOM_MID, (i - 1) * 7, 0);
-        }
-        break;
-    }
-    case WICON_THUNDER: {
-        lv_obj_t *cloud = add_shape_rect(slot, 22, 12, 6, lv_palette_darken(LV_PALETTE_GREY, 2));
-        lv_obj_align(cloud, LV_ALIGN_TOP_MID, 0, 1);
-        lv_obj_t *bolt = add_shape_rect(slot, 5, 10, 1, thunder_color);
-        lv_obj_align(bolt, LV_ALIGN_BOTTOM_MID, 0, 0);
-        break;
-    }
-    }
+    char path[80];
+    snprintf(path, sizeof(path), "F:%s.png", symbol_code);
+    lv_image_set_src(img, path);
+    lv_obj_clear_flag(img, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void init_fonts(void)
 {
     /* Mount the "fonts" SPIFFS partition (built by spiffs_create_partition_assets
-     * in main/CMakeLists.txt) as the "F:" drive so LVGL's FreeType binding can
-     * open the font by path. */
+     * in main/CMakeLists.txt) as the "F:" drive: LVGL's FreeType binding opens
+     * the .ttf by path, and the MET weather icons are loaded the same way
+     * (F:<symbol_code>.png, decoded by esp_lv_decoder). */
     const mmap_assets_config_t mmap_cfg = {
         .partition_label = "fonts",
         .max_files = MMAP_FONTS_FILES,
@@ -321,22 +137,18 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_set_style_text_font(screen, s_font_body, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
 
-    s_status_label = lv_label_create(screen);
-    lv_obj_set_pos(s_status_label, 12, 4);
-    lv_label_set_text(s_status_label, "Kobler til WiFi...");
-
-    s_current_label = lv_label_create(screen);
-    lv_obj_set_style_text_font(s_current_label, s_font_large, 0);
-    lv_obj_set_pos(s_current_label, 12, 24);
-    lv_label_set_text(s_current_label, "");
+    s_location_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
+    lv_obj_set_pos(s_location_label, 12, 4);
+    lv_label_set_text(s_location_label, CONFIG_EXAMPLE_YR_LOCATION_NAME);
 
     s_updated_label = lv_label_create(screen);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
     lv_label_set_text(s_updated_label, "");
 
     lv_obj_t *icon_row = lv_obj_create(screen);
-    lv_obj_set_pos(icon_row, CHART_X, 80);
-    lv_obj_set_size(icon_row, CHART_W, 32);
+    lv_obj_set_pos(icon_row, CHART_X, ICON_ROW_Y);
+    lv_obj_set_size(icon_row, CHART_W, ICON_SIZE);
     lv_obj_set_style_border_width(icon_row, 0, 0);
     lv_obj_set_style_pad_all(icon_row, 0, 0);
     lv_obj_set_style_bg_opa(icon_row, LV_OPA_TRANSP, 0);
@@ -345,10 +157,10 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_clear_flag(icon_row, LV_OBJ_FLAG_SCROLLABLE);
 
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
-        s_icon_slots[i] = lv_obj_create(icon_row);
-        lv_obj_remove_style_all(s_icon_slots[i]);
-        lv_obj_set_size(s_icon_slots[i], 28, 28);
-        lv_obj_clear_flag(s_icon_slots[i], LV_OBJ_FLAG_SCROLLABLE);
+        s_icon_slots[i] = lv_image_create(icon_row);
+        lv_obj_set_size(s_icon_slots[i], ICON_SIZE, ICON_SIZE);
+        lv_image_set_inner_align(s_icon_slots[i], LV_IMAGE_ALIGN_CENTER);
+        lv_obj_add_flag(s_icon_slots[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     /* Precipitation bar chart acts as the single visual chart frame
@@ -377,19 +189,23 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_CLICKABLE);
     lv_line_set_points_mutable(s_temp_line, s_temp_line_points, YR_FORECAST_MAX_POINTS);
 
-    /* Value markers for the highest/lowest temperature and highest
-     * precipitation point, positioned directly on the chart each refresh. */
-    s_temp_max_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(s_temp_max_label, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
-    lv_label_set_text(s_temp_max_label, "");
+    /* Value markers for temperature and precipitation extrema, positioned
+     * directly on the chart each refresh. Both are pools: how many are used
+     * depends on the forecast (see place_temp_markers / place_precip_markers).
+     * Any left over are kept hidden. */
+    for (int i = 0; i < TEMP_MARKER_POOL; i++) {
+        s_temp_markers[i] = lv_label_create(screen);
+        lv_obj_set_style_text_color(s_temp_markers[i], lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+        lv_label_set_text(s_temp_markers[i], "");
+        lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
 
-    s_temp_min_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(s_temp_min_label, lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
-    lv_label_set_text(s_temp_min_label, "");
-
-    s_precip_max_label = lv_label_create(screen);
-    lv_obj_set_style_text_color(s_precip_max_label, lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
-    lv_label_set_text(s_precip_max_label, "");
+    for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
+        s_precip_markers[i] = lv_label_create(screen);
+        lv_obj_set_style_text_color(s_precip_markers[i], lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
+        lv_label_set_text(s_precip_markers[i], "");
+        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
 
     lv_obj_t *hour_row = lv_obj_create(screen);
     lv_obj_set_pos(hour_row, CHART_X, CHART_Y + CHART_H + 8);
@@ -405,6 +221,12 @@ static void build_ui(lv_obj_t *screen)
         s_hour_labels[i] = lv_label_create(hour_row);
         lv_label_set_text(s_hour_labels[i], "");
     }
+
+    /* Created last so it sits on top of the chart: loading/error text, shown
+     * centered over the (empty) chart area until a forecast lands. */
+    s_status_label = lv_label_create(screen);
+    lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
+    lv_label_set_text(s_status_label, "Kobler til WiFi...");
 }
 
 /* Centers label horizontally on chart_x (absolute) and places it either
@@ -427,16 +249,158 @@ static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y
     lv_obj_set_pos(label, x, y);
 }
 
+static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
+static float pt_precip(const yr_forecast_point_t *p) { return p->precipitation_mm; }
+
+/* A label was about to be placed at points[idx]. If a strictly more extreme
+ * local extremum of the same kind (higher for a max, lower for a min) sits
+ * within MARKER_SNAP_H hours after it, return that index instead so the
+ * label lands on the real peak/trough. This deliberately overrides the
+ * MARKER_MIN_GAP_H spacing rule. */
+static int snap_to_better_extremum(const yr_forecast_t *fc, int idx, bool want_max,
+                                   float (*get)(const yr_forecast_point_t *))
+{
+    int best = idx;
+    float best_val = get(&fc->points[idx]);
+    int64_t limit = fc->points[idx].epoch_utc + (int64_t)MARKER_SNAP_H * 3600;
+
+    for (int j = idx + 1; j < fc->point_count && fc->points[j].epoch_utc <= limit; j++) {
+        float v = get(&fc->points[j]);
+        float prev = get(&fc->points[j - 1]);
+        float next = (j + 1 < fc->point_count) ? get(&fc->points[j + 1]) : v;
+        bool is_max = (v > prev && v >= next);
+        bool is_min = (v < prev && v <= next);
+        if (want_max ? (is_max && v > best_val) : (is_min && v < best_val)) {
+            best = j;
+            best_val = v;
+        }
+    }
+    return best;
+}
+
+/* Place the temperature value markers. Always labels the global high
+ * (temp_max_idx, above the line) and global low (temp_min_idx, below); then
+ * walks the series and adds a marker at each further local extremum whose
+ * time is >= MARKER_MIN_GAP_H hours after the last marker already placed, so
+ * intermediate peaks/dips get a value without crowding. Each marker snaps to
+ * a better nearby extremum (see snap_to_better_extremum). Unused pool labels
+ * are hidden. */
+static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int temp_max_idx)
+{
+    int used = 0;
+    int64_t last_shown_epoch = fc->points[0].epoch_utc;
+
+    for (int i = 0; i < fc->point_count && used < TEMP_MARKER_POOL; i++) {
+        const float t = fc->points[i].air_temperature_c;
+
+        bool local_max = false;
+        bool local_min = false;
+        if (i > 0 && i < fc->point_count - 1) {
+            float prev = fc->points[i - 1].air_temperature_c;
+            float next = fc->points[i + 1].air_temperature_c;
+            local_max = (t > prev && t >= next);
+            local_min = (t < prev && t <= next);
+        } else if (i == fc->point_count - 1 && i > 0) {
+            float prev = fc->points[i - 1].air_temperature_c;
+            local_max = (t > prev);
+            local_min = (t < prev);
+        }
+
+        bool is_global = (i == temp_min_idx || i == temp_max_idx);
+        if (!is_global && !local_max && !local_min) {
+            continue;
+        }
+
+        int64_t epoch = fc->points[i].epoch_utc;
+        bool far_enough = (epoch - last_shown_epoch) >= (int64_t)MARKER_MIN_GAP_H * 3600;
+        if (!is_global && !far_enough) {
+            continue;
+        }
+
+        bool above = (i == temp_max_idx) ? true
+                   : (i == temp_min_idx) ? false
+                   : local_max;
+
+        int m = snap_to_better_extremum(fc, i, above, pt_temp);
+
+        lv_obj_t *label = s_temp_markers[used++];
+        lv_label_set_text_fmt(label, "%.1f%s", (double)fc->points[m].air_temperature_c, "\xC2\xB0");
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+        place_marker_label(label, CHART_X + s_temp_line_points[m].x,
+                            CHART_Y + s_temp_line_points[m].y, above);
+
+        last_shown_epoch = fc->points[m].epoch_utc;
+        if (m > i) {
+            i = m; /* don't re-label the span we snapped across */
+        }
+    }
+
+    for (int i = used; i < TEMP_MARKER_POOL; i++) {
+        lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Precipitation value markers. Labels the global wettest hour, then adds a
+ * label at each further local precipitation peak that falls at least
+ * MARKER_MIN_GAP_H hours after the previously shown precip label, so a long
+ * on/off rain spell gets called out without crowding. Dry hours are never
+ * marked, and if the whole forecast is dry every pool label stays hidden. */
+static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, int32_t precip_range_max)
+{
+    int used = 0;
+
+    if (round_to_int(fc->points[precip_max_idx].precipitation_mm * 10.0f) > 0) {
+        int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
+        int64_t last_shown_epoch = fc->points[0].epoch_utc;
+
+        for (int i = 0; i < fc->point_count && used < PRECIP_MARKER_POOL; i++) {
+            float mm = fc->points[i].precipitation_mm;
+            if (round_to_int(mm * 10.0f) <= 0) {
+                continue;
+            }
+
+            float prev = (i > 0) ? fc->points[i - 1].precipitation_mm : -1.0f;
+            float next = (i < fc->point_count - 1) ? fc->points[i + 1].precipitation_mm : -1.0f;
+            bool local_peak = (mm >= prev && mm >= next && (mm > prev || mm > next));
+            bool is_global = (i == precip_max_idx);
+            if (!is_global && !local_peak) {
+                continue;
+            }
+
+            int64_t epoch = fc->points[i].epoch_utc;
+            if (!is_global && (epoch - last_shown_epoch) < (int64_t)MARKER_MIN_GAP_H * 3600) {
+                continue;
+            }
+
+            int m = snap_to_better_extremum(fc, i, true, pt_precip);
+
+            int32_t x = (fc->point_count > 1)
+                            ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1)
+                            : 0;
+            int32_t y = CHART_H - (int32_t)(((float)s_precip_chart_data[m] / (float)precip_axis_max) * CHART_H);
+
+            lv_obj_t *label = s_precip_markers[used++];
+            lv_label_set_text_fmt(label, "%.1f mm", (double)fc->points[m].precipitation_mm);
+            lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+            place_marker_label(label, CHART_X + x, CHART_Y + y, true);
+
+            last_shown_epoch = fc->points[m].epoch_utc;
+            if (m > i) {
+                i = m; /* don't re-label the span we snapped across */
+            }
+        }
+    }
+
+    for (int i = used; i < PRECIP_MARKER_POOL; i++) {
+        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void update_ui_with_forecast(const yr_forecast_t *fc)
 {
     const yr_forecast_point_t *now = &fc->points[0];
 
-    symbol_info_t now_symbol;
-    parse_symbol(now->symbol_code, &now_symbol);
-    lv_label_set_text_fmt(s_current_label, "%.1f%sC   %s   Vind %.1f m/s",
-                           (double)now->air_temperature_c, "\xC2\xB0", now_symbol.text_no,
-                           (double)now->wind_speed_ms);
-    lv_label_set_text_fmt(s_updated_label, "V\xC3\xA6rvarsel oppdatert: %s", fc->updated_time);
+    lv_label_set_text_fmt(s_updated_label, "Oppdatert kl. %s", fc->updated_hour_minute);
 
     int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0;
     float temp_min = now->air_temperature_c;
@@ -458,7 +422,10 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
             precip_max_idx = i;
         }
 
-        s_precip_chart_data[i] = round_to_int(p->precipitation_mm * 10.0f);
+        /* A dry hour draws no bar at all (LV_CHART_POINT_NONE), rather than a
+         * flat zero-height stub sitting on the axis. */
+        int32_t precip_tenths = round_to_int(p->precipitation_mm * 10.0f);
+        s_precip_chart_data[i] = (precip_tenths > 0) ? precip_tenths : LV_CHART_POINT_NONE;
     }
 
     int32_t temp_range_min = round_to_int(temp_min) - 1;
@@ -485,29 +452,13 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     }
     lv_obj_invalidate(s_temp_line);
 
-    lv_label_set_text_fmt(s_temp_max_label, "%.1f%s", (double)temp_max, "\xC2\xB0");
-    place_marker_label(s_temp_max_label, CHART_X + s_temp_line_points[temp_max_idx].x,
-                        CHART_Y + s_temp_line_points[temp_max_idx].y, true);
-
-    lv_label_set_text_fmt(s_temp_min_label, "%.1f%s", (double)temp_min, "\xC2\xB0");
-    place_marker_label(s_temp_min_label, CHART_X + s_temp_line_points[temp_min_idx].x,
-                        CHART_Y + s_temp_line_points[temp_min_idx].y, false);
-
-    int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
-    int32_t precip_max_x = (fc->point_count > 1)
-                                ? (int32_t)precip_max_idx * (CHART_W - 1) / (fc->point_count - 1)
-                                : 0;
-    int32_t precip_max_y = CHART_H - (int32_t)(((float)s_precip_chart_data[precip_max_idx] / (float)precip_axis_max) * CHART_H);
-    lv_label_set_text_fmt(s_precip_max_label, "%.1f mm", (double)precip_max);
-    place_marker_label(s_precip_max_label, CHART_X + precip_max_x, CHART_Y + precip_max_y, true);
+    place_temp_markers(fc, temp_min_idx, temp_max_idx);
+    place_precip_markers(fc, precip_max_idx, precip_range_max);
 
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
         int idx = (fc->point_count - 1) * i / (NUM_HOUR_LABELS - 1);
         lv_label_set_text(s_hour_labels[i], fc->points[idx].hour_minute);
-
-        symbol_info_t sym;
-        parse_symbol(fc->points[idx].symbol_code, &sym);
-        draw_weather_icon(s_icon_slots[i], sym.icon);
+        set_weather_icon(s_icon_slots[i], fc->points[idx].symbol_code);
     }
 }
 
@@ -541,6 +492,13 @@ static void yr_weather_task(void *arg)
         esp_err_t err = yr_client_fetch_forecast(lat, lon, forecast);
         bool ok = (err == ESP_OK && forecast->valid && forecast->point_count > 0);
 
+        if (ok) {
+            ESP_LOGI(TAG, "Forecast updated: %d points, kl. %s (%s UTC) (free heap: %u int / %u total)",
+                     forecast->point_count, forecast->updated_hour_minute, forecast->updated_time,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)esp_get_free_heap_size());
+        }
+
         if (esp_lv_adapter_lock(-1) == ESP_OK) {
             if (ok) {
                 lv_label_set_text(s_status_label, "");
@@ -562,6 +520,13 @@ static void yr_weather_task(void *arg)
 
 void app_main(void)
 {
+    /* Europe/Oslo: CET (UTC+1), CEST (UTC+2) from the last Sunday of March
+     * 02:00 to the last Sunday of October 03:00. Process-wide, so yr_client's
+     * localtime_r() calls render the forecast's UTC timestamps in Norwegian
+     * wall-clock time. Set before the weather task starts. */
+    setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+    tzset();
+
     const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_180;
     const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;
     const uint8_t frame_buffer_count = esp_lv_adapter_get_required_frame_buffer_count(tear_mode, rotation);

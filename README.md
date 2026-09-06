@@ -45,7 +45,7 @@ get a `403 Forbidden`):
 idf.py menuconfig
 ```
 
-under `HelloESPLVGLClaude Configuration`:
+under `MultiDisplay Configuration`:
 
 - `WiFi SSID` / `WiFi password`
 - `YR forecast latitude` / `longitude` (default: Oslo, `59.91`/`10.75`)

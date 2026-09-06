@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 
 #include "yr_client.h"
 
@@ -81,18 +82,71 @@ static void parse_period_fallback(cJSON *data, float *out_precip_mm, char *out_s
     }
 }
 
-/* time is ISO8601 "YYYY-MM-DDTHH:MM:SSZ"; pull "HH:MM" out directly. */
+/* Seconds since the Unix epoch for an ISO8601 UTC timestamp
+ * ("YYYY-MM-DDTHH:MM:SS...", trailing zone ignored); -1 if unparseable.
+ *
+ * timegm() isn't available in newlib on ESP-IDF and mktime() would apply the
+ * local offset to fields that are already UTC, so the epoch is computed with
+ * the days-from-civil algorithm (Howard Hinnant) - pure arithmetic, no
+ * dependency on the system clock being set. */
+static int64_t iso_utc_to_epoch(const char *iso_utc)
+{
+    struct tm utc = { 0 };
+    if (iso_utc == NULL ||
+        sscanf(iso_utc, "%d-%d-%dT%d:%d:%d",
+               &utc.tm_year, &utc.tm_mon, &utc.tm_mday,
+               &utc.tm_hour, &utc.tm_min, &utc.tm_sec) != 6) {
+        return -1;
+    }
+
+    int y = utc.tm_year;
+    int m = utc.tm_mon;
+    y -= (m <= 2);
+    int era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (unsigned)(m + (m > 2 ? -3 : 9)) + 2) / 5 + (unsigned)utc.tm_mday - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = (long)era * 146097 + (long)doe - 719468;
+    return (int64_t)days * 86400 + utc.tm_hour * 3600 + utc.tm_min * 60 + utc.tm_sec;
+}
+
+/* Broken-down local time for an ISO8601 UTC timestamp, honouring the TZ the
+ * app set (Europe/Oslo, so CET/CEST incl. DST). Returns false if unparseable. */
+static bool iso_utc_to_local(const char *iso_utc, struct tm *out_local)
+{
+    int64_t epoch = iso_utc_to_epoch(iso_utc);
+    if (epoch < 0) {
+        return false;
+    }
+    time_t t = (time_t)epoch;
+    localtime_r(&t, out_local);
+    return true;
+}
+
+/* Fill "HH:MM" (Europe/Oslo local time) from an ISO8601 UTC timestamp. */
+static void format_local_hm(const char *time_str, char *out, size_t out_len)
+{
+    struct tm local;
+    if (iso_utc_to_local(time_str, &local)) {
+        snprintf(out, out_len, "%02d:%02d", local.tm_hour, local.tm_min);
+    } else {
+        out[0] = '\0';
+    }
+}
+
+/* Axis label: "HH:MM" in local time, plus a flag for the entry that lands on
+ * local midnight (the start of a new day along the x-axis). */
 static void extract_hour_minute(const char *time_str, char *out, size_t out_len, bool *is_first_of_day)
 {
-    out[0] = '\0';
-    *is_first_of_day = false;
-
-    if (time_str == NULL || strlen(time_str) < 16) {
+    struct tm local;
+    if (!iso_utc_to_local(time_str, &local)) {
+        out[0] = '\0';
+        *is_first_of_day = false;
         return;
     }
 
-    snprintf(out, out_len, "%.5s", time_str + 11);
-    *is_first_of_day = (strncmp(time_str + 11, "00:", 3) == 0);
+    snprintf(out, out_len, "%02d:%02d", local.tm_hour, local.tm_min);
+    *is_first_of_day = (local.tm_hour == 0);
 }
 
 static bool parse_forecast(const char *json, yr_forecast_t *out)
@@ -110,6 +164,8 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
     cJSON *updated_at = cJSON_GetObjectItemCaseSensitive(meta, "updated_at");
     if (cJSON_IsString(updated_at)) {
         snprintf(out->updated_time, sizeof(out->updated_time), "%s", updated_at->valuestring);
+        format_local_hm(updated_at->valuestring, out->updated_hour_minute,
+                        sizeof(out->updated_hour_minute));
     }
 
     cJSON *timeseries = cJSON_GetObjectItemCaseSensitive(properties, "timeseries");
@@ -130,9 +186,10 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
         memset(point, 0, sizeof(*point));
 
         cJSON *time = cJSON_GetObjectItemCaseSensitive(entry, "time");
-        extract_hour_minute(cJSON_IsString(time) ? time->valuestring : NULL,
-                             point->hour_minute, sizeof(point->hour_minute),
+        const char *time_str = cJSON_IsString(time) ? time->valuestring : NULL;
+        extract_hour_minute(time_str, point->hour_minute, sizeof(point->hour_minute),
                              &point->is_first_of_day);
+        point->epoch_utc = iso_utc_to_epoch(time_str);
 
         cJSON *data = cJSON_GetObjectItemCaseSensitive(entry, "data");
         cJSON *instant = cJSON_GetObjectItemCaseSensitive(data, "instant");

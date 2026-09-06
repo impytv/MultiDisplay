@@ -22,6 +22,11 @@ CONFIG_LV_FREETYPE_USE_LVGL_PORT=y
 # cache was a large, otherwise-unaccounted-for internal DRAM consumer.
 CONFIG_LV_FREETYPE_CACHE_FT_GLYPH_CNT=96
 CONFIG_ESP_LVGL_ADAPTER_ENABLE_FS=y
+# esp_lv_decoder integration: the adapter calls esp_lv_decoder_init() during
+# esp_lv_adapter_init(), registering a PNG decoder with LVGL so the MET
+# weather icons (F:<symbol_code>.png on the mounted asset drive) render via
+# lv_image. Decoded frames are allocated from PSRAM by the decoder.
+CONFIG_ESP_LVGL_ADAPTER_ENABLE_DECODER=y
 CONFIG_ESP_LVGL_ADAPTER_ENABLE_FREETYPE=y
 CONFIG_ESP_LVGL_ADAPTER_FREETYPE_MINIMAL_BUILD=y
 # FREETYPE_SMALL_RENDER_POOL (16KB -> 4KB) was tried to save RAM, but it also
@@ -88,6 +93,15 @@ CONFIG_SPIRAM_MEMTEST=n
 # size. Small/frequent allocations (<1KB, e.g. LVGL style internals) still
 # default to internal RAM for speed.
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
+# mbedtls defaults to CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC, which pins every TLS
+# allocation to internal DRAM with an explicit MALLOC_CAP_INTERNAL and so
+# bypasses the SPIRAM_MALLOC_ALWAYSINTERNAL threshold above entirely. That's
+# why the ~16KB handshake RX buffer still failed ("Dynamic Impl: alloc(16749
+# bytes) failed") with dynamic buffers already on. Switch mbedtls to plain
+# malloc/free so the ">=1KB spills to PSRAM" rule actually applies to it:
+# the large handshake/record buffers land in PSRAM, while small frequent
+# allocations stay under the 1KB threshold and remain internal.
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
