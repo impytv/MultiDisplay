@@ -2,7 +2,8 @@ idf_component_register(
     SRCS
         "main.c"
         "../components/waveshare_rgb_lcd_port.c"
-        "../components/wifi_connect.c"
+        "../components/app_config.c"
+        "../components/wifi_provision.c"
         "../components/yr_client.c"
     INCLUDE_DIRS
         "."
@@ -13,6 +14,9 @@ idf_component_register(
         esp_event
         nvs_flash
         esp_http_client
+        esp_http_server
+        esp_driver_gpio
+        lwip
         esp-tls
         mbedtls
         json)

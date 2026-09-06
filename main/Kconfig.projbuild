@@ -1,34 +1,42 @@
 menu "MultiDisplay Configuration"
 
+    # WiFi and location are normally set at runtime through the setup portal
+    # (see README) and stored in NVS. The values below are only the seed
+    # defaults: they pre-fill the portal form, and - if the SSID here is left
+    # as the "myssid" placeholder - the device boots straight into the portal
+    # on a fresh flash. Set a real SSID here to skip the portal and connect
+    # immediately (the web page is then still reachable for later edits).
+
     config EXAMPLE_WIFI_SSID
-        string "WiFi SSID"
+        string "WiFi SSID (seed default)"
         default "myssid"
         help
-            SSID (network name) to connect to.
+            SSID (network name) to connect to. Leave as "myssid" to force the
+            setup portal on first boot.
 
     config EXAMPLE_WIFI_PASSWORD
-        string "WiFi password"
+        string "WiFi password (seed default)"
         default "mypassword"
         help
-            WiFi password (WPA or WPA2) to use.
+            WiFi password (WPA/WPA2). Leave blank for an open network.
 
     config EXAMPLE_YR_LOCATION_NAME
-        string "Forecast location name"
+        string "Forecast location name (seed default)"
         default "Oslo"
         help
             Human-readable name of the forecast location, shown on screen.
             The MET Norway locationforecast API returns only coordinates, so
-            this label is configured here rather than derived from the data.
+            this label is configured rather than derived from the data.
 
     config EXAMPLE_YR_LATITUDE
-        string "YR forecast latitude"
+        string "YR forecast latitude (seed default)"
         default "59.91"
         help
             Latitude passed to the MET Norway (yr.no) locationforecast API.
             Use at most 4 decimals.
 
     config EXAMPLE_YR_LONGITUDE
-        string "YR forecast longitude"
+        string "YR forecast longitude (seed default)"
         default "10.75"
         help
             Longitude passed to the MET Norway (yr.no) locationforecast API.

@@ -11,8 +11,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmap_generate_fonts.h"
+#include "nvs_flash.h"
 #include "waveshare_rgb_lcd_port.h"
-#include "wifi_connect.h"
+#include "app_config.h"
+#include "wifi_provision.h"
 #include "yr_client.h"
 
 static const char *TAG = "lvgl9_demo";
@@ -69,6 +71,10 @@ static const char *TAG = "lvgl9_demo";
 
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
+
+/* Runtime settings (WiFi + forecast location), from NVS via the setup portal
+ * or the compiled-in defaults. Loaded once in app_main. */
+static app_config_t s_cfg;
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_location_label;
@@ -165,7 +171,7 @@ static void build_ui(lv_obj_t *screen)
     s_location_label = lv_label_create(screen);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
     lv_obj_set_pos(s_location_label, 12, 4);
-    lv_label_set_text(s_location_label, CONFIG_EXAMPLE_YR_LOCATION_NAME);
+    lv_label_set_text(s_location_label, s_cfg.loc_name);
 
     s_updated_label = lv_label_create(screen);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
@@ -705,9 +711,21 @@ static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const y
     }
 }
 
+/* Shown on the status label while wifi_provision works (connecting, or the
+ * setup-portal instructions). */
+static void provision_status_cb(const char *msg)
+{
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        lv_label_set_text(s_status_label, msg);
+        esp_lv_adapter_unlock();
+    }
+}
+
 static void yr_weather_task(void *arg)
 {
-    wifi_connect_sta();
+    /* Connects in station mode, or blocks forever in the setup portal (and
+     * reboots when the form is saved). */
+    wifi_provision_connect(&s_cfg, provision_status_cb);
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
      * a large TLS handshake - the two compete hard for the same scarce
@@ -719,8 +737,8 @@ static void yr_weather_task(void *arg)
         esp_lv_adapter_unlock();
     }
 
-    const double lat = atof(CONFIG_EXAMPLE_YR_LATITUDE);
-    const double lon = atof(CONFIG_EXAMPLE_YR_LONGITUDE);
+    const double lat = atof(s_cfg.loc_lat);
+    const double lon = atof(s_cfg.loc_lon);
 
     /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
      * scarce internal DRAM. `base` holds the last good hourly forecast
@@ -802,6 +820,14 @@ void app_main(void)
      * wall-clock time. Set before the weather task starts. */
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
+
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        nvs_err = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(nvs_err);
+    app_config_load(&s_cfg);
 
     const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_0;
     const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;
