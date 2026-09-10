@@ -36,6 +36,12 @@ CONFIG_ESP_LVGL_ADAPTER_FREETYPE_MINIMAL_BUILD=y
 # crashing with a different fault each run. Fix is to size the stack
 # properly instead of disabling the check.
 CONFIG_LV_DRAW_THREAD_STACK_SIZE=32768
+# That 32KB "swdraw" stack can't be shrunk (see above), but it doesn't have
+# to live in scarce internal DRAM: the draw thread only rasterizes glyphs
+# and blits software layers - it never runs with the flash cache disabled
+# (NVS writes here happen only at boot and just before a reboot) - so its
+# stack is safe in PSRAM. This frees ~32KB of internal DRAM.
+CONFIG_ESP_LVGL_ADAPTER_LVGL_THREAD_STACK_IN_PSRAM=y
 
 # That 32KB stack (up from 8KB) left too little internal DRAM for WiFi's
 # own static RX buffers ("esf_buf_setup_static: alloc eb fail") and later
@@ -46,6 +52,11 @@ CONFIG_LV_DRAW_THREAD_STACK_SIZE=32768
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+# Static TX buffers are 1.6KB each of DMA-capable internal RAM, allocated up
+# front at esp_wifi_init(). The default 16 (~25KB) is sized for a
+# high-throughput link; this display just makes an HTTPS GET every few
+# minutes, so 8 is ample and frees ~13KB of internal DRAM.
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 
 # Deliberately skip TLS server certificate verification for the yr_client
 # fetch (see components/yr_client.c) - verifying api.met.no's 4096-bit RSA

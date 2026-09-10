@@ -843,6 +843,11 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     lv_chart_set_point_count(s_precip_chart, fc->point_count);
     lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, precip_range_max * PRECIP_AXIS_COMPRESSION);
     lv_chart_set_series_ext_y_array(s_precip_chart, s_precip_series, s_precip_chart_data);
+    /* The series shares one static buffer whose contents we overwrite in place;
+     * lv_chart_set_point_count() bails out when the length is unchanged and
+     * set_series_ext_y_array() doesn't invalidate, so between nowcast refreshes
+     * (same point_count) the bars would otherwise never redraw. */
+    lv_chart_refresh(s_precip_chart);
 
     for (int i = 0; i < fc->point_count; i++) {
         float v = fc->points[i].air_temperature_c;
@@ -870,6 +875,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     lv_chart_set_point_count(s_wind_chart, fc->point_count);
     lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
     lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
+    lv_chart_refresh(s_wind_chart); /* force redraw - see the precip chart above */
 
     place_wind_markers(fc, wind_max_idx, wind_range_max);
 
