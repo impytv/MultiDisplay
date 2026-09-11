@@ -38,8 +38,8 @@ every 10 minutes.
 
 ### Multiple locations
 
-Up to 5 forecast locations can be stored. **Tap the left half of the screen**
-to cycle through the stops:
+Up to 5 forecast locations can be stored. **Tap anywhere on the screen** to
+cycle through the stops:
 
 1. **Oversikt** – an overview table with one row per location and 6-hour
    columns, each showing the weather icon, temperature and the precipitation

@@ -198,7 +198,7 @@ static void init_fonts(void)
 
     esp_lv_adapter_ft_font_handle_t body_handle = NULL;
     const esp_lv_adapter_ft_font_config_t body_cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
-        font_path, 15, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
+        font_path, 17, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
     ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&body_cfg, &body_handle));
     s_font_body = esp_lv_adapter_ft_font_get(body_handle);
     assert(s_font_body != NULL);
@@ -211,8 +211,8 @@ static void init_fonts(void)
     assert(s_font_large != NULL);
 }
 
-/* Tap on the left half of the screen: advance to the next stop (overview ->
- * location 1 -> location 2 -> ... -> overview) and wake the weather task so it
+/* Tap anywhere on the screen: advance to the next stop (overview -> location 1
+ * -> location 2 -> ... -> overview) and wake the weather task so it
  * re-renders / refetches. Runs in the LVGL context (which already holds the
  * adapter lock), so it only pokes volatiles + a notify. */
 static void screen_touch_cb(lv_event_t *e)
@@ -220,15 +220,6 @@ static void screen_touch_cb(lv_event_t *e)
     (void)e;
     if (s_cfg.location_count <= 1) {
         return; /* nothing to cycle through */
-    }
-    lv_indev_t *indev = lv_indev_active();
-    if (indev == NULL) {
-        return;
-    }
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
-    if (p.x >= EXAMPLE_LCD_H_RES / 2) {
-        return; /* only the left half cycles */
     }
 
     /* Ignore a second press within 400 ms - covers finger bounce and keeps a
@@ -246,7 +237,7 @@ static void screen_touch_cb(lv_event_t *e)
         next = 0;
     }
     s_view_index = next;
-    ESP_LOGI(TAG, "Left-half tap: view %d (0=overview, 1..%d=locations)",
+    ESP_LOGI(TAG, "Tap: view %d (0=overview, 1..%d=locations)",
              next, s_cfg.location_count);
     if (s_yr_task != NULL) {
         xTaskNotifyGive(s_yr_task);
@@ -491,8 +482,7 @@ static void build_ui(lv_obj_t *screen)
     /* Full-screen transparent tap catcher. In LVGL 9 every lv_obj/lv_chart is
      * clickable by default, so a tap lands on whichever chart or row widget
      * covers that point and never reaches the screen. This overlay is the
-     * topmost child, so it catches every tap; the handler looks at the x
-     * coordinate to decide (left half -> next location). */
+     * topmost child, so it catches every tap anywhere on screen. */
     lv_obj_t *tap_layer = lv_obj_create(screen);
     lv_obj_remove_style_all(tap_layer);
     lv_obj_set_pos(tap_layer, 0, 0);
@@ -1096,6 +1086,52 @@ static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const y
     }
 }
 
+/* Every chart and label in update_ui_with_forecast positions itself by array
+ * INDEX (x = i * width / (point_count - 1); the bottom hour labels and the
+ * precip/wind lv_chart bars all do the same, and lv_chart's own bar layout
+ * can't be told to do otherwise). That's only proportional to elapsed time
+ * if the points themselves are evenly time-spaced - true of a plain hourly
+ * forecast, but not of a nowcast-merged series, which packs many 5/10-minute
+ * steps into the first ~2 hours followed by sparse hourly ones: an hour of
+ * near-term nowcast then occupies as many index-slots (and so as much of the
+ * x-axis) as several hours further out.
+ *
+ * Fix: re-sample `src` onto `dst`, the same point count but evenly spaced in
+ * TIME from its first to its last point, before anything renders it. This
+ * makes uniform index-spacing correct again for every consumer. Continuous
+ * fields (temperature, wind speed) are linearly interpolated between the
+ * bracketing source points (interp_base); everything else (precipitation,
+ * wind direction, symbol) is taken from the nearest source point in time -
+ * the same approximations merge_nowcast already makes for the same reason. */
+static void resample_uniform_time(yr_forecast_t *dst, const yr_forecast_t *src)
+{
+    int n = src->point_count;
+    if (n < 2) {
+        *dst = *src;
+        return;
+    }
+    int64_t t0 = src->points[0].epoch_utc;
+    int64_t t1 = src->points[n - 1].epoch_utc;
+    if (t1 <= t0) {
+        *dst = *src;
+        return;
+    }
+
+    yr_forecast_t out = *src; /* carries over valid / updated_hour_minute / etc. */
+    for (int i = 0; i < n; i++) {
+        int64_t target = t0 + (int64_t)i * (t1 - t0) / (n - 1);
+        const yr_forecast_point_t *near = nearest_base_point(src, target);
+
+        yr_forecast_point_t p = *near;
+        p.epoch_utc = target;
+        p.air_temperature_c = interp_base(src, target, pt_temp);
+        p.wind_speed_ms = interp_base(src, target, pt_wind);
+        out.points[i] = p;
+    }
+    out.point_count = n;
+    *dst = out;
+}
+
 /* Shown on the status label while wifi_provision works (connecting, or the
  * setup-portal instructions). */
 static void provision_status_cb(const char *msg)
@@ -1125,13 +1161,15 @@ static void yr_weather_task(void *arg)
     /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
      * scarce internal DRAM. `scratch` receives each fetch (yr_client zeroes
      * its output, so fetching straight into a cache would wipe the last good
-     * copy on a network hiccup); `merged` holds the nowcast-spliced series
-     * that the detail view renders; s_fc_cache[i] keeps each location's last
-     * good hourly forecast for the overview. */
+     * copy on a network hiccup); `merged` holds the nowcast-spliced series;
+     * `resampled` is what the detail view actually renders (see
+     * resample_uniform_time); s_fc_cache[i] keeps each location's last good
+     * hourly forecast for the overview. */
     yr_forecast_t *scratch = heap_caps_malloc(sizeof(*scratch), MALLOC_CAP_SPIRAM);
     yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
+    yr_forecast_t *resampled = heap_caps_malloc(sizeof(*resampled), MALLOC_CAP_SPIRAM);
     yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
-    bool caches_ok = (scratch != NULL && merged != NULL && nowcast != NULL);
+    bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL && nowcast != NULL);
     for (int i = 0; i < s_cfg.location_count; i++) {
         s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
         if (s_fc_cache[i] == NULL) {
@@ -1267,10 +1305,18 @@ static void yr_weather_task(void *arg)
                              s_cfg.locations[sel].name, nowcast->point_count,
                              merged->point_count);
                 }
-                if (to_render->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
-                    lv_label_set_text(s_status_label, "");
-                    update_ui_with_forecast(to_render);
-                    esp_lv_adapter_unlock();
+                if (to_render->point_count > 0) {
+                    /* Every chart/label below positions by index, so put the
+                     * points on a uniform time grid first (see
+                     * resample_uniform_time) - otherwise the nowcast-merged
+                     * series' densely-sampled first ~2h would visually eat
+                     * as much of the x-axis as several hours further out. */
+                    resample_uniform_time(resampled, to_render);
+                    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                        lv_label_set_text(s_status_label, "");
+                        update_ui_with_forecast(resampled);
+                        esp_lv_adapter_unlock();
+                    }
                 }
             } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 lv_label_set_text(s_status_label,
