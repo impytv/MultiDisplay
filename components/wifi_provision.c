@@ -32,6 +32,7 @@ static bool s_stop_reconnect;
 static httpd_handle_t s_httpd;
 static wifi_provision_status_fn s_status;
 static char s_ap_ssid[24];
+static char s_sta_ip[16]; /* "" until the first IP_EVENT_STA_GOT_IP */
 
 static void status(const char *msg)
 {
@@ -434,6 +435,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&e->ip_info.ip));
+        snprintf(s_sta_ip, sizeof(s_sta_ip), IPSTR, IP2STR(&e->ip_info.ip));
         s_retries = 0;
         xEventGroupSetBits(s_events, BIT_CONNECTED);
     }
@@ -564,4 +566,9 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
 
     portal_run(); /* never returns */
     return ESP_OK;
+}
+
+const char *wifi_provision_get_ip(void)
+{
+    return s_sta_ip; /* "" until the station has an IP */
 }

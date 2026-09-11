@@ -26,4 +26,11 @@ typedef void (*wifi_provision_status_fn)(const char *msg);
  */
 esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_fn status);
 
+/**
+ * The station's current IP address as a string (e.g. "192.168.0.77"), or ""
+ * if it has never associated. Safe to call from any task - set once from the
+ * WiFi event handler on IP_EVENT_STA_GOT_IP and never freed.
+ */
+const char *wifi_provision_get_ip(void);
+
 #endif

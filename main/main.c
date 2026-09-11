@@ -89,7 +89,9 @@ static const char *TAG = "lvgl9_demo";
 #define OV_TITLE_Y  6
 #define OV_HDR_Y    42
 #define OV_BODY_Y   64
-#define OV_ROW_H    80
+/* 76, not 80: at the 5-location max that leaves a clear strip at the very
+ * bottom of the screen for the IP-address label. */
+#define OV_ROW_H    76
 #define OV_ICON     34
 
 static const lv_font_t *s_font_body;
@@ -113,6 +115,7 @@ static lv_obj_t *s_updated_label;
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
+static lv_obj_t *s_ov_ip_label; /* bottom-right: the address to browse to for setup */
 static lv_obj_t *s_ov_hdr[OV_COLS];
 static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
 static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
@@ -195,14 +198,14 @@ static void init_fonts(void)
 
     esp_lv_adapter_ft_font_handle_t body_handle = NULL;
     const esp_lv_adapter_ft_font_config_t body_cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
-        font_path, 14, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
+        font_path, 15, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
     ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&body_cfg, &body_handle));
     s_font_body = esp_lv_adapter_ft_font_get(body_handle);
     assert(s_font_body != NULL);
 
     esp_lv_adapter_ft_font_handle_t large_handle = NULL;
     const esp_lv_adapter_ft_font_config_t large_cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
-        font_path, 24, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
+        font_path, 25, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
     ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&large_cfg, &large_handle));
     s_font_large = esp_lv_adapter_ft_font_get(large_handle);
     assert(s_font_large != NULL);
@@ -312,6 +315,14 @@ static void build_overview(lv_obj_t *root)
             lv_label_set_text(s_ov_cell[i][c], "");
         }
     }
+
+    /* The address to browse to for WiFi/location setup (see wifi_provision).
+     * Text is filled in each refresh by update_overview(); muted so it reads
+     * as a footnote, not another data row. */
+    s_ov_ip_label = lv_label_create(root);
+    lv_obj_set_style_text_color(s_ov_ip_label, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4);
+    lv_label_set_text(s_ov_ip_label, "");
 }
 
 static void build_ui(lv_obj_t *screen)
@@ -967,6 +978,9 @@ static bool any_cache_valid(void)
  * hours. Missing caches show dashes. Must be called under the adapter lock. */
 static void update_overview(void)
 {
+    lv_label_set_text(s_ov_ip_label, wifi_provision_get_ip());
+    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4); /* re-anchor: text width changed */
+
     int64_t now_epoch = 0;
     for (int i = 0; i < s_cfg.location_count; i++) {
         if (s_fc_valid[i] && s_fc_cache[i]->point_count > 0) {
@@ -1135,13 +1149,19 @@ static void yr_weather_task(void *arg)
     int sel = 0;            /* selected location index when not on the overview */
 
     while (1) {
-        /* Adopt a view switch from the touch handler. */
+        /* Adopt a view switch from the touch handler. Force-refetch the newly
+         * selected location's forecast below even if its cache isn't
+         * calendar-stale yet: the detail view should only ever show a fully
+         * fresh forecast+nowcast pair for the location just switched to,
+         * never a stale forecast alone or a stale-forecast/fresh-nowcast mix. */
         int want_view = s_view_index;
+        bool force_sel_refetch = false;
         if (want_view != active_view) {
             active_view = want_view;
             overview = (s_cfg.location_count >= 2 && want_view == 0);
             sel = overview ? 0
                 : (s_cfg.location_count >= 2 ? want_view - 1 : 0);
+            force_sel_refetch = !overview;
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 show_overview(overview);
@@ -1160,12 +1180,10 @@ static void yr_weather_task(void *arg)
                     } else {
                         lv_label_set_text(s_location_label, loc->name);
                     }
-                    if (s_fc_valid[sel] && s_fc_cache[sel]->point_count > 0) {
-                        lv_label_set_text(s_status_label, "");
-                        update_ui_with_forecast(s_fc_cache[sel]); /* cached, nowcast added below */
-                    } else {
-                        lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
-                    }
+                    /* Never render from cache here, even if valid - wait for
+                     * the fresh forecast+nowcast fetch below so the graph
+                     * doesn't flash an old forecast before the nowcast lands. */
+                    lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
                 }
                 esp_lv_adapter_unlock();
             }
@@ -1182,7 +1200,7 @@ static void yr_weather_task(void *arg)
                 break; /* view changed mid-scan - restart the loop */
             }
             int i = (sel + k) % s_cfg.location_count;
-            bool stale = !s_fc_valid[i] ||
+            bool stale = !s_fc_valid[i] || (i == sel && force_sel_refetch) ||
                          (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
             if (!stale) {
                 continue;
