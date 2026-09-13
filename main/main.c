@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
+#include "esp_netif_sntp.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmap_generate_fonts.h"
@@ -32,6 +33,18 @@ static const char *TAG = "lvgl9_demo";
 #define NOWCAST_MERGE_STRIDE 2
 #define NUM_HOUR_LABELS 8
 #define YR_TASK_STACK_SIZE 8192
+
+/* Restart once a day, at this local hour, purely as memory-pressure
+ * housekeeping (a fresh boot resets any accumulated heap fragmentation).
+ * Needs the wall clock to actually be synced (see the SNTP setup below) -
+ * without it "now" would read as the 1970 epoch, so scheduling is skipped
+ * until a sync has happened. The current screen survives the restart (see
+ * app_config_save_last_view). */
+#define NIGHTLY_REBOOT_HOUR 2
+/* Treat the clock as synced once it reads past this (2023-01-01 UTC) -
+ * comfortably below "now" for the life of this project, comfortably above
+ * the unsynced epoch. */
+#define PLAUSIBLE_EPOCH_S 1672531200
 
 #define ICON_ROW_Y 44
 #define ICON_SIZE 48
@@ -222,11 +235,11 @@ static void screen_touch_cb(lv_event_t *e)
         return; /* nothing to cycle through */
     }
 
-    /* Ignore a second press within 400 ms - covers finger bounce and keeps a
+    /* Ignore a second press within 500 ms - covers finger bounce and keeps a
      * quick double-tap from skipping two stops by accident. */
     static uint32_t last_tap_ms;
     uint32_t now_ms = lv_tick_get();
-    if (now_ms - last_tap_ms < 400) {
+    if (now_ms - last_tap_ms < 500) {
         return;
     }
     last_tap_ms = now_ms;
@@ -339,10 +352,16 @@ static void build_ui(lv_obj_t *screen)
      * style property on ~30 widgets, which matters for internal DRAM. */
     lv_obj_set_style_text_align(s_overview_root, LV_TEXT_ALIGN_CENTER, 0);
 
+    /* If s_view_index was restored (see app_config_save_last_view) to a
+     * specific location's detail screen, show its name from the first frame
+     * rather than always location 0's - the weather task corrects this
+     * itself moments later regardless, once WiFi is up. */
+    int initial_loc = (s_cfg.location_count >= 2 && s_view_index > 0) ? (s_view_index - 1) : 0;
+
     s_location_label = lv_label_create(s_detail_root);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
     lv_obj_set_pos(s_location_label, 12, 4);
-    lv_label_set_text(s_location_label, s_cfg.locations[0].name);
+    lv_label_set_text(s_location_label, s_cfg.locations[initial_loc].name);
 
     s_updated_label = lv_label_create(s_detail_root);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
@@ -493,9 +512,10 @@ static void build_ui(lv_obj_t *screen)
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
-    /* Start on the overview when there is more than one location, else on the
-     * single location's detail screen. */
-    show_overview(s_cfg.location_count >= 2);
+    /* Start on whichever screen s_view_index was restored to (the overview
+     * unless a specific location was last shown before the previous reboot),
+     * or the single location's detail screen if there's only one. */
+    show_overview(s_cfg.location_count >= 2 && s_view_index == 0);
 }
 
 /* Centers label horizontally on chart_x (absolute) and places it either
@@ -1142,6 +1162,23 @@ static void provision_status_cb(const char *msg)
     }
 }
 
+/* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
+ * hasn't happened yet, otherwise tomorrow's. `now` must already be a plausible
+ * (synced) epoch. */
+static time_t compute_next_nightly_reboot(time_t now)
+{
+    struct tm local;
+    localtime_r(&now, &local);
+    local.tm_hour = NIGHTLY_REBOOT_HOUR;
+    local.tm_min = 0;
+    local.tm_sec = 0;
+    time_t target = mktime(&local); /* re-normalizes via the TZ set in app_main */
+    if (target <= now) {
+        target += 24 * 3600;
+    }
+    return target;
+}
+
 static void yr_weather_task(void *arg)
 {
     /* Connects in station mode, or blocks forever in the setup portal (and
@@ -1152,6 +1189,15 @@ static void yr_weather_task(void *arg)
      * a large TLS handshake - the two compete hard for the same scarce
      * internal DRAM in the first moment after association. */
     vTaskDelay(pdMS_TO_TICKS(3000));
+
+    /* Sync the wall clock purely so the nightly reboot below can be scheduled
+     * by real time-of-day. Fire-and-forget: esp_netif_sntp_init() just starts
+     * lwip's SNTP client in the background (wait_for_sync=false), and the
+     * loop further down treats a still-unsynced clock (reading near the 1970
+     * epoch) as "not yet known" and skips scheduling until it catches up. */
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    sntp_cfg.wait_for_sync = false;
+    esp_netif_sntp_init(&sntp_cfg);
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
@@ -1185,8 +1231,27 @@ static void yr_weather_task(void *arg)
     int active_view = -1;   /* -1 forces a first render; else == s_view_index  */
     bool overview = false;
     int sel = 0;            /* selected location index when not on the overview */
+    time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
 
     while (1) {
+        /* Once a day, purely for memory-pressure hygiene. Checked every loop
+         * wake (every few minutes at idle, immediately on a tap) rather than
+         * slept for separately - a few minutes of drift past the target hour
+         * doesn't matter for housekeeping. */
+        time_t now_wall = time(NULL);
+        if (now_wall > PLAUSIBLE_EPOCH_S) {
+            if (next_nightly_reboot == 0) {
+                next_nightly_reboot = compute_next_nightly_reboot(now_wall);
+                struct tm lt;
+                localtime_r(&next_nightly_reboot, &lt);
+                ESP_LOGI(TAG, "Nightly reboot scheduled for %04d-%02d-%02d %02d:%02d local",
+                         lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
+            } else if (now_wall >= next_nightly_reboot) {
+                ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
+                esp_restart();
+            }
+        }
+
         /* Adopt a view switch from the touch handler. Force-refetch the newly
          * selected location's forecast below even if its cache isn't
          * calendar-stale yet: the detail view should only ever show a fully
@@ -1200,6 +1265,10 @@ static void yr_weather_task(void *arg)
             sel = overview ? 0
                 : (s_cfg.location_count >= 2 ? want_view - 1 : 0);
             force_sel_refetch = !overview;
+
+            /* So a reboot of any kind - nightly, power cycle, crash - comes
+             * back showing this same screen instead of the overview. */
+            app_config_save_last_view((uint8_t)want_view);
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 show_overview(overview);
@@ -1350,6 +1419,14 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_err);
     app_config_load(&s_cfg);
+
+    /* Resume on whatever screen was showing before this boot (see
+     * app_config_save_last_view) rather than always starting at the
+     * overview. Clamped in case the location count shrank since. */
+    s_view_index = app_config_load_last_view();
+    if (s_view_index > s_cfg.location_count) {
+        s_view_index = 0;
+    }
 
     const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_0;
     const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;

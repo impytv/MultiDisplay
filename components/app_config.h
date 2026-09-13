@@ -13,7 +13,7 @@
 #define APP_CONFIG_COORD_MAX 16
 
 /* How many forecast locations can be stored. The display shows one at a
- * time and cycles to the next when the left half of the screen is tapped. */
+ * time and cycles to the next when the screen is tapped. */
 #define APP_CONFIG_MAX_LOCATIONS 5
 
 typedef struct {
@@ -61,5 +61,19 @@ esp_err_t app_config_erase(void);
  * lie within [-90, 90] / [-180, 180].
  */
 bool app_config_coord_valid(const char *text, bool is_latitude);
+
+/**
+ * Remember which screen was on display (0 = the locations overview, 1..N =
+ * that location's detail screen) so a reboot of any kind - the nightly
+ * maintenance restart, a power cycle, a crash - comes back up showing the
+ * same thing instead of always starting over at the overview.
+ */
+esp_err_t app_config_save_last_view(uint8_t view_index);
+
+/**
+ * The screen index last saved by app_config_save_last_view(), or 0 (the
+ * overview) if none was ever saved.
+ */
+uint8_t app_config_load_last_view(void);
 
 #endif

@@ -159,3 +159,29 @@ bool app_config_coord_valid(const char *text, bool is_latitude)
     double limit = is_latitude ? 90.0 : 180.0;
     return v >= -limit && v <= limit;
 }
+
+esp_err_t app_config_save_last_view(uint8_t view_index)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(h, "view", view_index);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+uint8_t app_config_load_last_view(void)
+{
+    nvs_handle_t h;
+    uint8_t view = 0;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "view", &view); /* leaves `view` at 0 if never saved */
+        nvs_close(h);
+    }
+    return view;
+}
