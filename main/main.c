@@ -46,6 +46,14 @@ static const char *TAG = "lvgl9_demo";
  * the unsynced epoch. */
 #define PLAUSIBLE_EPOCH_S 1672531200
 
+/* Night dimming: the backlight itself can't be dimmed (see s_tap_layer), so
+ * a translucent black layer over the whole screen stands in for it during
+ * these local hours. LV_OPA_70 cuts the effective brightness a lot while
+ * keeping high-contrast text/lines legible in a dark room. */
+#define NIGHT_DIM_START_HOUR 22
+#define NIGHT_DIM_END_HOUR   7
+#define NIGHT_DIM_OPA         LV_OPA_70
+
 #define ICON_ROW_Y 44
 #define ICON_SIZE 48
 
@@ -121,6 +129,7 @@ static volatile int s_view_index;
 static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
+static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
@@ -128,7 +137,8 @@ static lv_obj_t *s_updated_label;
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
-static lv_obj_t *s_ov_ip_label; /* bottom-right: the address to browse to for setup */
+static lv_obj_t *s_ov_ip_label;   /* bottom-right: the address to browse to for setup */
+static lv_obj_t *s_ov_heap_label; /* bottom-left: free internal-DRAM bytes */
 static lv_obj_t *s_ov_hdr[OV_COLS];
 static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
 static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
@@ -327,6 +337,14 @@ static void build_overview(lv_obj_t *root)
     lv_obj_set_style_text_color(s_ov_ip_label, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
     lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4);
     lv_label_set_text(s_ov_ip_label, "");
+
+    /* Free internal-DRAM bytes, the figure this project's memory work has
+     * been tracking throughout - a running diagnostic, not user-facing data,
+     * so it's a footnote like the IP label. */
+    s_ov_heap_label = lv_label_create(root);
+    lv_obj_set_style_text_color(s_ov_heap_label, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4);
+    lv_label_set_text(s_ov_heap_label, "");
 }
 
 static void build_ui(lv_obj_t *screen)
@@ -498,19 +516,24 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
     lv_label_set_text(s_status_label, "Kobler til WiFi...");
 
-    /* Full-screen transparent tap catcher. In LVGL 9 every lv_obj/lv_chart is
-     * clickable by default, so a tap lands on whichever chart or row widget
-     * covers that point and never reaches the screen. This overlay is the
-     * topmost child, so it catches every tap anywhere on screen. */
-    lv_obj_t *tap_layer = lv_obj_create(screen);
-    lv_obj_remove_style_all(tap_layer);
-    lv_obj_set_pos(tap_layer, 0, 0);
-    lv_obj_set_size(tap_layer, LV_PCT(100), LV_PCT(100));
-    lv_obj_add_flag(tap_layer, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(tap_layer, LV_OBJ_FLAG_SCROLLABLE);
+    /* Full-screen tap catcher. In LVGL 9 every lv_obj/lv_chart is clickable by
+     * default, so a tap lands on whichever chart or row widget covers that
+     * point and never reaches the screen. This overlay is the topmost child,
+     * so it catches every tap anywhere on screen. It doubles as the night
+     * dimming overlay (see yr_weather_task): the backlight on this board is
+     * switched on/off through an I2C GPIO expander with no PWM output, so it
+     * can't be dimmed in hardware - a translucent black layer over the
+     * content is the closest software equivalent. Transparent (invisible) by
+     * default; starts black-with-opacity, so no style is set here. */
+    s_tap_layer = lv_obj_create(screen);
+    lv_obj_remove_style_all(s_tap_layer);
+    lv_obj_set_pos(s_tap_layer, 0, 0);
+    lv_obj_set_size(s_tap_layer, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(s_tap_layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(s_tap_layer, LV_OBJ_FLAG_SCROLLABLE);
     /* PRESSED (not CLICKED): fires on touch-down regardless of tiny finger
      * movement, so a quick tap is never lost to scroll/gesture detection. */
-    lv_obj_add_event_cb(tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
     /* Start on whichever screen s_view_index was restored to (the overview
      * unless a specific location was last shown before the previous reboot),
@@ -991,6 +1014,10 @@ static void update_overview(void)
     lv_label_set_text(s_ov_ip_label, wifi_provision_get_ip());
     lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4); /* re-anchor: text width changed */
 
+    lv_label_set_text_fmt(s_ov_heap_label, "%u",
+                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4); /* re-anchor: text width changed */
+
     int64_t now_epoch = 0;
     for (int i = 0; i < s_cfg.location_count; i++) {
         if (s_fc_valid[i] && s_fc_cache[i]->point_count > 0) {
@@ -1232,6 +1259,7 @@ static void yr_weather_task(void *arg)
     bool overview = false;
     int sel = 0;            /* selected location index when not on the overview */
     time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
+    bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
 
     while (1) {
         /* Once a day, purely for memory-pressure hygiene. Checked every loop
@@ -1249,6 +1277,28 @@ static void yr_weather_task(void *arg)
             } else if (now_wall >= next_nightly_reboot) {
                 ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
                 esp_restart();
+            }
+
+            /* Night dimming - see s_tap_layer / NIGHT_DIM_*. Also checked
+             * every wake; a few minutes of drift at the 22:00/07:00 edges is
+             * unnoticeable. */
+            struct tm now_lt;
+            localtime_r(&now_wall, &now_lt);
+            bool want_dim = (now_lt.tm_hour >= NIGHT_DIM_START_HOUR ||
+                             now_lt.tm_hour < NIGHT_DIM_END_HOUR);
+            if (want_dim != night_dim_active) {
+                night_dim_active = want_dim;
+                if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                    if (want_dim) {
+                        lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);
+                        lv_obj_set_style_bg_opa(s_tap_layer, NIGHT_DIM_OPA, 0);
+                    } else {
+                        lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
+                    }
+                    esp_lv_adapter_unlock();
+                }
+                ESP_LOGI(TAG, "Night dimming %s (local hour %d)",
+                         want_dim ? "on" : "off", now_lt.tm_hour);
             }
         }
 
