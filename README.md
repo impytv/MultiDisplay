@@ -1,7 +1,7 @@
 | Supported Targets | ESP32-S3 |
 | ----------------- | -------- |
 
-# LVGL9 Adapter Demo
+# Coded with Claude based on the LVGL9 Adapter Demo
 
 This example targets the Waveshare `ESP32-S3-Touch-LCD-4.3B` board and runs the official
 `lv_demo_widgets()` demo with:

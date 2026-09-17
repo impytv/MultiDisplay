@@ -9,6 +9,7 @@
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 #include "esp_netif_sntp.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmap_generate_fonts.h"
@@ -1455,6 +1456,12 @@ static void yr_weather_task(void *arg)
 
 void app_main(void)
 {
+    /* Logged first, unconditionally, so a boot that never reaches "Got IP"
+     * still leaves a trail: reason 1 is a normal power-on, but e.g. 3 (panic)
+     * or 8 (task/int watchdog) points at a crash-reboot loop rather than a
+     * genuinely stuck WiFi connect. */
+    ESP_LOGI(TAG, "Reset reason: %d", esp_reset_reason());
+
     /* Europe/Oslo: CET (UTC+1), CEST (UTC+2) from the last Sunday of March
      * 02:00 to the last Sunday of October 03:00. Process-wide, so yr_client's
      * localtime_r() calls render the forecast's UTC timestamps in Norwegian

@@ -428,8 +428,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (!s_stop_reconnect) {
+            wifi_event_sta_disconnected_t *e = data;
             s_retries++;
-            ESP_LOGW(TAG, "WiFi disconnected, retrying (attempt %d)...", s_retries);
+            ESP_LOGW(TAG, "WiFi disconnected (reason %d), retrying (attempt %d)...",
+                     e ? e->reason : -1, s_retries);
+            /* A short backoff before hammering esp_wifi_connect() again - most
+             * useful right after power-on, when the AP itself may still be
+             * booting (e.g. after a power outage) and every immediate retry
+             * fails the same way for seconds at a time. Also keeps a fast
+             * retry storm from adding to the DRAM pressure already tight at
+             * boot (see the buffer_height comment in main.c). */
+            vTaskDelay(pdMS_TO_TICKS(300));
             esp_wifi_connect();
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
