@@ -1,4 +1,5 @@
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@
 #include "mmap_generate_fonts.h"
 #include "nvs_flash.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "adsb_client.h"
 #include "app_config.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
@@ -116,6 +118,24 @@ static const char *TAG = "lvgl9_demo";
 #define OV_ROW_H    76
 #define OV_ICON     34
 
+/* Aircraft radar screen (one per location that has it ticked in the setup
+ * portal): a sonar-style plot on the left, a table of the nearest aircraft on
+ * the right. Everything is drawn in one custom draw callback rather than as
+ * LVGL objects - an object per aircraft/label would cost scarce internal DRAM. */
+#define RADAR_CX            250
+#define RADAR_CY            262
+#define RADAR_R             190   /* outer ring radius, px */
+#define RADAR_LIST_X        500
+#define RADAR_LIST_Y        78
+#define RADAR_LIST_ROW_H    26
+#define RADAR_LIST_ROWS     14
+#define RADAR_TAGS          10    /* aircraft that also get a callsign tag on the plot */
+#define KM_PER_NM           1.852f
+/* One request per poll; adsb.fi allows at most 1/s. */
+#define ADSB_POLL_MS        5000
+/* Aircraft are dead-reckoned between polls, so repaint now and then. */
+#define RADAR_REDRAW_MS     2000
+
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
 
@@ -123,9 +143,19 @@ static const lv_font_t *s_font_large;
  * or the compiled-in defaults. Loaded once in app_main. */
 static app_config_t s_cfg;
 
-/* Which "stop" is on screen, advanced by a left-half tap. 0 is the overview
- * table (only a real stop when >= 2 locations); 1..location_count are the
- * per-location detail screens. The weather task watches this and re-renders. */
+/* The screens a tap cycles through, in order (see build_stops): the overview
+ * table (only with >= 2 locations), then for each location its weather screen
+ * followed by its aircraft radar if that is enabled for it. */
+typedef enum { STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2 } stop_kind_t;
+typedef struct {
+    uint8_t kind; /* stop_kind_t */
+    uint8_t loc;  /* location index; unused for the overview */
+} view_stop_t;
+static view_stop_t s_stops[1 + 2 * APP_CONFIG_MAX_LOCATIONS];
+static int s_stop_count;
+
+/* Index into s_stops of the screen on show. Advanced by a tap; the weather
+ * task watches it and re-renders. */
 static volatile int s_view_index;
 static TaskHandle_t s_yr_task;
 
@@ -135,6 +165,15 @@ static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
+
+/* Aircraft radar (built only if some location has it enabled). */
+static lv_obj_t *s_radar_root;
+static lv_obj_t *s_radar_title;
+static lv_obj_t *s_radar_info;
+static lv_obj_t *s_radar_canvas;
+static adsb_result_t *s_radar_data; /* PSRAM; last fetch for the location on show */
+static bool s_radar_valid;
+static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data was stored */
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
@@ -242,7 +281,7 @@ static void init_fonts(void)
 static void screen_touch_cb(lv_event_t *e)
 {
     (void)e;
-    if (s_cfg.location_count <= 1) {
+    if (s_stop_count <= 1) {
         return; /* nothing to cycle through */
     }
 
@@ -255,30 +294,60 @@ static void screen_touch_cb(lv_event_t *e)
     }
     last_tap_ms = now_ms;
 
-    int stops = s_cfg.location_count + 1; /* overview + one per location */
     int next = s_view_index + 1;
-    if (next >= stops) {
+    if (next >= s_stop_count) {
         next = 0;
     }
     s_view_index = next;
-    ESP_LOGI(TAG, "Tap: view %d (0=overview, 1..%d=locations)",
-             next, s_cfg.location_count);
+    ESP_LOGI(TAG, "Tap: view %d/%d", next, s_stop_count);
     if (s_yr_task != NULL) {
         xTaskNotifyGive(s_yr_task);
     }
 }
 
-/* Show either the overview table or the per-location detail screen. The
- * status label and tap layer sit above both and are left alone. */
-static void show_overview(bool on)
+/* Lay out the cycle of screens from the configuration. */
+static void build_stops(void)
 {
-    lv_obj_t *shown = on ? s_overview_root : s_detail_root;
-    lv_obj_t *hidden = on ? s_detail_root : s_overview_root;
-    if (hidden) {
-        lv_obj_add_flag(hidden, LV_OBJ_FLAG_HIDDEN);
+    s_stop_count = 0;
+    if (s_cfg.location_count >= 2) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
     }
-    if (shown) {
-        lv_obj_clear_flag(shown, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
+        if (s_cfg.radar_mask & (1u << i)) {
+            s_stops[s_stop_count++] = (view_stop_t){ STOP_RADAR, (uint8_t)i };
+        }
+    }
+}
+
+/* Show the overview table, the per-location weather screen or the radar. The
+ * status label and tap layer sit above all of them and are left alone. */
+static void show_view(stop_kind_t kind)
+{
+    lv_obj_t *roots[3];
+    roots[STOP_OVERVIEW] = s_overview_root;
+    roots[STOP_WEATHER] = s_detail_root;
+    roots[STOP_RADAR] = s_radar_root;
+    for (int k = 0; k < 3; k++) {
+        if (roots[k] == NULL) {
+            continue;
+        }
+        if (k == (int)kind) {
+            lv_obj_clear_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* The status text sits above whichever screen is shown. The radar is dark,
+     * so it needs light text there, and is moved over the table half so it
+     * doesn't sit on the plot. */
+    if (kind == STOP_RADAR) {
+        lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xDDE6EE), 0);
+        lv_obj_align(s_status_label, LV_ALIGN_CENTER, 245, 0);
+    } else {
+        lv_obj_remove_local_style_prop(s_status_label, LV_STYLE_TEXT_COLOR, 0);
+        lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
     }
 }
 
@@ -348,6 +417,349 @@ static void build_overview(lv_obj_t *root)
     lv_label_set_text(s_ov_heap_label, "");
 }
 
+/* --------------------------------------------------------------------------
+ * Aircraft radar
+ *
+ * The plot and table are painted straight into the draw layer from one
+ * LV_EVENT_DRAW_MAIN handler. LVGL renders in horizontal strips (the draw
+ * buffer is only a few lines tall), calling the handler once per strip, so
+ * every primitive is culled against the strip first: creating a draw task per
+ * element per strip would otherwise cost a lot of transient internal DRAM.
+ * ------------------------------------------------------------------------ */
+
+static bool radar_area_hits_clip(const lv_layer_t *layer, const lv_area_t *a)
+{
+    const lv_area_t *c = &layer->_clip_area;
+    return a->x1 <= c->x2 && a->x2 >= c->x1 && a->y1 <= c->y2 && a->y2 >= c->y1;
+}
+
+static bool radar_vis(const lv_layer_t *layer, int x1, int y1, int x2, int y2)
+{
+    lv_area_t a = { x1, y1, x2, y2 };
+    return radar_area_hits_clip(layer, &a);
+}
+
+static void radar_text(lv_layer_t *layer, const char *txt, int x, int y, int w,
+                       lv_text_align_t align, lv_color_t color)
+{
+    int h = lv_font_get_line_height(s_font_body);
+    if (!radar_vis(layer, x, y, x + w - 1, y + h - 1)) {
+        return;
+    }
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.font = s_font_body;
+    d.color = color;
+    d.text = txt;
+    d.text_local = 1; /* drawing is deferred; LVGL copies the string */
+    d.align = align;
+    lv_area_t a = { x, y, x + w - 1, y + h - 1 };
+    lv_draw_label(layer, &d, &a);
+}
+
+static void radar_line(lv_layer_t *layer, int x1, int y1, int x2, int y2, int width, lv_color_t color)
+{
+    int lo_x = x1 < x2 ? x1 : x2, hi_x = x1 < x2 ? x2 : x1;
+    int lo_y = y1 < y2 ? y1 : y2, hi_y = y1 < y2 ? y2 : y1;
+    if (!radar_vis(layer, lo_x - width, lo_y - width, hi_x + width, hi_y + width)) {
+        return;
+    }
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.p1.x = x1;
+    d.p1.y = y1;
+    d.p2.x = x2;
+    d.p2.y = y2;
+    d.width = width;
+    d.color = color;
+    d.opa = LV_OPA_COVER;
+    lv_draw_line(layer, &d);
+}
+
+/* A circle centred on the radar: an outline, optionally filled. */
+static void radar_circle(lv_layer_t *layer, int r, int border_w, lv_color_t border,
+                         bool fill, lv_color_t fill_color)
+{
+    lv_area_t a = { RADAR_CX - r, RADAR_CY - r, RADAR_CX + r, RADAR_CY + r };
+    if (!radar_area_hits_clip(layer, &a)) {
+        return;
+    }
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.radius = LV_RADIUS_CIRCLE;
+    d.bg_opa = fill ? LV_OPA_COVER : LV_OPA_TRANSP;
+    d.bg_color = fill_color;
+    d.border_width = border_w;
+    d.border_color = border;
+    d.border_opa = border_w > 0 ? LV_OPA_COVER : LV_OPA_TRANSP;
+    lv_draw_rect(layer, &d, &a);
+}
+
+static void radar_triangle(lv_layer_t *layer, const int pts[3][2], lv_color_t color)
+{
+    int lo_x = pts[0][0], hi_x = pts[0][0], lo_y = pts[0][1], hi_y = pts[0][1];
+    for (int i = 1; i < 3; i++) {
+        if (pts[i][0] < lo_x) lo_x = pts[i][0];
+        if (pts[i][0] > hi_x) hi_x = pts[i][0];
+        if (pts[i][1] < lo_y) lo_y = pts[i][1];
+        if (pts[i][1] > hi_y) hi_y = pts[i][1];
+    }
+    if (!radar_vis(layer, lo_x, lo_y, hi_x, hi_y)) {
+        return;
+    }
+    lv_draw_triangle_dsc_t d;
+    lv_draw_triangle_dsc_init(&d);
+    for (int i = 0; i < 3; i++) {
+        d.p[i].x = pts[i][0];
+        d.p[i].y = pts[i][1];
+    }
+    d.color = color;
+    d.opa = LV_OPA_COVER;
+    lv_draw_triangle(layer, &d);
+}
+
+/* Flight level from the transition altitude up, plain feet below it. */
+static void radar_fmt_alt(char *buf, size_t n, int32_t alt_ft)
+{
+    if (alt_ft == ADSB_ALT_UNKNOWN) {
+        snprintf(buf, n, "-");
+    } else if (alt_ft >= 7000) {
+        snprintf(buf, n, "FL%03d", (int)((alt_ft + 50) / 100));
+    } else {
+        snprintf(buf, n, "%d ft", (int)(((alt_ft + 50) / 100) * 100));
+    }
+}
+
+static void radar_draw_cb(lv_event_t *e)
+{
+    lv_layer_t *layer = lv_event_get_layer(e);
+    const lv_color_t c_disc = lv_color_hex(0x0A1E30);
+    const lv_color_t c_ring = lv_color_hex(0x1F6E45);
+    const lv_color_t c_txt = lv_color_hex(0xDDE6EE);
+    const lv_color_t c_dim = lv_color_hex(0x8AA0B4);
+    const lv_color_t c_plane = lv_color_hex(0xFF5A4F);
+    const lv_color_t c_vec = lv_color_hex(0xE060E0);
+    const int lh = lv_font_get_line_height(s_font_body);
+    const int range = s_cfg.radar_range_km;
+
+    /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot. */
+    radar_circle(layer, RADAR_R, 2, c_ring, true, c_disc);
+    for (int i = 1; i < 4; i++) {
+        radar_circle(layer, RADAR_R * i / 4, 1, c_ring, false, c_disc);
+    }
+    radar_line(layer, RADAR_CX - RADAR_R, RADAR_CY, RADAR_CX + RADAR_R, RADAR_CY, 1, c_ring);
+    radar_line(layer, RADAR_CX, RADAR_CY - RADAR_R, RADAR_CX, RADAR_CY + RADAR_R, 1, c_ring);
+    radar_circle(layer, 3, 0, c_txt, true, c_txt);
+
+    /* Compass letters at the rim and the ring distances along the east spoke. */
+    radar_text(layer, "N", RADAR_CX - 12, RADAR_CY - RADAR_R - lh + 1, 24, LV_TEXT_ALIGN_CENTER, c_txt);
+    radar_text(layer, "S", RADAR_CX - 12, RADAR_CY + RADAR_R + 1, 24, LV_TEXT_ALIGN_CENTER, c_txt);
+    radar_text(layer, "\xC3\x98", RADAR_CX + RADAR_R + 4, RADAR_CY - lh / 2, 24, LV_TEXT_ALIGN_LEFT, c_txt);
+    radar_text(layer, "V", RADAR_CX - RADAR_R - 28, RADAR_CY - lh / 2, 24, LV_TEXT_ALIGN_RIGHT, c_txt);
+    /* Range labels on every other ring: the second ring's number sits on the
+     * east spoke; the outer ring's is lifted one line above the spoke (clear of
+     * the "\xC3\x98" there), with the number just inside the ring and the unit
+     * just outside it. */
+    for (int i = 2; i <= 4; i += 2) {
+        char num[12];
+        if (range % 4 == 0) {
+            snprintf(num, sizeof(num), "%d", range * i / 4);
+        } else {
+            snprintf(num, sizeof(num), "%.1f", range * i / 4.0f);
+        }
+        if (i == 2) {
+            radar_text(layer, num, RADAR_CX + RADAR_R * i / 4 - 70, RADAR_CY - lh - 1, 70,
+                       LV_TEXT_ALIGN_RIGHT, c_dim);
+        } else {
+            int y = RADAR_CY - 2 * lh - 1;
+            float dy = (float)(RADAR_CY - (y + lh / 2)); /* label centre above the spoke */
+            int ring_x = RADAR_CX + (int)lroundf(sqrtf((float)(RADAR_R * RADAR_R) - dy * dy));
+            radar_text(layer, num, ring_x - 4 - 60, y, 60, LV_TEXT_ALIGN_RIGHT, c_dim);
+            radar_text(layer, "km", ring_x + 4, y, 34, LV_TEXT_ALIGN_LEFT, c_dim);
+        }
+    }
+
+    /* Table header + divider. */
+    radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
+    radar_text(layer, "Fly", RADAR_LIST_X, 50, 88, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_text(layer, "Type", RADAR_LIST_X + 88, 50, 58, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_text(layer, "H\xC3\xB8yde", RADAR_LIST_X + 146, 50, 72, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_text(layer, "kt", RADAR_LIST_X + 218, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_text(layer, "km", RADAR_LIST_X + 256, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
+
+    if (!s_radar_valid || s_radar_data == NULL) {
+        return;
+    }
+    const adsb_result_t *res = s_radar_data;
+
+    if (res->count == 0) {
+        char none[48];
+        snprintf(none, sizeof(none), "Ingen fly innen %d km", range);
+        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
+        return;
+    }
+
+    lv_area_t tags[RADAR_TAGS];
+    int n_tags = 0;
+    const float age_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
+    const float deg = (float)M_PI / 180.0f;
+
+    for (int i = 0; i < res->count; i++) {
+        const adsb_aircraft_t *a = &res->ac[i];
+
+        /* Where it is now: its reported position moved along its track for the
+         * time since the report (fetch age + the report's own age). */
+        float br = a->bearing_deg * deg;
+        float tr = a->track_deg * deg;
+        float x_km = a->dist_km * sinf(br);
+        float y_km = a->dist_km * cosf(br);
+        float moved_km = a->gs_kt * KM_PER_NM * (age_s + a->seen_pos_s) / 3600.0f;
+        x_km += moved_km * sinf(tr);
+        y_km += moved_km * cosf(tr);
+
+        float sx = x_km / (float)range * RADAR_R;
+        float sy = y_km / (float)range * RADAR_R;
+        if (sx * sx + sy * sy > (float)(RADAR_R * RADAR_R)) {
+            continue; /* flown out of range since the report */
+        }
+        int px = RADAR_CX + (int)lroundf(sx);
+        int py = RADAR_CY - (int)lroundf(sy);
+
+        /* Heading triangle plus a 60-second speed vector ahead of it. */
+        float fx = sinf(tr), fy = -cosf(tr); /* unit vector along the track, screen coords */
+        float qx = -fy, qy = fx;             /* perpendicular */
+        int tri[3][2] = {
+            { px + (int)lroundf(fx * 9), py + (int)lroundf(fy * 9) },
+            { px + (int)lroundf(-fx * 5 + qx * 5), py + (int)lroundf(-fy * 5 + qy * 5) },
+            { px + (int)lroundf(-fx * 5 - qx * 5), py + (int)lroundf(-fy * 5 - qy * 5) },
+        };
+        float vec_px = a->gs_kt * KM_PER_NM / 60.0f / (float)range * RADAR_R;
+        if (vec_px > 70.0f) {
+            vec_px = 70.0f;
+        }
+        {
+            /* Keep the vector inside the outer ring: distance along the track
+             * from the aircraft to where it crosses the ring. */
+            float b = sx * fx - sy * fy; /* p . f, with p in screen coordinates (y down) */
+            float c = sx * sx + sy * sy - (float)(RADAR_R * RADAR_R);
+            float t_max = -b + sqrtf(b * b - c) - 9.0f;
+            if (vec_px > t_max) {
+                vec_px = t_max;
+            }
+        }
+        if (vec_px > 3.0f) {
+            radar_line(layer, tri[0][0], tri[0][1],
+                       px + (int)lroundf(fx * (9 + vec_px)), py + (int)lroundf(fy * (9 + vec_px)),
+                       1, c_vec);
+        }
+        radar_triangle(layer, tri, c_plane);
+
+        /* Callsign tag for the nearest few, on the side facing the centre;
+         * skipped if it would land on a tag already placed. */
+        if (i < RADAR_TAGS) {
+            lv_point_t sz;
+            lv_text_get_size(&sz, a->callsign, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            lv_area_t tag = { (px < RADAR_CX) ? px + 12 : px - 12 - sz.x, py - lh / 2, 0, py + lh / 2 };
+            tag.x2 = tag.x1 + sz.x + 2;
+            bool clash = false;
+            for (int k = 0; k < n_tags; k++) {
+                const lv_area_t *o = &tags[k];
+                if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
+                    clash = true;
+                    break;
+                }
+            }
+            if (!clash) {
+                tags[n_tags++] = tag;
+                radar_text(layer, a->callsign, tag.x1, tag.y1, sz.x + 2, LV_TEXT_ALIGN_LEFT, c_txt);
+            }
+        }
+    }
+
+    /* Table of the nearest aircraft. */
+    for (int i = 0; i < res->count && i < RADAR_LIST_ROWS; i++) {
+        const adsb_aircraft_t *a = &res->ac[i];
+        int y = RADAR_LIST_Y + i * RADAR_LIST_ROW_H;
+        char alt[16], gs[8], dist[8];
+        radar_fmt_alt(alt, sizeof(alt), a->alt_ft);
+        snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
+        snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
+        radar_text(layer, a->callsign, RADAR_LIST_X, y, 88, LV_TEXT_ALIGN_LEFT, c_txt);
+        radar_text(layer, a->type, RADAR_LIST_X + 88, y, 58, LV_TEXT_ALIGN_LEFT, c_dim);
+        radar_text(layer, alt, RADAR_LIST_X + 146, y, 72, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_text(layer, gs, RADAR_LIST_X + 218, y, 38, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_text(layer, dist, RADAR_LIST_X + 256, y, 38, LV_TEXT_ALIGN_RIGHT, c_txt);
+    }
+    if (res->total > res->count) {
+        char more[40];
+        snprintf(more, sizeof(more), "Viser %d av %d fly", res->count, res->total);
+        radar_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
+                   290, LV_TEXT_ALIGN_LEFT, c_dim);
+    }
+}
+
+/* Positions are extrapolated from each aircraft's speed and track, so repaint
+ * periodically while the radar is on screen. Runs in the LVGL task. */
+static void radar_redraw_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_radar_valid && s_radar_canvas != NULL && !lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_invalidate(s_radar_canvas);
+    }
+}
+
+/* Called with the adapter lock held. */
+static void radar_apply(const adsb_result_t *res)
+{
+    memcpy(s_radar_data, res, sizeof(*res));
+    s_radar_valid = true;
+    s_radar_tick = lv_tick_get();
+
+    char info[64];
+    time_t now = time(NULL);
+    if (now > PLAUSIBLE_EPOCH_S) {
+        struct tm lt;
+        localtime_r(&now, &lt);
+        snprintf(info, sizeof(info), "%d fly innen %u km  kl. %02d:%02d",
+                 res->total, (unsigned)s_cfg.radar_range_km, lt.tm_hour, lt.tm_min);
+    } else {
+        snprintf(info, sizeof(info), "%d fly innen %u km", res->total, (unsigned)s_cfg.radar_range_km);
+    }
+    lv_label_set_text(s_radar_info, info);
+    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
+    lv_obj_invalidate(s_radar_canvas);
+}
+
+static void build_radar(lv_obj_t *root)
+{
+    s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
+    assert(s_radar_data != NULL);
+
+    /* A dark screen of its own: reads like a radar, and is easy on the eyes at
+     * night. Text colour is inherited by the labels below. */
+    lv_obj_set_style_bg_color(root, lv_color_hex(0x050B12), 0);
+    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(root, lv_color_hex(0xDDE6EE), 0);
+
+    s_radar_canvas = lv_obj_create(root);
+    lv_obj_remove_style_all(s_radar_canvas);
+    lv_obj_set_pos(s_radar_canvas, 0, 0);
+    lv_obj_set_size(s_radar_canvas, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(s_radar_canvas, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_radar_canvas, radar_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+
+    s_radar_title = lv_label_create(root);
+    lv_obj_set_style_text_font(s_radar_title, s_font_large, 0);
+    lv_obj_set_pos(s_radar_title, 12, 4);
+    lv_label_set_text(s_radar_title, "");
+
+    s_radar_info = lv_label_create(root);
+    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
+    lv_label_set_text(s_radar_info, "");
+
+    lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
+}
+
 static void build_ui(lv_obj_t *screen)
 {
     lv_obj_set_style_text_font(screen, s_font_body, 0);
@@ -372,10 +784,11 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_set_style_text_align(s_overview_root, LV_TEXT_ALIGN_CENTER, 0);
 
     /* If s_view_index was restored (see app_config_save_last_view) to a
-     * specific location's detail screen, show its name from the first frame
-     * rather than always location 0's - the weather task corrects this
-     * itself moments later regardless, once WiFi is up. */
-    int initial_loc = (s_cfg.location_count >= 2 && s_view_index > 0) ? (s_view_index - 1) : 0;
+     * specific location's screen, show its name from the first frame rather
+     * than always location 0's - the weather task corrects this itself
+     * moments later regardless, once WiFi is up. */
+    const view_stop_t *initial_stop = &s_stops[s_view_index];
+    int initial_loc = (initial_stop->kind == STOP_OVERVIEW) ? 0 : initial_stop->loc;
 
     s_location_label = lv_label_create(s_detail_root);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
@@ -511,6 +924,19 @@ static void build_ui(lv_obj_t *screen)
         build_overview(s_overview_root);
     }
 
+    /* The radar screen exists only if some location has it enabled. */
+    if (s_cfg.radar_mask != 0) {
+        s_radar_root = lv_obj_create(screen);
+        lv_obj_remove_style_all(s_radar_root);
+        lv_obj_set_pos(s_radar_root, 0, 0);
+        lv_obj_set_size(s_radar_root, LV_PCT(100), LV_PCT(100));
+        lv_obj_clear_flag(s_radar_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        build_radar(s_radar_root);
+        if (initial_stop->kind == STOP_RADAR) {
+            lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[initial_loc].name);
+        }
+    }
+
     /* Created after both view layers so it sits on top of whichever is shown:
      * loading/error text, centered over the screen until data lands. */
     s_status_label = lv_label_create(screen);
@@ -536,10 +962,9 @@ static void build_ui(lv_obj_t *screen)
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
-    /* Start on whichever screen s_view_index was restored to (the overview
-     * unless a specific location was last shown before the previous reboot),
-     * or the single location's detail screen if there's only one. */
-    show_overview(s_cfg.location_count >= 2 && s_view_index == 0);
+    /* Start on whichever screen s_view_index was restored to (the first stop
+     * unless another was showing before the previous reboot). */
+    show_view((stop_kind_t)initial_stop->kind);
 }
 
 /* Centers label horizontally on chart_x (absolute) and places it either
@@ -1190,6 +1615,27 @@ static void provision_status_cb(const char *msg)
     }
 }
 
+/* One ADS-B poll for the radar of location `loc`, shown only if the screen is
+ * still `for_view` when the reply lands. The previous plot is kept on a failed
+ * poll (it just keeps dead-reckoning) unless there is none yet. */
+static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
+{
+    double lat = atof(s_cfg.locations[loc].lat);
+    double lon = atof(s_cfg.locations[loc].lon);
+    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg.radar_range_km, scratch) == ESP_OK);
+
+    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    if (ok) {
+        lv_label_set_text(s_status_label, "");
+        radar_apply(scratch);
+    } else if (!s_radar_valid) {
+        lv_label_set_text(s_status_label, "Kunne ikke hente fly. Pr\xC3\xB8ver igjen...");
+    }
+    esp_lv_adapter_unlock();
+}
+
 /* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
  * hasn't happened yet, otherwise tomorrow's. `now` must already be a plausible
  * (synced) epoch. */
@@ -1243,7 +1689,9 @@ static void yr_weather_task(void *arg)
     yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
     yr_forecast_t *resampled = heap_caps_malloc(sizeof(*resampled), MALLOC_CAP_SPIRAM);
     yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
-    bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL && nowcast != NULL);
+    adsb_result_t *adsb_scratch = heap_caps_malloc(sizeof(*adsb_scratch), MALLOC_CAP_SPIRAM);
+    bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL &&
+                      nowcast != NULL && adsb_scratch != NULL);
     for (int i = 0; i < s_cfg.location_count; i++) {
         s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
         if (s_fc_cache[i] == NULL) {
@@ -1258,6 +1706,7 @@ static void yr_weather_task(void *arg)
 
     int active_view = -1;   /* -1 forces a first render; else == s_view_index  */
     bool overview = false;
+    bool radar = false;
     int sel = 0;            /* selected location index when not on the overview */
     time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
     bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
@@ -1312,17 +1761,24 @@ static void yr_weather_task(void *arg)
         bool force_sel_refetch = false;
         if (want_view != active_view) {
             active_view = want_view;
-            overview = (s_cfg.location_count >= 2 && want_view == 0);
-            sel = overview ? 0
-                : (s_cfg.location_count >= 2 ? want_view - 1 : 0);
-            force_sel_refetch = !overview;
+            const view_stop_t *stop = &s_stops[want_view];
+            overview = (stop->kind == STOP_OVERVIEW);
+            radar = (stop->kind == STOP_RADAR);
+            sel = overview ? 0 : stop->loc;
+            force_sel_refetch = (stop->kind == STOP_WEATHER);
 
             /* So a reboot of any kind - nightly, power cycle, crash - comes
              * back showing this same screen instead of the overview. */
             app_config_save_last_view((uint8_t)want_view);
 
+            /* The radar keeps its HTTPS connection open between polls; drop it
+             * (and its TLS buffers) as soon as the radar isn't on screen. */
+            if (!radar) {
+                adsb_client_close();
+            }
+
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                show_overview(overview);
+                show_view((stop_kind_t)stop->kind);
                 if (overview) {
                     if (any_cache_valid()) {
                         lv_label_set_text(s_status_label, "");
@@ -1330,6 +1786,14 @@ static void yr_weather_task(void *arg)
                     } else {
                         lv_label_set_text(s_status_label, "Henter oversikt...");
                     }
+                } else if (radar) {
+                    /* Never show another location's aircraft: blank until the
+                     * first fetch for this one lands. */
+                    s_radar_valid = false;
+                    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[sel].name);
+                    lv_label_set_text(s_radar_info, "");
+                    lv_obj_invalidate(s_radar_canvas);
+                    lv_label_set_text(s_status_label, "Henter fly...");
                 } else {
                     const app_location_t *loc = &s_cfg.locations[sel];
                     if (s_cfg.location_count > 1) {
@@ -1347,13 +1811,20 @@ static void yr_weather_task(void *arg)
             }
         }
 
+        if (radar) {
+            radar_poll(sel, adsb_scratch, active_view);
+        }
+
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
 
         /* Refresh any stale or missing location forecast. The selected one is
          * done first so the detail view updates promptly; the rest keep the
          * overview warm. N <= 5 and the cadence is 10 min, so this is a fetch
-         * or two per wake at most. */
-        for (int k = 0; k < s_cfg.location_count; k++) {
+         * or two per wake at most. Skipped entirely on the radar: it polls
+         * every few seconds and is the only thing that should use the network
+         * there. Whatever went stale is refreshed when a weather screen or the
+         * overview is next shown. */
+        for (int k = 0; !radar && k < s_cfg.location_count; k++) {
             if (s_view_index != active_view) {
                 break; /* view changed mid-scan - restart the loop */
             }
@@ -1405,6 +1876,8 @@ static void yr_weather_task(void *arg)
                 }
                 esp_lv_adapter_unlock();
             }
+        } else if (radar) {
+            /* Already handled above; nothing weather-related to draw here. */
         } else {
             /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
             double lat = atof(s_cfg.locations[sel].lat);
@@ -1449,8 +1922,9 @@ static void yr_weather_task(void *arg)
          * while still waiting for the first data. A tap notifies us, cutting
          * the wait short. */
         bool ready = overview ? any_cache_valid() : s_fc_valid[sel];
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ready ? NOWCAST_REFRESH_INTERVAL_MS
-                                                     : WEATHER_RETRY_INTERVAL_MS));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
+                                               : (ready ? NOWCAST_REFRESH_INTERVAL_MS
+                                                        : WEATHER_RETRY_INTERVAL_MS)));
     }
 }
 
@@ -1480,8 +1954,9 @@ void app_main(void)
     /* Resume on whatever screen was showing before this boot (see
      * app_config_save_last_view) rather than always starting at the
      * overview. Clamped in case the location count shrank since. */
+    build_stops();
     s_view_index = app_config_load_last_view();
-    if (s_view_index > s_cfg.location_count) {
+    if (s_view_index >= s_stop_count) {
         s_view_index = 0;
     }
 

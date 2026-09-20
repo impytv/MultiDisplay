@@ -30,6 +30,8 @@ static void seed_defaults(app_config_t *out)
     snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
     snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
     out->location_count = 1;
+    out->radar_mask = 0;
+    out->radar_range_km = APP_CONFIG_RADAR_KM_DEFAULT;
 }
 
 esp_err_t app_config_load(app_config_t *out)
@@ -63,11 +65,20 @@ esp_err_t app_config_load(app_config_t *out)
         load_str(h, "lon", out->locations[0].lon, sizeof(out->locations[0].lon));
         out->location_count = 1;
     }
+
+    nvs_get_u8(h, "radar", &out->radar_mask); /* absent (older firmware): stays 0 */
+    out->radar_mask &= (uint8_t)((1u << out->location_count) - 1);
+    uint16_t km = 0;
+    if (nvs_get_u16(h, "radarkm", &km) == ESP_OK &&
+        km >= APP_CONFIG_RADAR_KM_MIN && km <= APP_CONFIG_RADAR_KM_MAX) {
+        out->radar_range_km = km;
+    }
     nvs_close(h);
 
-    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s)",
+    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), radar mask 0x%02x range %u km",
              out->wifi_ssid, out->location_count, out->locations[0].name,
-             out->locations[0].lat, out->locations[0].lon);
+             out->locations[0].lat, out->locations[0].lon,
+             out->radar_mask, out->radar_range_km);
     return ESP_OK;
 }
 
@@ -90,6 +101,8 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "pass", cfg->wifi_pass);
     if (err == ESP_OK) err = nvs_set_blob(h, "locs", cfg->locations, sizeof(cfg->locations));
     if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
+    if (err == ESP_OK) err = nvs_set_u8(h, "radar", cfg->radar_mask & (uint8_t)((1u << cnt) - 1));
+    if (err == ESP_OK) err = nvs_set_u16(h, "radarkm", cfg->radar_range_km);
     if (err == ESP_OK) err = nvs_set_u8(h, "prov", 1);
     /* Retire the legacy single-location keys, if this NVS was written by an
      * older firmware. Missing keys just return NOT_FOUND - ignore. */

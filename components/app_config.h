@@ -16,6 +16,11 @@
  * time and cycles to the next when the screen is tapped. */
 #define APP_CONFIG_MAX_LOCATIONS 5
 
+/* Aircraft radar: how far out (kilometres) it looks around a location. */
+#define APP_CONFIG_RADAR_KM_DEFAULT 40
+#define APP_CONFIG_RADAR_KM_MIN     10
+#define APP_CONFIG_RADAR_KM_MAX     185
+
 typedef struct {
     char name[APP_CONFIG_NAME_MAX];
     char lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
@@ -27,6 +32,11 @@ typedef struct {
     char wifi_pass[APP_CONFIG_PASS_MAX];
     app_location_t locations[APP_CONFIG_MAX_LOCATIONS];
     uint8_t location_count; /* always in [1, APP_CONFIG_MAX_LOCATIONS] */
+    /* Bit i set = location i also gets an aircraft-radar screen after its
+     * weather screen. Kept out of app_location_t so the stored "locs" blob
+     * layout doesn't change. */
+    uint8_t radar_mask;
+    uint16_t radar_range_km; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
 } app_config_t;
 
 /**

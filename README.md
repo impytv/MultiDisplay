@@ -47,6 +47,24 @@ cycle through the stops:
 2. One detail screen per location (chart + wind), in order. The top-left
    label shows e.g. `Oslo  2/3`.
 
+### Aircraft radar
+
+Tick **Aircraft radar** on a location in the setup page and that location gets
+a live aircraft screen right after its weather screen (Oslo weather, then Oslo
+radar, then the next location, ...). Set the **Radar range** (kilometres,
+10-185, default 40) on the same page; it applies to every radar screen.
+
+The screen shows a sonar-style plot centred on the location (north up, range
+rings at quarter steps, a heading triangle and a 60-second speed vector per
+aircraft, callsign tags for the nearest ones) and a table of the nearest 14
+aircraft: callsign, type, altitude (flight level from 7000 ft), ground speed in
+knots and distance in kilometres. Aircraft on the ground are left out.
+Positions come from [adsb.fi's open API](https://opendata.adsb.fi/) - free, no
+key, personal non-commercial use, one request per second at most - and are
+polled every 5 s while a radar screen is showing (the connection is kept open
+between polls, and no weather forecasts are fetched meanwhile), then
+extrapolated along each aircraft's track in between.
+
 The overview stop only appears when two or more locations are configured.
 All locations' hourly forecasts are kept refreshed in the background so the
 table is always current; the detail screens additionally splice in the

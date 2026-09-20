@@ -120,6 +120,8 @@ static const char PAGE_HEAD[] =
     ".row{display:flex;gap:.6rem}.row>div{flex:1}small{color:#666}"
     "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
     "legend{padding:0 .4rem;color:#555;font-weight:600}"
+    "label.chk{display:flex;align-items:center;gap:.5rem;font-weight:400}"
+    "label.chk input{width:auto}"
     "</style><h1>MultiDisplay setup</h1><form method=post action=/save>";
 
 static const char PAGE_TAIL[] =
@@ -130,7 +132,7 @@ static const char PAGE_TAIL[] =
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 6144;
+    const size_t cap = 8192;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -152,8 +154,10 @@ static char *build_page(const app_config_t *cfg)
 
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more forecast "
-                  "locations. The screen shows one at a time; tap its left half "
-                  "to cycle to the next. Leave a block empty to skip it.</small>");
+                  "locations. The screen shows one at a time; tap anywhere "
+                  "to cycle to the next. Leave a block empty to skip it. Tick "
+                  "&quot;Aircraft radar&quot; to add a live aircraft screen after "
+                  "that location's weather screen.</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -173,8 +177,18 @@ static char *build_page(const app_config_t *cfg)
         if (filled) {
             p = html_escape_append(p, end, cfg->locations[i].lon);
         }
-        p += snprintf(p, end - p, "\"></div></div></fieldset>");
+        p += snprintf(p, end - p, "\"></div></div>"
+                      "<label class=chk><input type=checkbox name=radar%d value=1%s> "
+                      "Aircraft radar</label></fieldset>",
+                      i, (filled && (cfg->radar_mask & (1u << i))) ? " checked" : "");
     }
+
+    p += snprintf(p, end - p,
+                  "<label>Radar range (kilometres, %d&ndash;%d)</label>"
+                  "<input name=radarkm type=number inputmode=numeric min=%d max=%d value=%u>",
+                  APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
+                  APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
+                  (unsigned)cfg->radar_range_km);
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
     return buf;
@@ -277,6 +291,7 @@ static esp_err_t h_save(httpd_req_t *req)
      * with all three fields empty is skipped; the rest are compacted so the
      * stored list has no gaps. */
     app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint8_t radar_mask = 0; /* compacted the same way as the locations */
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[8];
@@ -307,6 +322,13 @@ static esp_err_t h_save(httpd_req_t *req)
         snprintf(locs[n].name, sizeof(locs[n].name), "%s", name);
         snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
         snprintf(locs[n].lon, sizeof(locs[n].lon), "%s", lon);
+
+        /* An unchecked checkbox is simply absent from the form body. */
+        char radar_val[4];
+        snprintf(key, sizeof(key), "radar%d", i);
+        if (form_field(body, key, radar_val, sizeof(radar_val))) {
+            radar_mask |= (uint8_t)(1u << n);
+        }
         n++;
     }
 
@@ -320,6 +342,14 @@ static esp_err_t h_save(httpd_req_t *req)
 
     memcpy(cfg.locations, locs, sizeof(cfg.locations));
     cfg.location_count = (uint8_t)n;
+    cfg.radar_mask = radar_mask;
+
+    char km_text[8];
+    long km = form_field(body, "radarkm", km_text, sizeof(km_text)) ? strtol(km_text, NULL, 10) : 0;
+    if (km < APP_CONFIG_RADAR_KM_MIN || km > APP_CONFIG_RADAR_KM_MAX) {
+        km = APP_CONFIG_RADAR_KM_DEFAULT; /* blank or out of range: fall back */
+    }
+    cfg.radar_range_km = (uint16_t)km;
 
     if (app_config_save(&cfg) != ESP_OK) {
         return httpd_resp_send_500(req);
