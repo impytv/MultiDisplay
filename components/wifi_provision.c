@@ -120,8 +120,7 @@ static const char PAGE_HEAD[] =
     ".row{display:flex;gap:.6rem}.row>div{flex:1}small{color:#666}"
     "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
     "legend{padding:0 .4rem;color:#555;font-weight:600}"
-    "label.chk{display:flex;align-items:center;gap:.5rem;font-weight:400}"
-    "label.chk input{width:auto}"
+    "select{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem;background:#fff}"
     "</style><h1>MultiDisplay setup</h1><form method=post action=/save>";
 
 static const char PAGE_TAIL[] =
@@ -132,7 +131,7 @@ static const char PAGE_TAIL[] =
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 8192;
+    const size_t cap = 12288;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -155,9 +154,10 @@ static char *build_page(const app_config_t *cfg)
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more forecast "
                   "locations. The screen shows one at a time; tap anywhere "
-                  "to cycle to the next. Leave a block empty to skip it. Tick "
-                  "&quot;Aircraft radar&quot; to add a live aircraft screen after "
-                  "that location's weather screen.</small>");
+                  "to cycle to the next. Leave a block empty to skip it. For "
+                  "each location choose whether it shows its weather, a live "
+                  "aircraft radar, or both (radar after weather), and how far "
+                  "the radar looks.</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -177,18 +177,22 @@ static char *build_page(const app_config_t *cfg)
         if (filled) {
             p = html_escape_append(p, end, cfg->locations[i].lon);
         }
+        int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
+        int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         p += snprintf(p, end - p, "\"></div></div>"
-                      "<label class=chk><input type=checkbox name=radar%d value=1%s> "
-                      "Aircraft radar</label></fieldset>",
-                      i, (filled && (cfg->radar_mask & (1u << i))) ? " checked" : "");
+                      "<label>Show</label><select name=show%d>"
+                      "<option value=1%s>Weather</option>"
+                      "<option value=2%s>Aircraft radar</option>"
+                      "<option value=3%s>Weather and aircraft radar</option></select>"
+                      "<label>Radar range (km, %d&ndash;%d)</label>"
+                      "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d>"
+                      "</fieldset>",
+                      i, show == APP_SHOW_WEATHER ? " selected" : "",
+                      show == APP_SHOW_RADAR ? " selected" : "",
+                      show == (APP_SHOW_WEATHER | APP_SHOW_RADAR) ? " selected" : "",
+                      APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
+                      i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km);
     }
-
-    p += snprintf(p, end - p,
-                  "<label>Radar range (kilometres, %d&ndash;%d)</label>"
-                  "<input name=radarkm type=number inputmode=numeric min=%d max=%d value=%u>",
-                  APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
-                  APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
-                  (unsigned)cfg->radar_range_km);
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
     return buf;
@@ -263,7 +267,7 @@ static void reboot_task(void *arg)
 
 static esp_err_t h_save(httpd_req_t *req)
 {
-    char body[1600];
+    char body[2048];
     int total = 0;
     while (total < req->content_len && total < (int)sizeof(body) - 1) {
         int r = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
@@ -291,10 +295,11 @@ static esp_err_t h_save(httpd_req_t *req)
      * with all three fields empty is skipped; the rest are compacted so the
      * stored list has no gaps. */
     app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
-    uint8_t radar_mask = 0; /* compacted the same way as the locations */
+    uint8_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
+    uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-        char key[8];
+        char key[16];
         char name[APP_CONFIG_NAME_MAX];
         char lat[APP_CONFIG_COORD_MAX];
         char lon[APP_CONFIG_COORD_MAX];
@@ -323,12 +328,16 @@ static esp_err_t h_save(httpd_req_t *req)
         snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
         snprintf(locs[n].lon, sizeof(locs[n].lon), "%s", lon);
 
-        /* An unchecked checkbox is simply absent from the form body. */
-        char radar_val[4];
-        snprintf(key, sizeof(key), "radar%d", i);
-        if (form_field(body, key, radar_val, sizeof(radar_val))) {
-            radar_mask |= (uint8_t)(1u << n);
-        }
+        /* What to show (1 weather, 2 radar, 3 both) and the radar range;
+         * anything missing or out of range falls back to weather / default. */
+        char val[8];
+        snprintf(key, sizeof(key), "show%d", i);
+        long sh = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : APP_SHOW_WEATHER;
+        show[n] = (sh >= 1 && sh <= 3) ? (uint8_t)sh : APP_SHOW_WEATHER;
+        snprintf(key, sizeof(key), "radarkm%d", i);
+        long km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        radar_km[n] = (km >= APP_CONFIG_RADAR_KM_MIN && km <= APP_CONFIG_RADAR_KM_MAX)
+                          ? (uint16_t)km : APP_CONFIG_RADAR_KM_DEFAULT;
         n++;
     }
 
@@ -337,19 +346,17 @@ static esp_err_t h_save(httpd_req_t *req)
         snprintf(locs[0].name, sizeof(locs[0].name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
         snprintf(locs[0].lat, sizeof(locs[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
         snprintf(locs[0].lon, sizeof(locs[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
+        show[0] = APP_SHOW_WEATHER;
+        radar_km[0] = APP_CONFIG_RADAR_KM_DEFAULT;
         n = 1;
     }
 
     memcpy(cfg.locations, locs, sizeof(cfg.locations));
     cfg.location_count = (uint8_t)n;
-    cfg.radar_mask = radar_mask;
-
-    char km_text[8];
-    long km = form_field(body, "radarkm", km_text, sizeof(km_text)) ? strtol(km_text, NULL, 10) : 0;
-    if (km < APP_CONFIG_RADAR_KM_MIN || km > APP_CONFIG_RADAR_KM_MAX) {
-        km = APP_CONFIG_RADAR_KM_DEFAULT; /* blank or out of range: fall back */
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        cfg.show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
+        cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
     }
-    cfg.radar_range_km = (uint16_t)km;
 
     if (app_config_save(&cfg) != ESP_OK) {
         return httpd_resp_send_500(req);

@@ -22,6 +22,21 @@ static void load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_len)
     nvs_get_str(h, key, dst, &len);
 }
 
+/* Whatever was stored, leave every location with at least one screen and a
+ * radar range inside the allowed span. */
+static void sanitize_view_settings(app_config_t *c)
+{
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        c->show[i] &= (APP_SHOW_WEATHER | APP_SHOW_RADAR);
+        if (c->show[i] == 0) {
+            c->show[i] = APP_SHOW_WEATHER;
+        }
+        if (c->radar_km[i] < APP_CONFIG_RADAR_KM_MIN || c->radar_km[i] > APP_CONFIG_RADAR_KM_MAX) {
+            c->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
+        }
+    }
+}
+
 static void seed_defaults(app_config_t *out)
 {
     snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", CONFIG_EXAMPLE_WIFI_SSID);
@@ -30,8 +45,10 @@ static void seed_defaults(app_config_t *out)
     snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
     snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
     out->location_count = 1;
-    out->radar_mask = 0;
-    out->radar_range_km = APP_CONFIG_RADAR_KM_DEFAULT;
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        out->show[i] = APP_SHOW_WEATHER;
+        out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
+    }
 }
 
 esp_err_t app_config_load(app_config_t *out)
@@ -66,19 +83,38 @@ esp_err_t app_config_load(app_config_t *out)
         out->location_count = 1;
     }
 
-    nvs_get_u8(h, "radar", &out->radar_mask); /* absent (older firmware): stays 0 */
-    out->radar_mask &= (uint8_t)((1u << out->location_count) - 1);
-    uint16_t km = 0;
-    if (nvs_get_u16(h, "radarkm", &km) == ESP_OK &&
-        km >= APP_CONFIG_RADAR_KM_MIN && km <= APP_CONFIG_RADAR_KM_MAX) {
-        out->radar_range_km = km;
+    /* Per-location screens and radar ranges. Firmware before per-location
+     * settings stored one radar bitmask ("radar": weather always, radar where
+     * the bit is set) and one shared range ("radarkm"); read those if the new
+     * keys aren't there yet. */
+    size_t len = sizeof(out->show);
+    if (nvs_get_blob(h, "show", out->show, &len) != ESP_OK || len != sizeof(out->show)) {
+        uint8_t mask = 0;
+        nvs_get_u8(h, "radar", &mask);
+        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+            out->show[i] = APP_SHOW_WEATHER | ((mask & (1u << i)) ? APP_SHOW_RADAR : 0);
+        }
+    }
+    len = sizeof(out->radar_km);
+    if (nvs_get_blob(h, "radarkms", out->radar_km, &len) != ESP_OK || len != sizeof(out->radar_km)) {
+        uint16_t km = APP_CONFIG_RADAR_KM_DEFAULT;
+        nvs_get_u16(h, "radarkm", &km);
+        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+            out->radar_km[i] = km;
+        }
     }
     nvs_close(h);
+    sanitize_view_settings(out);
 
-    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), radar mask 0x%02x range %u km",
+    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s)",
              out->wifi_ssid, out->location_count, out->locations[0].name,
-             out->locations[0].lat, out->locations[0].lon,
-             out->radar_mask, out->radar_range_km);
+             out->locations[0].lat, out->locations[0].lon);
+    for (int i = 0; i < out->location_count; i++) {
+        ESP_LOGI(TAG, "  [%d] %s: show %s%s, radar range %u km", i, out->locations[i].name,
+                 (out->show[i] & APP_SHOW_WEATHER) ? "weather" : "",
+                 (out->show[i] & APP_SHOW_RADAR) ? (out->show[i] & APP_SHOW_WEATHER ? "+radar" : "radar") : "",
+                 out->radar_km[i]);
+    }
     return ESP_OK;
 }
 
@@ -101,8 +137,11 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "pass", cfg->wifi_pass);
     if (err == ESP_OK) err = nvs_set_blob(h, "locs", cfg->locations, sizeof(cfg->locations));
     if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
-    if (err == ESP_OK) err = nvs_set_u8(h, "radar", cfg->radar_mask & (uint8_t)((1u << cnt) - 1));
-    if (err == ESP_OK) err = nvs_set_u16(h, "radarkm", cfg->radar_range_km);
+    if (err == ESP_OK) err = nvs_set_blob(h, "show", cfg->show, sizeof(cfg->show));
+    if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
+    /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
+    nvs_erase_key(h, "radar");
+    nvs_erase_key(h, "radarkm");
     if (err == ESP_OK) err = nvs_set_u8(h, "prov", 1);
     /* Retire the legacy single-location keys, if this NVS was written by an
      * older firmware. Missing keys just return NOT_FOUND - ignore. */

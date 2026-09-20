@@ -154,6 +154,13 @@ typedef struct {
 static view_stop_t s_stops[1 + 2 * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
 
+/* Locations that show weather, in order: the rows of the overview and the
+ * "n/m" counter on the weather screens. A location can be radar-only. */
+static int s_weather_count;
+static uint8_t s_wx_loc[APP_CONFIG_MAX_LOCATIONS]; /* weather index -> location */
+static int8_t s_wx_pos[APP_CONFIG_MAX_LOCATIONS];  /* location -> weather index, -1 if none */
+static bool s_any_radar;
+
 /* Index into s_stops of the screen on show. Advanced by a tap; the weather
  * task watches it and re-renders. */
 static volatile int s_view_index;
@@ -308,13 +315,28 @@ static void screen_touch_cb(lv_event_t *e)
 /* Lay out the cycle of screens from the configuration. */
 static void build_stops(void)
 {
+    s_weather_count = 0;
+    s_any_radar = false;
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        s_wx_pos[i] = -1;
+        if (s_cfg.show[i] & APP_SHOW_WEATHER) {
+            s_wx_pos[i] = (int8_t)s_weather_count;
+            s_wx_loc[s_weather_count++] = (uint8_t)i;
+        }
+        if (s_cfg.show[i] & APP_SHOW_RADAR) {
+            s_any_radar = true;
+        }
+    }
+
     s_stop_count = 0;
-    if (s_cfg.location_count >= 2) {
+    if (s_weather_count >= 2) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
     }
     for (int i = 0; i < s_cfg.location_count; i++) {
-        s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
-        if (s_cfg.radar_mask & (1u << i)) {
+        if (s_cfg.show[i] & APP_SHOW_WEATHER) {
+            s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
+        }
+        if (s_cfg.show[i] & APP_SHOW_RADAR) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_RADAR, (uint8_t)i };
         }
     }
@@ -373,7 +395,8 @@ static void build_overview(lv_obj_t *root)
         lv_label_set_text(s_ov_hdr[c], "");
     }
 
-    for (int i = 0; i < s_cfg.location_count; i++) {
+    /* One row per location that shows weather (row r = s_wx_loc[r]). */
+    for (int i = 0; i < s_weather_count; i++) {
         int row_y = OV_BODY_Y + i * OV_ROW_H;
 
         s_ov_name[i] = lv_label_create(root);
@@ -381,7 +404,7 @@ static void build_overview(lv_obj_t *root)
         lv_obj_set_width(s_ov_name[i], OV_NAME_W - 4);
         lv_obj_set_style_text_align(s_ov_name[i], LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(s_ov_name[i], LV_LABEL_LONG_MODE_DOTS);
-        lv_label_set_text(s_ov_name[i], s_cfg.locations[i].name);
+        lv_label_set_text(s_ov_name[i], s_cfg.locations[s_wx_loc[i]].name);
 
         for (int c = 0; c < OV_COLS; c++) {
             int cell_x = OV_X + OV_NAME_W + c * OV_COL_W;
@@ -558,6 +581,7 @@ typedef struct {
 static radar_apt_t *s_radar_apt; /* PSRAM; most important first (large, then nearer) */
 static radar_rwy_t *s_radar_rwy; /* PSRAM */
 static int s_radar_apt_n;
+static int s_radar_range_km = APP_CONFIG_RADAR_KM_DEFAULT; /* range of the radar on show (its location's setting) */
 
 extern const uint8_t airports_bin_start[] asm("_binary_airports_bin_start");
 extern const uint8_t airports_bin_end[] asm("_binary_airports_bin_end");
@@ -569,7 +593,7 @@ static int32_t rd_i32(const uint8_t *p)
     return v;
 }
 
-/* Collect the airports within s_cfg.radar_range_km of (lat0, lon0). */
+/* Collect the airports within s_radar_range_km of (lat0, lon0). */
 static void radar_load_airports(double lat0, double lon0)
 {
     s_radar_apt_n = 0;
@@ -586,7 +610,7 @@ static void radar_load_airports(double lat0, double lon0)
     const uint8_t *ap = blob + 12;
     const uint8_t *rw = ap + (size_t)n_ap * 20;
 
-    const float range = (float)s_cfg.radar_range_km;
+    const float range = (float)s_radar_range_km;
     const double ky = 110.57;
     const double kx = 111.32 * cos(lat0 * M_PI / 180.0);
     const int32_t lat0_e4 = (int32_t)lround(lat0 * 1e4);
@@ -663,7 +687,7 @@ static void radar_load_airports(double lat0, double lon0)
         }
     }
     s_radar_apt_n = n_best;
-    ESP_LOGI(TAG, "Radar: %d airport(s) within %d km", n_best, s_cfg.radar_range_km);
+    ESP_LOGI(TAG, "Radar: %d airport(s) within %d km", n_best, s_radar_range_km);
 }
 
 static void radar_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color)
@@ -761,7 +785,7 @@ static void radar_draw_cb(lv_event_t *e)
     const lv_color_t c_plane = lv_color_hex(0xFF5A4F);
     const lv_color_t c_vec = lv_color_hex(0xE060E0);
     const int lh = lv_font_get_line_height(s_font_body);
-    const int range = s_cfg.radar_range_km;
+    const int range = s_radar_range_km;
 
     /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot. */
     radar_circle(layer, RADAR_R, 2, c_ring, true, c_disc);
@@ -947,9 +971,9 @@ static void radar_apply(const adsb_result_t *res)
         struct tm lt;
         localtime_r(&now, &lt);
         snprintf(info, sizeof(info), "%d fly innen %u km  kl. %02d:%02d",
-                 res->total, (unsigned)s_cfg.radar_range_km, lt.tm_hour, lt.tm_min);
+                 res->total, (unsigned)s_radar_range_km, lt.tm_hour, lt.tm_min);
     } else {
-        snprintf(info, sizeof(info), "%d fly innen %u km", res->total, (unsigned)s_cfg.radar_range_km);
+        snprintf(info, sizeof(info), "%d fly innen %u km", res->total, (unsigned)s_radar_range_km);
     }
     lv_label_set_text(s_radar_info, info);
     lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
@@ -993,6 +1017,7 @@ static void build_radar(lv_obj_t *root)
 static void radar_set_location(int loc)
 {
     lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[loc].name);
+    s_radar_range_km = s_cfg.radar_km[loc];
     radar_load_airports(atof(s_cfg.locations[loc].lat), atof(s_cfg.locations[loc].lon));
 }
 
@@ -1156,12 +1181,12 @@ static void build_ui(lv_obj_t *screen)
     }
 
     /* The overview table is only a cycling stop with two or more locations. */
-    if (s_cfg.location_count >= 2) {
+    if (s_weather_count >= 2) {
         build_overview(s_overview_root);
     }
 
     /* The radar screen exists only if some location has it enabled. */
-    if (s_cfg.radar_mask != 0) {
+    if (s_any_radar) {
         s_radar_root = lv_obj_create(screen);
         lv_obj_remove_style_all(s_radar_root);
         lv_obj_set_pos(s_radar_root, 0, 0);
@@ -1701,15 +1726,16 @@ static void update_overview(void)
         lv_label_set_text_fmt(s_ov_hdr[c], "kl %02d", lt.tm_hour);
     }
 
-    for (int i = 0; i < s_cfg.location_count; i++) {
-        lv_label_set_text(s_ov_name[i], s_cfg.locations[i].name);
+    for (int row = 0; row < s_weather_count; row++) {
+        const int i = s_wx_loc[row]; /* location shown on this row */
+        lv_label_set_text(s_ov_name[row], s_cfg.locations[i].name);
 
         const bool ok = s_fc_valid[i] && s_fc_cache[i]->point_count > 0;
         const yr_forecast_t *fc = ok ? s_fc_cache[i] : NULL;
 
         for (int c = 0; c < OV_COLS; c++) {
-            lv_obj_t *icon = s_ov_icon[i][c];
-            lv_obj_t *cell = s_ov_cell[i][c];
+            lv_obj_t *icon = s_ov_icon[row][c];
+            lv_obj_t *cell = s_ov_cell[row][c];
 
             if (!ok) {
                 lv_label_set_text(cell, "\xE2\x80\x93"); /* en dash */
@@ -1858,7 +1884,7 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
 {
     double lat = atof(s_cfg.locations[loc].lat);
     double lon = atof(s_cfg.locations[loc].lon);
-    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg.radar_range_km, scratch) == ESP_OK);
+    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg.radar_km[loc], scratch) == ESP_OK);
 
     if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
         return;
@@ -2032,9 +2058,9 @@ static void yr_weather_task(void *arg)
                     lv_label_set_text(s_status_label, "Henter fly...");
                 } else {
                     const app_location_t *loc = &s_cfg.locations[sel];
-                    if (s_cfg.location_count > 1) {
+                    if (s_weather_count > 1) {
                         lv_label_set_text_fmt(s_location_label, "%s  %d/%d", loc->name,
-                                              sel + 1, s_cfg.location_count);
+                                              s_wx_pos[sel] + 1, s_weather_count);
                     } else {
                         lv_label_set_text(s_location_label, loc->name);
                     }
@@ -2065,6 +2091,9 @@ static void yr_weather_task(void *arg)
                 break; /* view changed mid-scan - restart the loop */
             }
             int i = (sel + k) % s_cfg.location_count;
+            if (!(s_cfg.show[i] & APP_SHOW_WEATHER)) {
+                continue; /* radar-only location: no forecast needed */
+            }
             bool stale = !s_fc_valid[i] || (i == sel && force_sel_refetch) ||
                          (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
             if (!stale) {

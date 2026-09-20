@@ -49,10 +49,13 @@ cycle through the stops:
 
 ### Aircraft radar
 
-Tick **Aircraft radar** on a location in the setup page and that location gets
-a live aircraft screen right after its weather screen (Oslo weather, then Oslo
-radar, then the next location, ...). Set the **Radar range** (kilometres,
-10-185, default 40) on the same page; it applies to every radar screen.
+For each location on the setup page, choose what it shows: **Weather**,
+**Aircraft radar** or **Weather and aircraft radar** (the radar then follows
+that location's weather screen: Oslo weather, Oslo radar, next location, ...).
+Each location also has its own **Radar range** (kilometres, 10-185, default
+40). A radar-only location has no weather screen and isn't a row in the
+overview table (the overview lists the locations that show weather, and only
+exists when there are two or more).
 
 The screen shows a sonar-style plot centred on the location (north up, range
 rings at quarter steps, a heading triangle and a 60-second speed vector per
@@ -61,21 +64,22 @@ aircraft: callsign, type, altitude (metres, or kilometres from 1000 m), ground
 speed in knots and distance in kilometres. Aircraft on the ground are left out.
 Airports within range are drawn under the aircraft - runway lines, or a dot
 where they'd be too small to see, plus the airport's IATA code (its ICAO code
-where it has no IATA one; labels that would land on another label are skipped). The table (about 8,500 airports and their runways:
-all large and medium airports, scheduled small ones, and small ones with an
-ICAO code and a paved 2000 ft runway) is embedded in flash as
-`components/airports.bin`; regenerate it from the public-domain
-[OurAirports](https://ourairports.com/data/) data with
-`python3 scripts/build_airports.py`.
-Aircraft positions come from [adsb.fi's open API](https://opendata.adsb.fi/) - free, no
-key, personal non-commercial use, one request per second at most - and are
-polled every 5 s while a radar screen is showing (the connection is kept open
-between polls, and no weather forecasts are fetched meanwhile), then
+where it has no IATA one; labels that would land on another label are
+skipped). The table (about 8,500 airports and their runways: all large and
+medium airports, scheduled small ones, and small ones with an ICAO code and a
+paved 2000 ft runway) is embedded in flash as `components/airports.bin`;
+regenerate it from the public-domain [OurAirports](https://ourairports.com/data/)
+data with `python3 scripts/build_airports.py`.
+
+Aircraft positions come from [adsb.fi's open API](https://opendata.adsb.fi/) -
+free, no key, personal non-commercial use, one request per second at most - and
+are polled every 5 s while a radar screen is showing (the connection is kept
+open between polls, and no weather forecasts are fetched meanwhile), then
 extrapolated along each aircraft's track in between.
 
-The overview stop only appears when two or more locations are configured.
-All locations' hourly forecasts are kept refreshed in the background so the
-table is always current; the detail screens additionally splice in the
+The overview stop only appears when two or more locations show weather.
+All those locations' hourly forecasts are kept refreshed in the background so
+the table is always current; the detail screens additionally splice in the
 5-minute nowcast for the selected location.
 
 ### Setup portal (WiFi + locations)
