@@ -57,9 +57,17 @@ radar, then the next location, ...). Set the **Radar range** (kilometres,
 The screen shows a sonar-style plot centred on the location (north up, range
 rings at quarter steps, a heading triangle and a 60-second speed vector per
 aircraft, callsign tags for the nearest ones) and a table of the nearest 14
-aircraft: callsign, type, altitude (flight level from 7000 ft), ground speed in
-knots and distance in kilometres. Aircraft on the ground are left out.
-Positions come from [adsb.fi's open API](https://opendata.adsb.fi/) - free, no
+aircraft: callsign, type, altitude (metres, or kilometres from 1000 m), ground
+speed in knots and distance in kilometres. Aircraft on the ground are left out.
+Airports within range are drawn under the aircraft - runway lines, or a dot
+where they'd be too small to see, plus the airport's IATA code (its ICAO code
+where it has no IATA one; labels that would land on another label are skipped). The table (about 8,500 airports and their runways:
+all large and medium airports, scheduled small ones, and small ones with an
+ICAO code and a paved 2000 ft runway) is embedded in flash as
+`components/airports.bin`; regenerate it from the public-domain
+[OurAirports](https://ourairports.com/data/) data with
+`python3 scripts/build_airports.py`.
+Aircraft positions come from [adsb.fi's open API](https://opendata.adsb.fi/) - free, no
 key, personal non-commercial use, one request per second at most - and are
 polled every 5 s while a radar screen is showing (the connection is kept open
 between polls, and no weather forecasts are fetched meanwhile), then

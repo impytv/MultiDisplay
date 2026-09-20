@@ -518,15 +518,236 @@ static void radar_triangle(lv_layer_t *layer, const int pts[3][2], lv_color_t co
     lv_draw_triangle(layer, &d);
 }
 
-/* Flight level from the transition altitude up, plain feet below it. */
+/* Altitude in metres (to the nearest 10), or kilometres from 1000 m up. The
+ * feed reports feet. */
 static void radar_fmt_alt(char *buf, size_t n, int32_t alt_ft)
 {
     if (alt_ft == ADSB_ALT_UNKNOWN) {
         snprintf(buf, n, "-");
-    } else if (alt_ft >= 7000) {
-        snprintf(buf, n, "FL%03d", (int)((alt_ft + 50) / 100));
+        return;
+    }
+    float m = (float)alt_ft * 0.3048f;
+    if (m < 995.0f) {
+        snprintf(buf, n, "%d m", (int)lroundf(m / 10.0f) * 10);
     } else {
-        snprintf(buf, n, "%d ft", (int)(((alt_ft + 50) / 100) * 100));
+        snprintf(buf, n, "%.1f km", (double)(m / 1000.0f));
+    }
+}
+
+
+/* Airports inside the radar's range, drawn under the aircraft: runway lines
+ * (or a dot when they'd be too small to see) and an ICAO label. The full table
+ * (components/airports.bin, built by scripts/build_airports.py from OurAirports)
+ * lives in flash; only the handful in range are kept, precomputed as km offsets
+ * from the radar centre whenever the radar is shown for a location. */
+#define RADAR_APT_MAX      24
+#define RADAR_APT_RWY_MAX  4    /* runways kept per airport */
+#define RADAR_APT_COLOR    0x3FBFB0
+
+typedef struct {
+    char label[5];     /* IATA code, or the ICAO code where the airport has none */
+    float x_km, y_km;  /* east / north of the radar centre */
+    uint8_t n_rwy;
+    uint8_t first_rwy; /* index into s_radar_rwy */
+} radar_apt_t;
+
+typedef struct {
+    float x1, y1, x2, y2; /* km east / north of the radar centre */
+} radar_rwy_t;
+
+static radar_apt_t *s_radar_apt; /* PSRAM; most important first (large, then nearer) */
+static radar_rwy_t *s_radar_rwy; /* PSRAM */
+static int s_radar_apt_n;
+
+extern const uint8_t airports_bin_start[] asm("_binary_airports_bin_start");
+extern const uint8_t airports_bin_end[] asm("_binary_airports_bin_end");
+
+static int32_t rd_i32(const uint8_t *p)
+{
+    int32_t v;
+    memcpy(&v, p, sizeof(v)); /* the embedded blob has no alignment guarantee */
+    return v;
+}
+
+/* Collect the airports within s_cfg.radar_range_km of (lat0, lon0). */
+static void radar_load_airports(double lat0, double lon0)
+{
+    s_radar_apt_n = 0;
+    const uint8_t *blob = airports_bin_start;
+    size_t size = (size_t)(airports_bin_end - airports_bin_start);
+    if (size < 12 || memcmp(blob, "APT2", 4) != 0) {
+        return;
+    }
+    uint32_t n_ap = (uint32_t)rd_i32(blob + 4);
+    uint32_t n_rw = (uint32_t)rd_i32(blob + 8);
+    if (12 + (size_t)n_ap * 20 + (size_t)n_rw * 16 > size) {
+        return;
+    }
+    const uint8_t *ap = blob + 12;
+    const uint8_t *rw = ap + (size_t)n_ap * 20;
+
+    const float range = (float)s_cfg.radar_range_km;
+    const double ky = 110.57;
+    const double kx = 111.32 * cos(lat0 * M_PI / 180.0);
+    const int32_t lat0_e4 = (int32_t)lround(lat0 * 1e4);
+    const int32_t lon0_e4 = (int32_t)lround(lon0 * 1e4);
+    const int32_t dlat_e4 = (int32_t)(range / ky * 1e4) + 10;
+    const int32_t dlon_e4 = (int32_t)(range / kx * 1e4) + 10;
+
+    /* Keep the RADAR_APT_MAX most important candidates: rank by class, then by
+     * distance. `best` holds record indices in rank order. */
+    uint32_t best[RADAR_APT_MAX];
+    float best_key[RADAR_APT_MAX];
+    int n_best = 0;
+    for (uint32_t i = 0; i < n_ap; i++) {
+        const uint8_t *rec = ap + (size_t)i * 20;
+        int32_t lat = rd_i32(rec + 8), lon = rd_i32(rec + 12);
+        if (abs(lat - lat0_e4) > dlat_e4 || abs(lon - lon0_e4) > dlon_e4) {
+            continue;
+        }
+        float x = (float)((lon - lon0_e4) * 1e-4 * kx);
+        float y = (float)((lat - lat0_e4) * 1e-4 * ky);
+        float d2 = x * x + y * y;
+        if (d2 > range * range) {
+            continue;
+        }
+        float key = (float)rec[19] * 1e6f + d2; /* class 0=large .. 2=small */
+        int at = n_best;
+        if (n_best == RADAR_APT_MAX) {
+            if (key >= best_key[n_best - 1]) {
+                continue;
+            }
+            at = n_best - 1;
+        } else {
+            n_best++;
+        }
+        while (at > 0 && best_key[at - 1] > key) {
+            best[at] = best[at - 1];
+            best_key[at] = best_key[at - 1];
+            at--;
+        }
+        best[at] = i;
+        best_key[at] = key;
+    }
+
+    int n_rwy_used = 0;
+    for (int b = 0; b < n_best; b++) {
+        const uint8_t *rec = ap + (size_t)best[b] * 20;
+        radar_apt_t *a = &s_radar_apt[b];
+        /* IATA code (offset 4) if it has one, else the ICAO code (offset 0). */
+        memcpy(a->label, rec + 4, 4);
+        if (a->label[0] == ' ' || a->label[0] == '\0') {
+            memcpy(a->label, rec, 4);
+        }
+        a->label[4] = '\0';
+        for (int k = 3; k >= 0 && (a->label[k] == ' ' || a->label[k] == '\0'); k--) {
+            a->label[k] = '\0';
+        }
+        a->x_km = (float)((rd_i32(rec + 12) - lon0_e4) * 1e-4 * kx);
+        a->y_km = (float)((rd_i32(rec + 8) - lat0_e4) * 1e-4 * ky);
+        uint16_t first;
+        memcpy(&first, rec + 16, sizeof(first));
+        int n = rec[18];
+        if (n > RADAR_APT_RWY_MAX) {
+            n = RADAR_APT_RWY_MAX;
+        }
+        a->first_rwy = (uint8_t)n_rwy_used;
+        a->n_rwy = (uint8_t)n;
+        for (int r = 0; r < n; r++) {
+            const uint8_t *rr = rw + ((size_t)first + r) * 16;
+            radar_rwy_t *o = &s_radar_rwy[n_rwy_used++];
+            o->y1 = (float)((rd_i32(rr + 0) - lat0_e4) * 1e-4 * ky);
+            o->x1 = (float)((rd_i32(rr + 4) - lon0_e4) * 1e-4 * kx);
+            o->y2 = (float)((rd_i32(rr + 8) - lat0_e4) * 1e-4 * ky);
+            o->x2 = (float)((rd_i32(rr + 12) - lon0_e4) * 1e-4 * kx);
+        }
+    }
+    s_radar_apt_n = n_best;
+    ESP_LOGI(TAG, "Radar: %d airport(s) within %d km", n_best, s_cfg.radar_range_km);
+}
+
+static void radar_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color)
+{
+    lv_area_t a = { cx - r, cy - r, cx + r, cy + r };
+    if (!radar_area_hits_clip(layer, &a)) {
+        return;
+    }
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.radius = LV_RADIUS_CIRCLE;
+    d.bg_opa = LV_OPA_COVER;
+    d.bg_color = color;
+    d.border_width = 0;
+    lv_draw_rect(layer, &d, &a);
+}
+
+/* Runways (or a dot when they would be under a few pixels), under the aircraft. */
+static void radar_draw_airports(lv_layer_t *layer, int range)
+{
+    const lv_color_t col = lv_color_hex(RADAR_APT_COLOR);
+    const float px_per_km = (float)RADAR_R / (float)range;
+    for (int i = 0; i < s_radar_apt_n; i++) {
+        const radar_apt_t *a = &s_radar_apt[i];
+        int cx = RADAR_CX + (int)lroundf(a->x_km * px_per_km);
+        int cy = RADAR_CY - (int)lroundf(a->y_km * px_per_km);
+        float longest = 0.0f;
+        for (int r = 0; r < a->n_rwy; r++) {
+            const radar_rwy_t *w = &s_radar_rwy[a->first_rwy + r];
+            float len = hypotf(w->x2 - w->x1, w->y2 - w->y1) * px_per_km;
+            if (len > longest) {
+                longest = len;
+            }
+            radar_line(layer,
+                       RADAR_CX + (int)lroundf(w->x1 * px_per_km), RADAR_CY - (int)lroundf(w->y1 * px_per_km),
+                       RADAR_CX + (int)lroundf(w->x2 * px_per_km), RADAR_CY - (int)lroundf(w->y2 * px_per_km),
+                       2, col);
+        }
+        if (longest < 8.0f) {
+            radar_dot(layer, cx, cy, 3, col);
+        }
+    }
+}
+
+/* ICAO labels for the airports, most important first, drawn after the aircraft
+ * tags and skipped where they would land on a tag or on each other. `tags`
+ * holds the rectangles already taken; new labels are appended to it. */
+static void radar_draw_airport_labels(lv_layer_t *layer, int range, int lh, lv_area_t *tags, int *n_tags,
+                                      int max_tags)
+{
+    const lv_color_t col = lv_color_hex(RADAR_APT_COLOR);
+    const float px_per_km = (float)RADAR_R / (float)range;
+    for (int i = 0; i < s_radar_apt_n && *n_tags < max_tags; i++) {
+        const radar_apt_t *a = &s_radar_apt[i];
+        if (a->label[0] == '\0') {
+            continue;
+        }
+        int cx = RADAR_CX + (int)lroundf(a->x_km * px_per_km);
+        int cy = RADAR_CY - (int)lroundf(a->y_km * px_per_km);
+        lv_point_t sz;
+        lv_text_get_size(&sz, a->label, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+
+        /* To the right of the airport, or to the left if that would spill
+         * out of the plot. */
+        lv_area_t lab = { cx + 8, cy - lh / 2, 0, cy + lh / 2 };
+        lab.x2 = lab.x1 + sz.x + 2;
+        int dxr = lab.x2 - RADAR_CX, dyr = cy - RADAR_CY;
+        if (dxr * dxr + dyr * dyr > RADAR_R * RADAR_R) {
+            lab.x1 = cx - 8 - sz.x - 2;
+            lab.x2 = lab.x1 + sz.x + 2;
+        }
+        bool clash = false;
+        for (int k = 0; k < *n_tags; k++) {
+            const lv_area_t *o = &tags[k];
+            if (lab.x1 <= o->x2 && lab.x2 >= o->x1 && lab.y1 <= o->y2 && lab.y2 >= o->y1) {
+                clash = true;
+                break;
+            }
+        }
+        if (clash) {
+            continue;
+        }
+        tags[(*n_tags)++] = lab;
+        radar_text(layer, a->label, lab.x1, lab.y1, sz.x + 2, LV_TEXT_ALIGN_LEFT, col);
     }
 }
 
@@ -562,10 +783,11 @@ static void radar_draw_cb(lv_event_t *e)
      * just outside it. */
     for (int i = 2; i <= 4; i += 2) {
         char num[12];
-        if (range % 4 == 0) {
-            snprintf(num, sizeof(num), "%d", range * i / 4);
+        float ring_km = range * i / 4.0f;
+        if (ring_km == floorf(ring_km)) {
+            snprintf(num, sizeof(num), "%d", (int)ring_km);
         } else {
-            snprintf(num, sizeof(num), "%.1f", range * i / 4.0f);
+            snprintf(num, sizeof(num), "%.1f", (double)ring_km);
         }
         if (i == 2) {
             radar_text(layer, num, RADAR_CX + RADAR_R * i / 4 - 70, RADAR_CY - lh - 1, 70,
@@ -579,6 +801,8 @@ static void radar_draw_cb(lv_event_t *e)
         }
     }
 
+    radar_draw_airports(layer, range);
+
     /* Table header + divider. */
     radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
     radar_text(layer, "Fly", RADAR_LIST_X, 50, 88, LV_TEXT_ALIGN_LEFT, c_dim);
@@ -587,24 +811,14 @@ static void radar_draw_cb(lv_event_t *e)
     radar_text(layer, "kt", RADAR_LIST_X + 218, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
     radar_text(layer, "km", RADAR_LIST_X + 256, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
 
-    if (!s_radar_valid || s_radar_data == NULL) {
-        return;
-    }
-    const adsb_result_t *res = s_radar_data;
+    const adsb_result_t *res = (s_radar_valid && s_radar_data != NULL) ? s_radar_data : NULL;
 
-    if (res->count == 0) {
-        char none[48];
-        snprintf(none, sizeof(none), "Ingen fly innen %d km", range);
-        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
-        return;
-    }
-
-    lv_area_t tags[RADAR_TAGS];
+    lv_area_t tags[RADAR_TAGS + RADAR_APT_MAX];
     int n_tags = 0;
     const float age_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
     const float deg = (float)M_PI / 180.0f;
 
-    for (int i = 0; i < res->count; i++) {
+    for (int i = 0; res != NULL && i < res->count; i++) {
         const adsb_aircraft_t *a = &res->ac[i];
 
         /* Where it is now: its reported position moved along its track for the
@@ -676,6 +890,18 @@ static void radar_draw_cb(lv_event_t *e)
         }
     }
 
+    radar_draw_airport_labels(layer, range, lh, tags, &n_tags, RADAR_TAGS + RADAR_APT_MAX);
+
+    if (res == NULL) {
+        return; /* nothing fetched yet */
+    }
+    if (res->count == 0) {
+        char none[48];
+        snprintf(none, sizeof(none), "Ingen fly innen %d km", range);
+        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
+        return;
+    }
+
     /* Table of the nearest aircraft. */
     for (int i = 0; i < res->count && i < RADAR_LIST_ROWS; i++) {
         const adsb_aircraft_t *a = &res->ac[i];
@@ -733,7 +959,9 @@ static void radar_apply(const adsb_result_t *res)
 static void build_radar(lv_obj_t *root)
 {
     s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL);
+    s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
+    s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
+    assert(s_radar_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
 
     /* A dark screen of its own: reads like a radar, and is easy on the eyes at
      * night. Text colour is inherited by the labels below. */
@@ -758,6 +986,14 @@ static void build_radar(lv_obj_t *root)
     lv_label_set_text(s_radar_info, "");
 
     lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
+}
+
+/* Point the radar at location `loc` (adapter lock held): its title, and the
+ * airports within range. */
+static void radar_set_location(int loc)
+{
+    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[loc].name);
+    radar_load_airports(atof(s_cfg.locations[loc].lat), atof(s_cfg.locations[loc].lon));
 }
 
 static void build_ui(lv_obj_t *screen)
@@ -933,7 +1169,7 @@ static void build_ui(lv_obj_t *screen)
         lv_obj_clear_flag(s_radar_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
         build_radar(s_radar_root);
         if (initial_stop->kind == STOP_RADAR) {
-            lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[initial_loc].name);
+            radar_set_location(initial_loc);
         }
     }
 
@@ -1790,7 +2026,7 @@ static void yr_weather_task(void *arg)
                     /* Never show another location's aircraft: blank until the
                      * first fetch for this one lands. */
                     s_radar_valid = false;
-                    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[sel].name);
+                    radar_set_location(sel);
                     lv_label_set_text(s_radar_info, "");
                     lv_obj_invalidate(s_radar_canvas);
                     lv_label_set_text(s_status_label, "Henter fly...");

@@ -9,6 +9,9 @@ idf_component_register(
     INCLUDE_DIRS
         "."
         "../components"
+    # Airport + runway table for the radar (see scripts/build_airports.py).
+    EMBED_FILES
+        "../components/airports.bin"
     PRIV_REQUIRES
         esp_wifi
         esp_netif
