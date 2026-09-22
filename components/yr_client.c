@@ -78,7 +78,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
  * in the 9-day forecast). Amounts from a wider period are not rescaled -
  * they are still the best available estimate for "upcoming precipitation"
  * at that point. */
-static void parse_period_fallback(cJSON *data, float *out_precip_mm, char *out_symbol, size_t symbol_len)
+static void parse_period_fallback(cJSON *data, float *out_precip_mm, float *out_precip_min_mm,
+                                  float *out_precip_max_mm, char *out_symbol, size_t symbol_len)
 {
     static const char *periods[] = { "next_1_hours", "next_6_hours", "next_12_hours" };
 
@@ -92,6 +93,19 @@ static void parse_period_fallback(cJSON *data, float *out_precip_mm, char *out_s
         cJSON *precip = cJSON_GetObjectItemCaseSensitive(details, "precipitation_amount");
         if (cJSON_IsNumber(precip)) {
             *out_precip_mm = (float)precip->valuedouble;
+        }
+        /* MET's forecast uncertainty range for the same period - min/max, not
+         * always present (e.g. missing this far out even when the point
+         * estimate above is). Default to the point estimate (no bar behind
+         * it worth drawing) unless both are actually reported. */
+        cJSON *precip_min = cJSON_GetObjectItemCaseSensitive(details, "precipitation_amount_min");
+        cJSON *precip_max = cJSON_GetObjectItemCaseSensitive(details, "precipitation_amount_max");
+        if (cJSON_IsNumber(precip_min) && cJSON_IsNumber(precip_max)) {
+            *out_precip_min_mm = (float)precip_min->valuedouble;
+            *out_precip_max_mm = (float)precip_max->valuedouble;
+        } else {
+            *out_precip_min_mm = *out_precip_mm;
+            *out_precip_max_mm = *out_precip_mm;
         }
 
         cJSON *summary = cJSON_GetObjectItemCaseSensitive(period, "summary");
@@ -238,7 +252,8 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
             point->wind_from_deg = (float)wind_dir->valuedouble;
         }
 
-        parse_period_fallback(data, &point->precipitation_mm, point->symbol_code, sizeof(point->symbol_code));
+        parse_period_fallback(data, &point->precipitation_mm, &point->precipitation_min_mm,
+                              &point->precipitation_max_mm, point->symbol_code, sizeof(point->symbol_code));
 
         n++;
     }

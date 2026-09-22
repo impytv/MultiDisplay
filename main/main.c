@@ -102,12 +102,13 @@ static const char *TAG = "lvgl9_demo";
  * peaks for the smoother precipitation and wind series). An overflow just
  * drops the least important trailing label - no crash. */
 #define TEMP_MARKER_POOL 8
-#define PRECIP_MARKER_POOL 6
-#define WIND_MARKER_POOL 2 /* the two highest gust peaks - see place_wind_markers */
-/* Wind/gust peak labels use their own, tighter spacing than MARKER_MIN_GAP_H:
- * a second peak within this many hours of a stronger one is the same gust
- * event, not a distinct one, so only the stronger of the two is labelled. */
-#define WIND_PEAK_MIN_GAP_H 6
+#define PRECIP_MARKER_POOL 2 /* the two highest max-precipitation peaks - see place_precip_markers */
+#define WIND_MARKER_POOL 2   /* the two highest gust peaks - see place_wind_markers */
+/* Wind/gust and precipitation-range peak labels (pick_top_peaks) use their
+ * own, tighter spacing than MARKER_MIN_GAP_H: a second peak within this many
+ * hours of a stronger one is the same event, not a distinct one, so only the
+ * stronger of the two is labelled. */
+#define PEAK_LABEL_MIN_GAP_H 6
 
 /* Overview screen: a table with one row per location and OV_COLS time columns
  * OV_STEP_H hours apart. Each cell shows the weather icon, the temperature at
@@ -218,6 +219,13 @@ static met_alerts_t *s_alert_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_alert_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_alert_tk[APP_CONFIG_MAX_LOCATIONS];
 
+/* s_precip_max_chart is the frame (background/border/gridlines) for the
+ * whole precip+temp area, and sits behind s_precip_chart (created first, so
+ * it's drawn first / lower z-order) and s_temp_line - both fully transparent
+ * overlays, so this chart's own (taller, paler) max-precipitation bars show
+ * through above wherever the shorter min bar doesn't reach. */
+static lv_obj_t *s_precip_max_chart;
+static lv_chart_series_t *s_precip_max_series;
 static lv_obj_t *s_precip_chart;
 static lv_chart_series_t *s_precip_series;
 static lv_obj_t *s_temp_line;
@@ -228,7 +236,7 @@ static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
  * s_wind_chart (created first, so it's drawn first / lower z-order);
  * s_wind_chart's own background is made transparent so the taller gust bars
  * show through above wherever the shorter wind bar doesn't reach - the same
- * "frame widget + transparent overlay" trick as s_precip_chart/s_temp_line. */
+ * "frame widget + transparent overlay" trick as s_precip_max_chart above. */
 static lv_obj_t *s_gust_chart;
 static lv_chart_series_t *s_gust_series;
 static lv_obj_t *s_wind_chart;
@@ -239,7 +247,8 @@ static lv_obj_t *s_wind_dir_arrows[NUM_HOUR_LABELS];
 static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
 static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 
-static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
+static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS];     /* millimeters * 10 */
+static int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
 static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
@@ -1143,16 +1152,37 @@ static void build_ui(lv_obj_t *screen)
         lv_obj_add_flag(s_icon_slots[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Precipitation bar chart acts as the single visual chart frame
-     * (background, border, gridlines); the temperature line is overlaid
-     * directly on top of it to make the two read as one merged chart. */
+    /* Precipitation-max bar chart acts as the single visual chart frame
+     * (background, border, gridlines) for the whole precip+temp area - the
+     * min bars and the temperature line are both overlaid transparently on
+     * top of it (same "frame widget + transparent overlay" trick as the
+     * wind/gust chart pair below). Its bars are the high end of MET's
+     * forecast uncertainty range for that hour, drawn taller and paler
+     * "behind" the min bars in front - see update_ui_with_forecast. */
+    s_precip_max_chart = lv_chart_create(s_detail_root);
+    lv_obj_set_pos(s_precip_max_chart, CHART_X, CHART_Y);
+    lv_obj_set_size(s_precip_max_chart, CHART_W, CHART_H);
+    lv_obj_set_style_pad_left(s_precip_max_chart, 4, 0);
+    lv_obj_set_style_pad_right(s_precip_max_chart, 4, 0);
+    lv_chart_set_type(s_precip_max_chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_div_line_count(s_precip_max_chart, 4, NUM_HOUR_LABELS - 1);
+    lv_chart_set_point_count(s_precip_max_chart, YR_FORECAST_MAX_POINTS);
+    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
+    s_precip_max_series = lv_chart_add_series(s_precip_max_chart, lv_palette_lighten(LV_PALETTE_BLUE, 3),
+                                              LV_CHART_AXIS_PRIMARY_Y);
+
+    /* Precipitation-min bar chart: the low end of the same range, in front -
+     * its own background/border are transparent so the max chart behind it
+     * shows through above wherever this (shorter, since max >= min) bar
+     * doesn't reach. */
     s_precip_chart = lv_chart_create(s_detail_root);
     lv_obj_set_pos(s_precip_chart, CHART_X, CHART_Y);
     lv_obj_set_size(s_precip_chart, CHART_W, CHART_H);
     lv_obj_set_style_pad_left(s_precip_chart, 4, 0);
     lv_obj_set_style_pad_right(s_precip_chart, 4, 0);
+    lv_obj_set_style_bg_opa(s_precip_chart, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_precip_chart, 0, 0);
     lv_chart_set_type(s_precip_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_div_line_count(s_precip_chart, 4, NUM_HOUR_LABELS - 1);
     lv_chart_set_point_count(s_precip_chart, YR_FORECAST_MAX_POINTS);
     lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
     s_precip_series = lv_chart_add_series(s_precip_chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
@@ -1333,7 +1363,7 @@ static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y
 }
 
 static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
-static float pt_precip(const yr_forecast_point_t *p) { return p->precipitation_mm; }
+static float pt_precip_max(const yr_forecast_point_t *p) { return p->precipitation_max_mm; }
 static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
 static float pt_wind_gust(const yr_forecast_point_t *p) { return p->wind_speed_of_gust_ms; }
 
@@ -1479,75 +1509,16 @@ static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int te
     }
 }
 
-/* Precipitation value markers. Labels the global wettest hour, then adds a
- * label at each further local precipitation peak that falls at least
- * MARKER_MIN_GAP_H hours after the previously shown precip label, so a long
- * on/off rain spell gets called out without crowding. Each label consolidates
- * to the wettest hour within the next window (snap_to_better_extremum), so it
- * lands on the tallest bar of its shower, not the first bar of it. Dry hours
- * are never marked; an all-dry forecast hides every pool label. */
-static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, int32_t precip_range_max)
-{
-    int used = 0;
-
-    if (round_to_int(fc->points[precip_max_idx].precipitation_mm * 10.0f) > 0) {
-        int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
-        /* One window before "now" - see place_temp_markers. */
-        int64_t last_shown_epoch = fc->points[0].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
-
-        for (int i = 0; i < fc->point_count && used < PRECIP_MARKER_POOL; i++) {
-            float mm = fc->points[i].precipitation_mm;
-            if (round_to_int(mm * 10.0f) <= 0) {
-                continue;
-            }
-
-            float prev = (i > 0) ? fc->points[i - 1].precipitation_mm : -1.0f;
-            float next = (i < fc->point_count - 1) ? fc->points[i + 1].precipitation_mm : -1.0f;
-            bool local_peak = (mm >= prev && mm >= next && (mm > prev || mm > next));
-            bool is_global = (i == precip_max_idx);
-            if (!is_global && !local_peak) {
-                continue;
-            }
-
-            int64_t epoch = fc->points[i].epoch_utc;
-            if (!is_global && (epoch - last_shown_epoch) < (int64_t)MARKER_MIN_GAP_H * 3600) {
-                continue;
-            }
-
-            int m = snap_to_better_extremum(fc, i, true, pt_precip);
-
-            int32_t x = (fc->point_count > 1)
-                            ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1)
-                            : 0;
-            int32_t y = CHART_H - (int32_t)(((float)s_precip_chart_data[m] / (float)precip_axis_max) * CHART_H);
-
-            lv_obj_t *label = s_precip_markers[used++];
-            lv_label_set_text_fmt(label, "%.1f mm", (double)fc->points[m].precipitation_mm);
-            lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-            place_marker_label(label, CHART_X + x, CHART_Y + y, true);
-
-            last_shown_epoch = fc->points[m].epoch_utc;
-            if (m > i) {
-                i = m; /* don't re-label the span we snapped across */
-            }
-        }
-    }
-
-    for (int i = used; i < PRECIP_MARKER_POOL; i++) {
-        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
 /* Pick up to max_count indices of the highest get() values in the forecast
- * (skipping values <= 0 - calm, or for gust, an hour MET didn't forecast one
- * for at all). Each pick must be more than WIND_PEAK_MIN_GAP_H hours from
- * every index already picked, so a second, lesser peak sitting right next to
- * a stronger one is treated as the same gust/blow and dropped rather than
- * double-labelled - the next pick is then whichever remaining point is
+ * (skipping values <= 0 - calm/dry, or for gust, an hour MET didn't forecast
+ * one for at all). Each pick must be more than PEAK_LABEL_MIN_GAP_H hours
+ * from every index already picked, so a second, lesser peak sitting right
+ * next to a stronger one is treated as the same event and dropped rather
+ * than double-labelled - the next pick is then whichever remaining point is
  * genuinely the next-highest and far enough away, or none at all. Returns
  * the count written to out_idx. */
-static int pick_top_wind_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecast_point_t *),
-                               int max_count, int *out_idx)
+static int pick_top_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecast_point_t *),
+                          int max_count, int *out_idx)
 {
     int n = 0;
     for (int pick = 0; pick < max_count; pick++) {
@@ -1561,7 +1532,7 @@ static int pick_top_wind_peaks(const yr_forecast_t *fc, float (*get)(const yr_fo
             bool too_close = false;
             for (int k = 0; k < n; k++) {
                 int64_t d = fc->points[i].epoch_utc - fc->points[out_idx[k]].epoch_utc;
-                if ((d < 0 ? -d : d) < (int64_t)WIND_PEAK_MIN_GAP_H * 3600) {
+                if ((d < 0 ? -d : d) < (int64_t)PEAK_LABEL_MIN_GAP_H * 3600) {
                     too_close = true;
                     break;
                 }
@@ -1580,17 +1551,44 @@ static int pick_top_wind_peaks(const yr_forecast_t *fc, float (*get)(const yr_fo
     return n;
 }
 
-/* Wind/gust value markers: up to the two highest gust peaks
- * (pick_top_wind_peaks - deduplicated within WIND_PEAK_MIN_GAP_H hours, so a
+/* Precipitation value markers: up to the two highest max-precipitation peaks
+ * (pick_top_peaks - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a
  * second peak less than 6h from the strongest is dropped rather than shown),
- * each labelled with its sustained wind speed followed by its gust speed in
- * parentheses, e.g. "12 (18) m/s". Pinned near the chart's top rather than
- * at the bar's own (value-dependent) height, since a bottom-of-chart label
- * was too easy to miss. */
+ * each labelled with its range, e.g. "0.5-2.3 mm" (the max chart's own
+ * height, since it's always >= the min chart's - see s_precip_max_chart). */
+static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_max)
+{
+    int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
+    int idx[PRECIP_MARKER_POOL];
+    int n = pick_top_peaks(fc, pt_precip_max, PRECIP_MARKER_POOL, idx);
+
+    for (int k = 0; k < n; k++) {
+        int m = idx[k];
+        int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
+        int32_t y = CHART_H - (int32_t)(((float)s_precip_max_chart_data[m] / (float)precip_axis_max) * CHART_H);
+
+        lv_obj_t *label = s_precip_markers[k];
+        lv_label_set_text_fmt(label, "%.1f\xE2\x80\x93%.1f mm", (double)fc->points[m].precipitation_min_mm,
+                              (double)fc->points[m].precipitation_max_mm);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+        place_marker_label(label, CHART_X + x, CHART_Y + y, true);
+    }
+    for (int i = n; i < PRECIP_MARKER_POOL; i++) {
+        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Wind/gust value markers: up to the two highest gust peaks (pick_top_peaks
+ * - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a second peak less
+ * than 6h from the strongest is dropped rather than shown), each labelled
+ * with its sustained wind speed followed by its gust speed in parentheses,
+ * e.g. "12 (18) m/s". Pinned near the chart's top rather than at the bar's
+ * own (value-dependent) height, since a bottom-of-chart label was too easy
+ * to miss. */
 static void place_wind_markers(const yr_forecast_t *fc)
 {
     int gust_idx[WIND_MARKER_POOL];
-    int n = pick_top_wind_peaks(fc, pt_wind_gust, WIND_MARKER_POOL, gust_idx);
+    int n = pick_top_peaks(fc, pt_wind_gust, WIND_MARKER_POOL, gust_idx);
 
     for (int k = 0; k < n; k++) {
         int m = gust_idx[k];
@@ -1626,10 +1624,10 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
 
     lv_label_set_text_fmt(s_updated_label, "Oppdatert kl. %s", fc->updated_hour_minute);
 
-    int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0;
+    int temp_min_idx = 0, temp_max_idx = 0;
     float temp_min = now->air_temperature_c;
     float temp_max = now->air_temperature_c;
-    float precip_max = 0.0f;
+    float precip_max = 0.0f; /* the high end of the range - see s_precip_max_chart */
     float wind_max = 0.0f;
     float gust_max = 0.0f; /* folded into the shared wind/gust axis range below */
 
@@ -1643,9 +1641,8 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
             temp_max = p->air_temperature_c;
             temp_max_idx = i;
         }
-        if (p->precipitation_mm > precip_max) {
-            precip_max = p->precipitation_mm;
-            precip_max_idx = i;
+        if (p->precipitation_max_mm > precip_max) {
+            precip_max = p->precipitation_max_mm;
         }
         if (p->wind_speed_ms > wind_max) {
             wind_max = p->wind_speed_ms;
@@ -1656,8 +1653,10 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
 
         /* A dry hour draws no bar at all (LV_CHART_POINT_NONE), rather than a
          * flat zero-height stub sitting on the axis. */
-        int32_t precip_tenths = round_to_int(p->precipitation_mm * 10.0f);
-        s_precip_chart_data[i] = (precip_tenths > 0) ? precip_tenths : LV_CHART_POINT_NONE;
+        int32_t precip_min_tenths = round_to_int(p->precipitation_min_mm * 10.0f);
+        s_precip_chart_data[i] = (precip_min_tenths > 0) ? precip_min_tenths : LV_CHART_POINT_NONE;
+        int32_t precip_max_tenths = round_to_int(p->precipitation_max_mm * 10.0f);
+        s_precip_max_chart_data[i] = (precip_max_tenths > 0) ? precip_max_tenths : LV_CHART_POINT_NONE;
 
         s_wind_chart_data[i] = round_to_int(p->wind_speed_ms * 10.0f);
         /* No bar (rather than a misleadingly flat one) for the far-out points
@@ -1673,10 +1672,19 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         temp_range_max = temp_range_min + 1;
     }
 
+    /* Precipitation-min/max bar charts: scaled off the max series (>= min
+     * always), same "shared range, both charts kept in sync" scheme as the
+     * wind/gust pair below. */
     int32_t precip_range_max = round_to_int(precip_max * 10.0f) + 2;
     if (precip_range_max < 10) {
         precip_range_max = 10;
     }
+
+    lv_chart_set_point_count(s_precip_max_chart, fc->point_count);
+    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0,
+                            precip_range_max * PRECIP_AXIS_COMPRESSION);
+    lv_chart_set_series_ext_y_array(s_precip_max_chart, s_precip_max_series, s_precip_max_chart_data);
+    lv_chart_refresh(s_precip_max_chart); /* force redraw - see below */
 
     lv_chart_set_point_count(s_precip_chart, fc->point_count);
     lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, precip_range_max * PRECIP_AXIS_COMPRESSION);
@@ -1702,7 +1710,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     lv_obj_invalidate(s_temp_line);
 
     place_temp_markers(fc, temp_min_idx, temp_max_idx);
-    place_precip_markers(fc, precip_max_idx, precip_range_max);
+    place_precip_markers(fc, precip_range_max);
 
     /* Wind/gust bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
      * calm forecast still has a sensible axis. Scaled off whichever of the
@@ -1973,6 +1981,10 @@ static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const y
         p.is_first_of_day = s->is_first_of_day;
         p.epoch_utc = s->epoch_utc;
         p.precipitation_mm = s->precipitation_rate;
+        /* The nowcast has no uncertainty range (it's radar-derived, not an
+         * ensemble forecast) - no bar behind this one worth drawing. */
+        p.precipitation_min_mm = s->precipitation_rate;
+        p.precipitation_max_mm = s->precipitation_rate;
 
         const yr_forecast_point_t *nb = nearest_base_point(base, s->epoch_utc);
         if (s->has_instant_details) {

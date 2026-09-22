@@ -24,6 +24,10 @@ typedef struct {
                                    * 2 days, matching YR_FORECAST_BASE_POINTS */
     float wind_from_deg;        /* direction the wind blows FROM, degrees clockwise from north */
     float precipitation_mm;     /* best-effort 1h precipitation (see yr_client.c) */
+    float precipitation_min_mm; /* low end of MET's forecast uncertainty range for the
+                                  * same period; equal to precipitation_mm if MET didn't
+                                  * report a range for this point */
+    float precipitation_max_mm; /* high end of that same range */
     char symbol_code[48];       /* e.g. "partlycloudy_day" */
 } yr_forecast_point_t;
 
