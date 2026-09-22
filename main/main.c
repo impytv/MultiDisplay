@@ -103,7 +103,11 @@ static const char *TAG = "lvgl9_demo";
  * drops the least important trailing label - no crash. */
 #define TEMP_MARKER_POOL 8
 #define PRECIP_MARKER_POOL 6
-#define WIND_MARKER_POOL 5
+#define WIND_MARKER_POOL 2 /* the two highest gust peaks - see place_wind_markers */
+/* Wind/gust peak labels use their own, tighter spacing than MARKER_MIN_GAP_H:
+ * a second peak within this many hours of a stronger one is the same gust
+ * event, not a distinct one, so only the stronger of the two is labelled. */
+#define WIND_PEAK_MIN_GAP_H 6
 
 /* Overview screen: a table with one row per location and OV_COLS time columns
  * OV_STEP_H hours apart. Each cell shows the weather icon, the temperature at
@@ -220,6 +224,13 @@ static lv_obj_t *s_temp_line;
 static lv_obj_t *s_temp_markers[TEMP_MARKER_POOL];
 static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
 
+/* s_gust_chart is a plain, frameless bars-only layer sitting behind
+ * s_wind_chart (created first, so it's drawn first / lower z-order);
+ * s_wind_chart's own background is made transparent so the taller gust bars
+ * show through above wherever the shorter wind bar doesn't reach - the same
+ * "frame widget + transparent overlay" trick as s_precip_chart/s_temp_line. */
+static lv_obj_t *s_gust_chart;
+static lv_chart_series_t *s_gust_series;
 static lv_obj_t *s_wind_chart;
 static lv_chart_series_t *s_wind_series;
 static lv_obj_t *s_wind_markers[WIND_MARKER_POOL];
@@ -230,6 +241,7 @@ static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 
 static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
 static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
+static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
 
 static int32_t round_to_int(float v)
@@ -1197,12 +1209,32 @@ static void build_ui(lv_obj_t *screen)
         lv_obj_add_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Wind-speed bar chart (m/s), same x-scale as the main chart above. */
+    /* Wind-gust bar chart (m/s): the plain bars-only layer behind the wind
+     * chart below (see s_gust_chart's declaration). Same position/size/scale
+     * as the wind chart, kept in sync every refresh. */
+    s_gust_chart = lv_chart_create(s_detail_root);
+    lv_obj_set_pos(s_gust_chart, CHART_X, WIND_CHART_Y);
+    lv_obj_set_size(s_gust_chart, CHART_W, WIND_CHART_H);
+    lv_obj_set_style_pad_left(s_gust_chart, 4, 0);
+    lv_obj_set_style_pad_right(s_gust_chart, 4, 0);
+    lv_obj_set_style_bg_opa(s_gust_chart, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_gust_chart, 0, 0);
+    lv_chart_set_type(s_gust_chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_point_count(s_gust_chart, YR_FORECAST_MAX_POINTS);
+    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
+    s_gust_series = lv_chart_add_series(s_gust_chart, lv_palette_lighten(LV_PALETTE_TEAL, 3),
+                                        LV_CHART_AXIS_PRIMARY_Y);
+
+    /* Wind-speed bar chart (m/s), same x-scale as the main chart above. Its
+     * own background is transparent so the gust chart behind it shows
+     * through above wherever its (shorter, since gusts are >= sustained
+     * wind) bar doesn't reach. */
     s_wind_chart = lv_chart_create(s_detail_root);
     lv_obj_set_pos(s_wind_chart, CHART_X, WIND_CHART_Y);
     lv_obj_set_size(s_wind_chart, CHART_W, WIND_CHART_H);
     lv_obj_set_style_pad_left(s_wind_chart, 4, 0);
     lv_obj_set_style_pad_right(s_wind_chart, 4, 0);
+    lv_obj_set_style_bg_opa(s_wind_chart, LV_OPA_TRANSP, 0);
     lv_chart_set_type(s_wind_chart, LV_CHART_TYPE_BAR);
     lv_chart_set_div_line_count(s_wind_chart, 2, NUM_HOUR_LABELS - 1);
     lv_chart_set_point_count(s_wind_chart, YR_FORECAST_MAX_POINTS);
@@ -1210,8 +1242,8 @@ static void build_ui(lv_obj_t *screen)
     s_wind_series = lv_chart_add_series(s_wind_chart, lv_palette_main(LV_PALETTE_TEAL),
                                        LV_CHART_AXIS_PRIMARY_Y);
 
-    /* Wind-speed value markers - same pooled scheme as the precipitation
-     * markers (see place_wind_markers / place_precip_markers). */
+    /* Wind/gust value markers - see place_wind_markers. Sit near the chart
+     * top, in the wind bar's colour. */
     for (int i = 0; i < WIND_MARKER_POOL; i++) {
         s_wind_markers[i] = lv_label_create(s_detail_root);
         lv_obj_set_style_text_color(s_wind_markers[i], lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
@@ -1303,6 +1335,7 @@ static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y
 static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
 static float pt_precip(const yr_forecast_point_t *p) { return p->precipitation_mm; }
 static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
+static float pt_wind_gust(const yr_forecast_point_t *p) { return p->wind_speed_of_gust_ms; }
 
 /* A label is about to be placed at points[idx]. Look ahead one whole spacing
  * window (MARKER_MIN_GAP_H hours) and, if a stronger local extremum of the
@@ -1505,56 +1538,70 @@ static void place_precip_markers(const yr_forecast_t *fc, int precip_max_idx, in
     }
 }
 
-/* Wind-speed value markers on the wind chart - the same scheme as
- * place_precip_markers: label the windiest hour, then each further local wind
- * peak that falls at least MARKER_MIN_GAP_H hours after the previously shown
- * wind label, each consolidated to the strongest gust in the next window. If
- * the whole forecast is calm every pool label stays hidden. */
-static void place_wind_markers(const yr_forecast_t *fc, int wind_max_idx, int32_t wind_range_max)
+/* Pick up to max_count indices of the highest get() values in the forecast
+ * (skipping values <= 0 - calm, or for gust, an hour MET didn't forecast one
+ * for at all). Each pick must be more than WIND_PEAK_MIN_GAP_H hours from
+ * every index already picked, so a second, lesser peak sitting right next to
+ * a stronger one is treated as the same gust/blow and dropped rather than
+ * double-labelled - the next pick is then whichever remaining point is
+ * genuinely the next-highest and far enough away, or none at all. Returns
+ * the count written to out_idx. */
+static int pick_top_wind_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecast_point_t *),
+                               int max_count, int *out_idx)
 {
-    int used = 0;
-
-    if (round_to_int(fc->points[wind_max_idx].wind_speed_ms * 10.0f) > 0) {
-        /* One window before "now" - see place_temp_markers. */
-        int64_t last_shown_epoch = fc->points[0].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
-
-        for (int i = 0; i < fc->point_count && used < WIND_MARKER_POOL; i++) {
-            float ws = fc->points[i].wind_speed_ms;
-
-            float prev = (i > 0) ? fc->points[i - 1].wind_speed_ms : -1.0f;
-            float next = (i < fc->point_count - 1) ? fc->points[i + 1].wind_speed_ms : -1.0f;
-            bool local_peak = (ws >= prev && ws >= next && (ws > prev || ws > next));
-            bool is_global = (i == wind_max_idx);
-            if (!is_global && !local_peak) {
+    int n = 0;
+    for (int pick = 0; pick < max_count; pick++) {
+        int best = -1;
+        float best_val = 0.0f;
+        for (int i = 0; i < fc->point_count; i++) {
+            float v = get(&fc->points[i]);
+            if (v <= best_val) {
                 continue;
             }
-
-            int64_t epoch = fc->points[i].epoch_utc;
-            if (!is_global && (epoch - last_shown_epoch) < (int64_t)MARKER_MIN_GAP_H * 3600) {
+            bool too_close = false;
+            for (int k = 0; k < n; k++) {
+                int64_t d = fc->points[i].epoch_utc - fc->points[out_idx[k]].epoch_utc;
+                if ((d < 0 ? -d : d) < (int64_t)WIND_PEAK_MIN_GAP_H * 3600) {
+                    too_close = true;
+                    break;
+                }
+            }
+            if (too_close) {
                 continue;
             }
-
-            int m = snap_to_better_extremum(fc, i, true, pt_wind);
-
-            int32_t x = (fc->point_count > 1)
-                            ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1)
-                            : 0;
-            int32_t y = WIND_CHART_H - (int32_t)(((float)s_wind_chart_data[m] /
-                                                  (float)wind_range_max) * WIND_CHART_H);
-
-            lv_obj_t *label = s_wind_markers[used++];
-            lv_label_set_text_fmt(label, "%.0f m/s", (double)fc->points[m].wind_speed_ms);
-            lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-            place_marker_label(label, CHART_X + x, WIND_CHART_Y + y, true);
-
-            last_shown_epoch = fc->points[m].epoch_utc;
-            if (m > i) {
-                i = m; /* don't re-label the span we snapped across */
-            }
+            best_val = v;
+            best = i;
         }
+        if (best < 0) {
+            break;
+        }
+        out_idx[n++] = best;
     }
+    return n;
+}
 
-    for (int i = used; i < WIND_MARKER_POOL; i++) {
+/* Wind/gust value markers: up to the two highest gust peaks
+ * (pick_top_wind_peaks - deduplicated within WIND_PEAK_MIN_GAP_H hours, so a
+ * second peak less than 6h from the strongest is dropped rather than shown),
+ * each labelled with its sustained wind speed followed by its gust speed in
+ * parentheses, e.g. "12 (18) m/s". Pinned near the chart's top rather than
+ * at the bar's own (value-dependent) height, since a bottom-of-chart label
+ * was too easy to miss. */
+static void place_wind_markers(const yr_forecast_t *fc)
+{
+    int gust_idx[WIND_MARKER_POOL];
+    int n = pick_top_wind_peaks(fc, pt_wind_gust, WIND_MARKER_POOL, gust_idx);
+
+    for (int k = 0; k < n; k++) {
+        int m = gust_idx[k];
+        int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
+        lv_obj_t *label = s_wind_markers[k];
+        lv_label_set_text_fmt(label, "%.0f (%.0f) m/s", (double)fc->points[m].wind_speed_ms,
+                              (double)fc->points[m].wind_speed_of_gust_ms);
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+        place_marker_label(label, CHART_X + x, WIND_CHART_Y, false);
+    }
+    for (int i = n; i < WIND_MARKER_POOL; i++) {
         lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -1579,11 +1626,12 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
 
     lv_label_set_text_fmt(s_updated_label, "Oppdatert kl. %s", fc->updated_hour_minute);
 
-    int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0, wind_max_idx = 0;
+    int temp_min_idx = 0, temp_max_idx = 0, precip_max_idx = 0;
     float temp_min = now->air_temperature_c;
     float temp_max = now->air_temperature_c;
     float precip_max = 0.0f;
     float wind_max = 0.0f;
+    float gust_max = 0.0f; /* folded into the shared wind/gust axis range below */
 
     for (int i = 0; i < fc->point_count; i++) {
         const yr_forecast_point_t *p = &fc->points[i];
@@ -1601,7 +1649,9 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         }
         if (p->wind_speed_ms > wind_max) {
             wind_max = p->wind_speed_ms;
-            wind_max_idx = i;
+        }
+        if (p->wind_speed_of_gust_ms > gust_max) {
+            gust_max = p->wind_speed_of_gust_ms;
         }
 
         /* A dry hour draws no bar at all (LV_CHART_POINT_NONE), rather than a
@@ -1610,6 +1660,11 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         s_precip_chart_data[i] = (precip_tenths > 0) ? precip_tenths : LV_CHART_POINT_NONE;
 
         s_wind_chart_data[i] = round_to_int(p->wind_speed_ms * 10.0f);
+        /* No bar (rather than a misleadingly flat one) for the far-out points
+         * MET doesn't forecast a gust for at all - see wind_speed_of_gust_ms. */
+        s_gust_chart_data[i] = (p->wind_speed_of_gust_ms > 0.0f)
+                                    ? round_to_int(p->wind_speed_of_gust_ms * 10.0f)
+                                    : LV_CHART_POINT_NONE;
     }
 
     int32_t temp_range_min = round_to_int(temp_min) - 1;
@@ -1649,18 +1704,27 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
     place_temp_markers(fc, temp_min_idx, temp_max_idx);
     place_precip_markers(fc, precip_max_idx, precip_range_max);
 
-    /* Wind-speed bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
-     * calm forecast still has a sensible axis. */
-    int32_t wind_range_max = round_to_int(wind_max * 10.0f) + 20;
+    /* Wind/gust bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
+     * calm forecast still has a sensible axis. Scaled off whichever of the
+     * two is higher - almost always the gust - so a strong gust forecast
+     * never clips off the top of its own chart. Both charts share this same
+     * range and point count (see s_gust_chart's declaration). */
+    float wind_or_gust_max = (gust_max > wind_max) ? gust_max : wind_max;
+    int32_t wind_range_max = round_to_int(wind_or_gust_max * 10.0f) + 20;
     if (wind_range_max < 60) {
         wind_range_max = 60;
     }
+    lv_chart_set_point_count(s_gust_chart, fc->point_count);
+    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
+    lv_chart_set_series_ext_y_array(s_gust_chart, s_gust_series, s_gust_chart_data);
+    lv_chart_refresh(s_gust_chart); /* force redraw - see the precip chart above */
+
     lv_chart_set_point_count(s_wind_chart, fc->point_count);
     lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
     lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
     lv_chart_refresh(s_wind_chart); /* force redraw - see the precip chart above */
 
-    place_wind_markers(fc, wind_max_idx, wind_range_max);
+    place_wind_markers(fc);
 
     char last_label[6] = "";
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
@@ -1914,10 +1978,12 @@ static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const y
         if (s->has_instant_details) {
             p.air_temperature_c = s->air_temperature_c;
             p.wind_speed_ms = s->wind_speed_ms;
+            p.wind_speed_of_gust_ms = s->wind_speed_of_gust_ms;
             p.wind_from_deg = s->wind_from_deg;
         } else {
             p.air_temperature_c = interp_base(base, s->epoch_utc, pt_temp);
             p.wind_speed_ms = interp_base(base, s->epoch_utc, pt_wind);
+            p.wind_speed_of_gust_ms = interp_base(base, s->epoch_utc, pt_wind_gust);
             p.wind_from_deg = nb ? nb->wind_from_deg : 0.0f;
         }
 
@@ -1985,6 +2051,7 @@ static void resample_uniform_time(yr_forecast_t *dst, const yr_forecast_t *src)
         p.epoch_utc = target;
         p.air_temperature_c = interp_base(src, target, pt_temp);
         p.wind_speed_ms = interp_base(src, target, pt_wind);
+        p.wind_speed_of_gust_ms = interp_base(src, target, pt_wind_gust);
         out.points[i] = p;
     }
     out.point_count = n;

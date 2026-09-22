@@ -15,6 +15,28 @@ static const char *TAG = "met_alerts_client";
 #define MET_ALERTS_HTTP_TIMEOUT_MS  15000
 #define MET_ALERTS_MAX_RESPONSE_LEN (128 * 1024) /* safety cap against a runaway server */
 
+/* cJSON's default allocator is plain malloc(), which ESP-IDF only routes to
+ * PSRAM for allocations >= 1 KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) - an
+ * alert's polygon geometry can run to hundreds of coordinate pairs, each a
+ * small cJSON node well under that, so this can burn through internal DRAM
+ * while parsed even though the properties we actually keep are tiny. Routing
+ * cJSON straight to heap_caps_malloc(..., MALLOC_CAP_SPIRAM) sidesteps that
+ * size threshold (see yr_client.c, which hit this for real with the larger
+ * "complete" forecast product). Global to the cJSON library, hence the guard. */
+static void *cjson_psram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM); }
+static void cjson_psram_free(void *ptr) { heap_caps_free(ptr); }
+
+static void ensure_cjson_psram_hooks(void)
+{
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+    cJSON_Hooks hooks = { .malloc_fn = cjson_psram_malloc, .free_fn = cjson_psram_free };
+    cJSON_InitHooks(&hooks);
+}
+
 typedef struct {
     char *buf;
     size_t len;
@@ -111,6 +133,7 @@ static met_alert_color_t parse_color(const char *s)
  * now, not an error. */
 static bool parse_alerts(const char *json, met_alerts_t *out)
 {
+    ensure_cjson_psram_hooks();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");

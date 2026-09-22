@@ -15,6 +15,28 @@ static const char *TAG = "yr_client";
 #define YR_HTTP_TIMEOUT_MS   15000
 #define YR_MAX_RESPONSE_LEN  (512 * 1024) /* safety cap against a runaway server */
 
+/* cJSON's default allocator is plain malloc(), which ESP-IDF only routes to
+ * PSRAM for allocations >= 1 KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) - most
+ * cJSON parse-tree nodes are far smaller than that, so parsing a big response
+ * (the "complete" locationforecast product is ~90 KB of JSON, several times
+ * compact's) can otherwise burn through internal DRAM at the same time WiFi
+ * needs its own, causing intermittent alloc failures there. Routing cJSON
+ * straight to heap_caps_malloc(..., MALLOC_CAP_SPIRAM) sidesteps that size
+ * threshold entirely. This is global to the cJSON library, hence the guard. */
+static void *cjson_psram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM); }
+static void cjson_psram_free(void *ptr) { heap_caps_free(ptr); }
+
+static void ensure_cjson_psram_hooks(void)
+{
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+    cJSON_Hooks hooks = { .malloc_fn = cjson_psram_malloc, .free_fn = cjson_psram_free };
+    cJSON_InitHooks(&hooks);
+}
+
 typedef struct {
     char *buf;
     size_t len;
@@ -151,6 +173,7 @@ static void extract_hour_minute(const char *time_str, char *out, size_t out_len,
 
 static bool parse_forecast(const char *json, yr_forecast_t *out)
 {
+    ensure_cjson_psram_hooks();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
@@ -205,6 +228,10 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
         cJSON *wind = cJSON_GetObjectItemCaseSensitive(instant_details, "wind_speed");
         if (cJSON_IsNumber(wind)) {
             point->wind_speed_ms = (float)wind->valuedouble;
+        }
+        cJSON *gust = cJSON_GetObjectItemCaseSensitive(instant_details, "wind_speed_of_gust");
+        if (cJSON_IsNumber(gust)) {
+            point->wind_speed_of_gust_ms = (float)gust->valuedouble;
         }
         cJSON *wind_dir = cJSON_GetObjectItemCaseSensitive(instant_details, "wind_from_direction");
         if (cJSON_IsNumber(wind_dir)) {
@@ -284,9 +311,13 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
 {
     memset(out, 0, sizeof(*out));
 
+    /* "complete", not "compact": the wind chart wants wind_speed_of_gust,
+     * which compact strips out. ~90 KB vs ~37 KB for a 9-day forecast -
+     * well under YR_MAX_RESPONSE_LEN, and only the first YR_FORECAST_BASE_POINTS
+     * entries are kept regardless. */
     char url[192];
     snprintf(url, sizeof(url),
-             "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=%.4f&lon=%.4f",
+             "https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=%.4f&lon=%.4f",
              lat, lon);
 
     char *body = NULL;
@@ -302,6 +333,7 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
 
 static bool parse_nowcast(const char *json, yr_nowcast_t *out)
 {
+    ensure_cjson_psram_hooks();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse nowcast JSON");
@@ -366,6 +398,10 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
             cJSON *wind = cJSON_GetObjectItemCaseSensitive(idetails, "wind_speed");
             if (cJSON_IsNumber(wind)) {
                 point->wind_speed_ms = (float)wind->valuedouble;
+            }
+            cJSON *gust = cJSON_GetObjectItemCaseSensitive(idetails, "wind_speed_of_gust");
+            if (cJSON_IsNumber(gust)) {
+                point->wind_speed_of_gust_ms = (float)gust->valuedouble;
             }
             cJSON *wind_dir = cJSON_GetObjectItemCaseSensitive(idetails, "wind_from_direction");
             if (cJSON_IsNumber(wind_dir)) {
