@@ -11,6 +11,11 @@ This example targets the Waveshare `ESP32-S3-Touch-LCD-4.3B` board and runs the 
 - RGB panel output
 - GT911 touch input
 
+The Waveshare `ESP32-S3-Touch-LCD-7` is also supported with no code changes: it shares the
+same 800x480 RGB timing, GPIO pinout, CH422G backlight/reset expander and GT911 touch wiring
+as the 4.3B (confirmed against Waveshare's own [ESP-IDF LVGL9 example](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7/tree/main/examples/ESP-IDF/09_lvgl_v9_demo)),
+so the same firmware image runs on either board unmodified.
+
 ## Requirements
 
 - ESP-IDF `>= 5.5`
@@ -41,9 +46,13 @@ every 10 minutes.
 Up to 5 forecast locations can be stored. **Tap anywhere on the screen** to
 cycle through the stops:
 
-1. **Oversikt** – an overview table with one row per location and 6-hour
-   columns, each showing the weather icon, temperature and the precipitation
-   summed over that 6-hour block. This is the first stop.
+1. **Oversikt** – an overview table with one row per location that shows
+   weather and 6-hour columns, each showing the weather icon, temperature and
+   the precipitation summed over that 6-hour block, plus the device's IP
+   address in the bottom-right corner (for reaching the setup portal later).
+   This is always the first stop, even with only one location or a purely
+   radar-only setup - it's the only screen showing the IP address, so it must
+   always stay reachable by tap.
 2. One detail screen per location (chart + wind), in order. The top-left
    label shows e.g. `Oslo  2/3`.
 
@@ -54,8 +63,8 @@ For each location on the setup page, choose what it shows: **Weather**,
 that location's weather screen: Oslo weather, Oslo radar, next location, ...).
 Each location also has its own **Radar range** (kilometres, 10-185, default
 40). A radar-only location has no weather screen and isn't a row in the
-overview table (the overview lists the locations that show weather, and only
-exists when there are two or more).
+overview table (the overview lists only the locations that show weather, and
+is empty of rows - but still shown, for its IP address - if none do).
 
 The screen shows a sonar-style plot centred on the location (north up, range
 rings at quarter steps, a heading triangle and a 60-second speed vector per
@@ -77,10 +86,11 @@ are polled every 5 s while a radar screen is showing (the connection is kept
 open between polls, and no weather forecasts are fetched meanwhile), then
 extrapolated along each aircraft's track in between.
 
-The overview stop only appears when two or more locations show weather.
-All those locations' hourly forecasts are kept refreshed in the background so
-the table is always current; the detail screens additionally splice in the
-5-minute nowcast for the selected location.
+The overview stop always exists and is always reachable by tap, regardless of
+how many locations show weather. All locations that show weather have their
+hourly forecasts kept refreshed in the background so the table is always
+current; the detail screens additionally splice in the 5-minute nowcast for
+the selected location.
 
 ### Setup portal (WiFi + locations)
 

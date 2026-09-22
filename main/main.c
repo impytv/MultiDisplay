@@ -144,8 +144,10 @@ static const lv_font_t *s_font_large;
 static app_config_t s_cfg;
 
 /* The screens a tap cycles through, in order (see build_stops): the overview
- * table (only with >= 2 locations), then for each location its weather screen
- * followed by its aircraft radar if that is enabled for it. */
+ * table (always present, even with zero or one weather location - it's the
+ * only place the device's IP address is shown, needed to reach the setup
+ * portal for further configuration), then for each location its weather
+ * screen followed by its aircraft radar if that is enabled for it. */
 typedef enum { STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2 } stop_kind_t;
 typedef struct {
     uint8_t kind; /* stop_kind_t */
@@ -329,9 +331,9 @@ static void build_stops(void)
     }
 
     s_stop_count = 0;
-    if (s_weather_count >= 2) {
-        s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
-    }
+    /* Always a stop, regardless of location_count: it's the only screen that
+     * shows the device's IP address, so it must always be reachable by tap. */
+    s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
     for (int i = 0; i < s_cfg.location_count; i++) {
         if (s_cfg.show[i] & APP_SHOW_WEATHER) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
@@ -375,8 +377,9 @@ static void show_view(stop_kind_t kind)
 
 /* Build the overview table into `root`: a title, a header row of clock hours
  * (filled in each refresh), then one row per location with a name cell and
- * OV_COLS cells of {weather icon, temperature, precipitation}. Only called
- * when at least two locations are configured. */
+ * OV_COLS cells of {weather icon, temperature, precipitation}. Always called;
+ * the row loop below is simply empty when no location shows weather - the IP
+ * and free-heap footnotes are the only content in that case. */
 static void build_overview(lv_obj_t *root)
 {
     s_ov_title = lv_label_create(root);
@@ -1180,10 +1183,8 @@ static void build_ui(lv_obj_t *screen)
         lv_label_set_text(s_hour_labels[i], "");
     }
 
-    /* The overview table is only a cycling stop with two or more locations. */
-    if (s_weather_count >= 2) {
-        build_overview(s_overview_root);
-    }
+    /* The overview table is always a cycling stop (see build_stops). */
+    build_overview(s_overview_root);
 
     /* The radar screen exists only if some location has it enabled. */
     if (s_any_radar) {
@@ -1691,6 +1692,15 @@ static bool any_cache_valid(void)
     return false;
 }
 
+/* Whether the overview is still waiting on its first forecast. False (nothing
+ * to wait for) when no location shows weather at all - e.g. a radar-only
+ * setup - so the overview never gets stuck on "Henter oversikt..." forever;
+ * the IP/heap footnotes render regardless via update_overview(). */
+static bool overview_loading(void)
+{
+    return s_weather_count > 0 && !any_cache_valid();
+}
+
 /* Repaint the overview table from the per-location caches. Uses the most
  * recent cache's first point as "now" (the device has no wall clock), aligns
  * it to the hour, and for each column samples the nearest hourly point for
@@ -2042,12 +2052,11 @@ static void yr_weather_task(void *arg)
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 show_view((stop_kind_t)stop->kind);
                 if (overview) {
-                    if (any_cache_valid()) {
-                        lv_label_set_text(s_status_label, "");
-                        update_overview();
-                    } else {
-                        lv_label_set_text(s_status_label, "Henter oversikt...");
-                    }
+                    /* Always render: the IP/heap footnotes must show up right
+                     * away, not only once a forecast lands. */
+                    update_overview();
+                    lv_label_set_text(s_status_label,
+                                      overview_loading() ? "Henter oversikt..." : "");
                 } else if (radar) {
                     /* Never show another location's aircraft: blank until the
                      * first fetch for this one lands. */
@@ -2119,10 +2128,8 @@ static void yr_weather_task(void *arg)
             /* Fill the overview row-by-row as each location lands. */
             if (overview && s_view_index == active_view &&
                 esp_lv_adapter_lock(-1) == ESP_OK) {
-                if (any_cache_valid()) {
-                    lv_label_set_text(s_status_label, "");
-                    update_overview();
-                }
+                update_overview();
+                lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
                 esp_lv_adapter_unlock();
             }
         }
@@ -2133,12 +2140,8 @@ static void yr_weather_task(void *arg)
 
         if (overview) {
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                if (any_cache_valid()) {
-                    lv_label_set_text(s_status_label, "");
-                    update_overview();
-                } else {
-                    lv_label_set_text(s_status_label, "Henter oversikt...");
-                }
+                update_overview();
+                lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
                 esp_lv_adapter_unlock();
             }
         } else if (radar) {
@@ -2186,7 +2189,7 @@ static void yr_weather_task(void *arg)
         /* Poll on the nowcast cadence once something is on screen; retry fast
          * while still waiting for the first data. A tap notifies us, cutting
          * the wait short. */
-        bool ready = overview ? any_cache_valid() : s_fc_valid[sel];
+        bool ready = overview ? !overview_loading() : s_fc_valid[sel];
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
                                                : (ready ? NOWCAST_REFRESH_INTERVAL_MS
                                                         : WEATHER_RETRY_INTERVAL_MS)));
