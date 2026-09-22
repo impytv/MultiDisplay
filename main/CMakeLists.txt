@@ -6,6 +6,7 @@ idf_component_register(
         "../components/wifi_provision.c"
         "../components/yr_client.c"
         "../components/adsb_client.c"
+        "../components/met_alerts_client.c"
     INCLUDE_DIRS
         "."
         "../components"

@@ -18,6 +18,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "adsb_client.h"
 #include "app_config.h"
+#include "met_alerts_client.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
 
@@ -30,6 +31,10 @@ static const char *TAG = "lvgl9_demo";
 #define WEATHER_REFRESH_INTERVAL_MS (10 * 60 * 1000)
 #define NOWCAST_REFRESH_INTERVAL_MS (5 * 60 * 1000)
 #define WEATHER_RETRY_INTERVAL_MS (20 * 1000)
+/* MET Norway's severe weather alerts ("farevarsel") change far less often
+ * than the forecast - polled on its own, slower, independent cadence so one
+ * data source's staleness never forces a refetch of the other. */
+#define ALERT_REFRESH_INTERVAL_MS (10 * 60 * 1000)
 /* Take every Nth nowcast step (5 min apart) into the merged series: every
  * 2nd = 10-minute resolution for the near term, still 6x finer than hourly
  * without over-compressing the rest of the chart. */
@@ -103,13 +108,13 @@ static const char *TAG = "lvgl9_demo";
 /* Overview screen: a table with one row per location and OV_COLS time columns
  * OV_STEP_H hours apart. Each cell shows the weather icon, the temperature at
  * that hour and the precipitation summed over the following OV_STEP_H hours.
- * It is the first stop when cycling with a left-half tap (only shown when two
- * or more locations are configured). */
+ * It is always the first stop when cycling (see build_stops). */
 #define OV_COLS     4
 #define OV_STEP_H   6
 #define OV_X        10
-#define OV_NAME_W   118
-#define OV_COL_W    165            /* (800 - OV_X*2 - OV_NAME_W) / OV_COLS   */
+#define OV_NAME_W   150            /* wide enough for the alert dot + the longest
+                                    * location names (e.g. "Kvaløysletta") on one line */
+#define OV_COL_W    157            /* (800 - OV_X*2 - OV_NAME_W) / OV_COLS   */
 #define OV_TITLE_Y  6
 #define OV_HDR_Y    42
 #define OV_BODY_Y   64
@@ -117,6 +122,7 @@ static const char *TAG = "lvgl9_demo";
  * bottom of the screen for the IP-address label. */
 #define OV_ROW_H    76
 #define OV_ICON     34
+#define OV_ALERT_DOT 18 /* the per-row severe-weather-alert badge, see s_ov_alert */
 
 /* Aircraft radar screen (one per location that has it ticked in the setup
  * portal): a sonar-style plot on the left, a table of the nearest aircraft on
@@ -174,6 +180,7 @@ static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
+static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
 
 /* Aircraft radar (built only if some location has it enabled). */
 static lv_obj_t *s_radar_root;
@@ -192,6 +199,7 @@ static lv_obj_t *s_ov_hdr[OV_COLS];
 static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
 static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
 static lv_obj_t *s_ov_cell[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
+static lv_obj_t *s_ov_alert[APP_CONFIG_MAX_LOCATIONS]; /* small badge beside the name, worst active alert's colour */
 
 /* Per-location hourly forecast cache (PSRAM), kept warm for every location so
  * the overview can show them all at once. s_fc_cache[i] is allocated in the
@@ -199,6 +207,12 @@ static lv_obj_t *s_ov_cell[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
 static yr_forecast_t *s_fc_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_fc_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_fc_tk[APP_CONFIG_MAX_LOCATIONS];
+
+/* Per-location severe weather alerts (PSRAM), same shape as the forecast
+ * cache above and refreshed on its own cadence (see ALERT_REFRESH_INTERVAL_MS). */
+static met_alerts_t *s_alert_cache[APP_CONFIG_MAX_LOCATIONS];
+static bool s_alert_valid[APP_CONFIG_MAX_LOCATIONS];
+static TickType_t s_alert_tk[APP_CONFIG_MAX_LOCATIONS];
 
 static lv_obj_t *s_precip_chart;
 static lv_chart_series_t *s_precip_series;
@@ -402,12 +416,29 @@ static void build_overview(lv_obj_t *root)
     for (int i = 0; i < s_weather_count; i++) {
         int row_y = OV_BODY_Y + i * OV_ROW_H;
 
+        /* The name text is indented to leave room for the alert dot at the
+         * left of the row (below) - sized and positioned first so the dot
+         * can align itself to it. */
         s_ov_name[i] = lv_label_create(root);
-        lv_obj_set_pos(s_ov_name[i], OV_X, row_y + OV_ICON / 2 - 4);
-        lv_obj_set_width(s_ov_name[i], OV_NAME_W - 4);
+        lv_obj_set_pos(s_ov_name[i], OV_X + OV_ALERT_DOT + 6, row_y + OV_ICON / 2 - 4);
+        lv_obj_set_width(s_ov_name[i], OV_NAME_W - OV_ALERT_DOT - 10);
+        /* DOTS mode only truncates (rather than wrapping to a second line
+         * that bleeds into the row below) when the object has a fixed,
+         * single-line height - auto height lets it grow instead. */
+        lv_obj_set_height(s_ov_name[i], lv_font_get_line_height(lv_obj_get_style_text_font(s_ov_name[i], 0)));
         lv_obj_set_style_text_align(s_ov_name[i], LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(s_ov_name[i], LV_LABEL_LONG_MODE_DOTS);
         lv_label_set_text(s_ov_name[i], s_cfg.locations[s_wx_loc[i]].name);
+
+        /* Worst active alert's colour, or hidden. Vertically centred on the
+         * name text regardless of font metrics, via align-to. */
+        s_ov_alert[i] = lv_obj_create(root);
+        lv_obj_remove_style_all(s_ov_alert[i]);
+        lv_obj_set_size(s_ov_alert[i], OV_ALERT_DOT, OV_ALERT_DOT);
+        lv_obj_set_style_radius(s_ov_alert[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(s_ov_alert[i], LV_OPA_COVER, 0);
+        lv_obj_align_to(s_ov_alert[i], s_ov_name[i], LV_ALIGN_OUT_LEFT_MID, -4, 0);
+        lv_obj_add_flag(s_ov_alert[i], LV_OBJ_FLAG_HIDDEN);
 
         for (int c = 0; c < OV_COLS; c++) {
             int cell_x = OV_X + OV_NAME_W + c * OV_COL_W;
@@ -1063,6 +1094,26 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
     lv_label_set_text(s_updated_label, "");
 
+    /* The selected location's worst active severe weather alert, if any (see
+     * update_alert_banner). Sits centred in the gap between the location name
+     * and the "updated" timestamp: black text on a solid fill of the alert's
+     * own colour, for contrast against the dark screen background - plain
+     * coloured text there was hard to read. Hidden (not just empty) when
+     * nothing is active, since a background-filled label would otherwise
+     * still show as a blank coloured box. */
+    s_alert_label = lv_label_create(s_detail_root);
+    lv_obj_set_width(s_alert_label, 380);
+    lv_label_set_long_mode(s_alert_label, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(s_alert_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_alert_label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_alert_label, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_alert_label, 4, 0);
+    lv_obj_set_style_pad_hor(s_alert_label, 10, 0);
+    lv_obj_set_style_pad_ver(s_alert_label, 3, 0);
+    lv_obj_align(s_alert_label, LV_ALIGN_TOP_MID, 0, 6);
+    lv_label_set_text(s_alert_label, "");
+    lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
+
     lv_obj_t *icon_row = lv_obj_create(s_detail_root);
     lv_obj_set_pos(icon_row, CHART_X, ICON_ROW_Y);
     lv_obj_set_size(icon_row, CHART_W, ICON_SIZE);
@@ -1701,6 +1752,67 @@ static bool overview_loading(void)
     return s_weather_count > 0 && !any_cache_valid();
 }
 
+static lv_color_t alert_lv_color(met_alert_color_t c)
+{
+    switch (c) {
+    case MET_ALERT_RED:    return lv_palette_main(LV_PALETTE_RED);
+    case MET_ALERT_ORANGE: return lv_palette_main(LV_PALETTE_ORANGE);
+    default:               return lv_palette_main(LV_PALETTE_YELLOW);
+    }
+}
+
+/* The most severe of a location's currently active alerts, or NULL if it has
+ * none (either nothing active, or its cache isn't valid yet). */
+static const met_alert_t *alert_worst(int loc)
+{
+    if (!s_alert_valid[loc] || s_alert_cache[loc]->count == 0) {
+        return NULL;
+    }
+    const met_alert_t *worst = &s_alert_cache[loc]->alerts[0];
+    for (int j = 1; j < s_alert_cache[loc]->count; j++) {
+        if (s_alert_cache[loc]->alerts[j].color > worst->color) {
+            worst = &s_alert_cache[loc]->alerts[j];
+        }
+    }
+    return worst;
+}
+
+/* Refresh the selected location's alert banner on the detail screen (top
+ * centre, between the location name and the "updated" timestamp). Must be
+ * called under the adapter lock. */
+static void update_alert_banner(int loc)
+{
+    const met_alert_t *worst = alert_worst(loc);
+    if (worst == NULL) {
+        lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_set_style_bg_color(s_alert_label, alert_lv_color(worst->color), 0);
+    int extra = s_alert_cache[loc]->count - 1;
+    if (extra > 0) {
+        lv_label_set_text_fmt(s_alert_label, "OBS: %s (+%d)", worst->event_name, extra);
+    } else {
+        lv_label_set_text_fmt(s_alert_label, "OBS: %s", worst->event_name);
+    }
+    lv_obj_clear_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Refresh every row's alert badge in the overview table. Part of
+ * update_overview() (below) so every call site that repaints the overview
+ * keeps the badges current for free. */
+static void update_overview_alerts(void)
+{
+    for (int row = 0; row < s_weather_count; row++) {
+        const met_alert_t *worst = alert_worst(s_wx_loc[row]);
+        if (worst == NULL) {
+            lv_obj_add_flag(s_ov_alert[row], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_set_style_bg_color(s_ov_alert[row], alert_lv_color(worst->color), 0);
+        lv_obj_clear_flag(s_ov_alert[row], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 /* Repaint the overview table from the per-location caches. Uses the most
  * recent cache's first point as "now" (the device has no wall clock), aligns
  * it to the hour, and for each column samples the nearest hourly point for
@@ -1708,6 +1820,8 @@ static bool overview_loading(void)
  * hours. Missing caches show dashes. Must be called under the adapter lock. */
 static void update_overview(void)
 {
+    update_overview_alerts();
+
     lv_label_set_text(s_ov_ip_label, wifi_provision_get_ip());
     lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4); /* re-anchor: text width changed */
 
@@ -1956,17 +2070,20 @@ static void yr_weather_task(void *arg)
      * copy on a network hiccup); `merged` holds the nowcast-spliced series;
      * `resampled` is what the detail view actually renders (see
      * resample_uniform_time); s_fc_cache[i] keeps each location's last good
-     * hourly forecast for the overview. */
+     * hourly forecast for the overview. `alert_scratch`/s_alert_cache[i] are
+     * the same scratch-then-copy scheme for the severe weather alerts. */
     yr_forecast_t *scratch = heap_caps_malloc(sizeof(*scratch), MALLOC_CAP_SPIRAM);
     yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
     yr_forecast_t *resampled = heap_caps_malloc(sizeof(*resampled), MALLOC_CAP_SPIRAM);
     yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
     adsb_result_t *adsb_scratch = heap_caps_malloc(sizeof(*adsb_scratch), MALLOC_CAP_SPIRAM);
+    met_alerts_t *alert_scratch = heap_caps_malloc(sizeof(*alert_scratch), MALLOC_CAP_SPIRAM);
     bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL &&
-                      nowcast != NULL && adsb_scratch != NULL);
+                      nowcast != NULL && adsb_scratch != NULL && alert_scratch != NULL);
     for (int i = 0; i < s_cfg.location_count; i++) {
         s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
-        if (s_fc_cache[i] == NULL) {
+        s_alert_cache[i] = heap_caps_malloc(sizeof(met_alerts_t), MALLOC_CAP_SPIRAM);
+        if (s_fc_cache[i] == NULL || s_alert_cache[i] == NULL) {
             caches_ok = false;
         }
     }
@@ -2073,6 +2190,9 @@ static void yr_weather_task(void *arg)
                     } else {
                         lv_label_set_text(s_location_label, loc->name);
                     }
+                    /* Unlike the forecast, the alert cache carries over as-is
+                     * from whatever this location's last fetch found. */
+                    update_alert_banner(sel);
                     /* Never render from cache here, even if valid - wait for
                      * the fresh forecast+nowcast fetch below so the graph
                      * doesn't flash an old forecast before the nowcast lands. */
@@ -2105,31 +2225,56 @@ static void yr_weather_task(void *arg)
             }
             bool stale = !s_fc_valid[i] || (i == sel && force_sel_refetch) ||
                          (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
-            if (!stale) {
+            bool alert_stale = !s_alert_valid[i] ||
+                                (now_tk - s_alert_tk[i]) >= pdMS_TO_TICKS(ALERT_REFRESH_INTERVAL_MS);
+            if (!stale && !alert_stale) {
                 continue;
             }
 
             double lat = atof(s_cfg.locations[i].lat);
             double lon = atof(s_cfg.locations[i].lon);
-            if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
-                scratch->valid && scratch->point_count > 0) {
-                *s_fc_cache[i] = *scratch;
-                s_fc_valid[i] = true;
-                s_fc_tk[i] = now_tk;
-                ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
-                         i, s_cfg.locations[i].name, s_fc_cache[i]->point_count,
-                         s_fc_cache[i]->updated_hour_minute,
-                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-            } else {
-                ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous",
-                         i, s_cfg.locations[i].name);
+
+            if (stale) {
+                if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
+                    scratch->valid && scratch->point_count > 0) {
+                    *s_fc_cache[i] = *scratch;
+                    s_fc_valid[i] = true;
+                    s_fc_tk[i] = now_tk;
+                    ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
+                             i, s_cfg.locations[i].name, s_fc_cache[i]->point_count,
+                             s_fc_cache[i]->updated_hour_minute,
+                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+                } else {
+                    ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous",
+                             i, s_cfg.locations[i].name);
+                }
             }
 
-            /* Fill the overview row-by-row as each location lands. */
-            if (overview && s_view_index == active_view &&
-                esp_lv_adapter_lock(-1) == ESP_OK) {
-                update_overview();
-                lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
+            if (alert_stale) {
+                if (met_alerts_client_fetch(lat, lon, alert_scratch) == ESP_OK && alert_scratch->valid) {
+                    *s_alert_cache[i] = *alert_scratch;
+                    s_alert_valid[i] = true;
+                    s_alert_tk[i] = now_tk;
+                    if (alert_scratch->count > 0) {
+                        ESP_LOGI(TAG, "Alerts[%d] %s: %d active", i, s_cfg.locations[i].name,
+                                 alert_scratch->count);
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Alerts[%d] %s failed; keeping previous",
+                             i, s_cfg.locations[i].name);
+                }
+            }
+
+            /* Fill the overview row-by-row (forecast + alert badge) as each
+             * location lands, and keep the selected detail screen's banner
+             * current the moment its own alert fetch lands. */
+            if (s_view_index == active_view && esp_lv_adapter_lock(-1) == ESP_OK) {
+                if (overview) {
+                    update_overview();
+                    lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
+                } else if (i == sel) {
+                    update_alert_banner(sel);
+                }
                 esp_lv_adapter_unlock();
             }
         }
@@ -2147,6 +2292,14 @@ static void yr_weather_task(void *arg)
         } else if (radar) {
             /* Already handled above; nothing weather-related to draw here. */
         } else {
+            /* Keeps the banner in sync with whatever the fetch loop below
+             * last landed for this location, even on a pass that finds
+             * nothing else to do (e.g. the forecast is still fresh). */
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                update_alert_banner(sel);
+                esp_lv_adapter_unlock();
+            }
+
             /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
             double lat = atof(s_cfg.locations[sel].lat);
             double lon = atof(s_cfg.locations[sel].lon);

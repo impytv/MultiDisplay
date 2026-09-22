@@ -92,6 +92,23 @@ hourly forecasts kept refreshed in the background so the table is always
 current; the detail screens additionally splice in the 5-minute nowcast for
 the selected location.
 
+### Severe weather alerts
+
+Each location that shows weather is checked against [MET Norway's MetAlerts
+API](https://api.met.no/weatherapi/metalerts/2.0/documentation) (the same
+"farevarsel" warnings shown on yr.no), refreshed on its own 10-minute cadence.
+When a location has one or more currently active alerts:
+
+- Its weather detail screen shows the worst one's name at the top centre
+  (`OBS: <name>`, `+N` if there's more than one), coloured by MET's own
+  yellow/orange/red severity scale.
+- The overview table shows a small dot of that same colour next to the
+  location's name.
+
+Nothing is shown for a location with no active alert. The API itself filters
+to alerts covering the location's exact coordinates and currently active, so
+the device does no date or geometry filtering of its own.
+
 ### Setup portal (WiFi + locations)
 
 WiFi credentials and the forecast locations are configured at runtime and
@@ -126,4 +143,6 @@ missing/generic User-Agent with `403 Forbidden`; use something like
 holds the shared build settings and regenerates a fresh `sdkconfig` on first
 build.
 
-The "Fly" and "Regn" tabs are placeholders for future features.
+The "Fly" tab (aircraft radar) and severe weather alerts described above have
+since shipped; a dedicated rain radar map ("Regn") remains a placeholder for
+a future feature.
