@@ -17,6 +17,7 @@
 #include "nvs_flash.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "adsb_client.h"
+#include "ais_client.h"
 #include "app_config.h"
 #include "met_alerts_client.h"
 #include "wifi_provision.h"
@@ -146,6 +147,13 @@ static const char *TAG = "lvgl9_demo";
 #define ADSB_POLL_MS        5000
 /* Aircraft are dead-reckoned between polls, so repaint now and then. */
 #define RADAR_REDRAW_MS     2000
+/* Ship traffic (same screen as the aircraft radar): one BarentsWatch request
+ * per 30 s. Ships are dead-reckoned in between like the aircraft, but never
+ * further than SHIP_EXTRAP_MAX_S past their last report. */
+#define SHIP_POLL_MS        30000
+#define SHIP_EXTRAP_MAX_S   600.0f
+#define SHIP_VEC_MIN        10    /* course vector: where it will be in this many minutes */
+#define SHIP_TAG_MAX_W      120   /* px; longer names are shortened on the plot */
 
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
@@ -157,14 +165,14 @@ static app_config_t s_cfg;
 /* The screens a tap cycles through, in order (see build_stops): the overview
  * table (always present, even with zero or one weather location - it's the
  * only place the device's IP address is shown, needed to reach the setup
- * portal for further configuration), then for each location its weather
- * screen followed by its aircraft radar if that is enabled for it. */
-typedef enum { STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2 } stop_kind_t;
+ * portal for further configuration), then for each location whichever of its
+ * weather screen, aircraft radar and ship traffic are enabled, in that order. */
+typedef enum { STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3 } stop_kind_t;
 typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
-static view_stop_t s_stops[1 + 2 * APP_CONFIG_MAX_LOCATIONS];
+static view_stop_t s_stops[1 + 3 * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
 
 /* Locations that show weather, in order: the rows of the overview and the
@@ -172,7 +180,7 @@ static int s_stop_count;
 static int s_weather_count;
 static uint8_t s_wx_loc[APP_CONFIG_MAX_LOCATIONS]; /* weather index -> location */
 static int8_t s_wx_pos[APP_CONFIG_MAX_LOCATIONS];  /* location -> weather index, -1 if none */
-static bool s_any_radar;
+static bool s_any_radar; /* some location shows aircraft or ships (they share the radar screen) */
 
 /* Index into s_stops of the screen on show. Advanced by a tap; the weather
  * task watches it and re-renders. */
@@ -181,18 +189,30 @@ static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
-/* Aircraft radar colours, one set per theme. */
+/* Aircraft radar / ship traffic colours, one set per theme. ship[] is per
+ * ais_category_t. */
 typedef struct {
     uint32_t bg, disc, ring, txt, dim, plane, vec, apt;
+    uint32_t ship[AIS_CAT_COUNT];
 } radar_palette_t;
 
 static const radar_palette_t RADAR_DARK = {
     .bg = 0x050B12, .disc = 0x0A1E30, .ring = 0x1F6E45, .txt = 0xDDE6EE,
     .dim = 0x8AA0B4, .plane = 0xFF5A4F, .vec = 0xE060E0, .apt = 0x3FBFB0,
+    .ship = {
+        [AIS_CAT_OTHER] = 0xB0BEC5, [AIS_CAT_CARGO] = 0x66BB6A, [AIS_CAT_TANKER] = 0xFF7043,
+        [AIS_CAT_PASSENGER] = 0x42A5F5, [AIS_CAT_FISHING] = 0xFFCA28, [AIS_CAT_LEISURE] = 0xE040FB,
+        [AIS_CAT_TUG] = 0x26C6DA,
+    },
 };
 static const radar_palette_t RADAR_LIGHT = {
     .bg = 0xEEF2F6, .disc = 0xFFFFFF, .ring = 0x6BAF8A, .txt = 0x1B2631,
     .dim = 0x5D6D7E, .plane = 0xD62D20, .vec = 0xA83CA8, .apt = 0x1B8A7E,
+    .ship = {
+        [AIS_CAT_OTHER] = 0x607D8B, [AIS_CAT_CARGO] = 0x2E7D32, [AIS_CAT_TANKER] = 0xD84315,
+        [AIS_CAT_PASSENGER] = 0x1565C0, [AIS_CAT_FISHING] = 0xB28704, [AIS_CAT_LEISURE] = 0x9C27B0,
+        [AIS_CAT_TUG] = 0x00838F,
+    },
 };
 static const radar_palette_t *s_rp = &RADAR_DARK; /* set from the theme in build_radar */
 static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
@@ -201,14 +221,17 @@ static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
 static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
 
-/* Aircraft radar (built only if some location has it enabled). */
+/* Aircraft radar, also used for ship traffic (built only if some location has
+ * either enabled). s_ship_mode picks which the screen is showing. */
 static lv_obj_t *s_radar_root;
 static lv_obj_t *s_radar_title;
 static lv_obj_t *s_radar_info;
 static lv_obj_t *s_radar_canvas;
 static adsb_result_t *s_radar_data; /* PSRAM; last fetch for the location on show */
 static bool s_radar_valid;
-static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data was stored */
+static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data / s_ship_data was stored */
+static ais_result_t *s_ship_data;   /* PSRAM; last ship fetch for the location on show */
+static bool s_ship_mode;
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
@@ -382,7 +405,7 @@ static void build_stops(void)
             s_wx_pos[i] = (int8_t)s_weather_count;
             s_wx_loc[s_weather_count++] = (uint8_t)i;
         }
-        if (s_cfg.show[i] & APP_SHOW_RADAR) {
+        if (s_cfg.show[i] & (APP_SHOW_RADAR | APP_SHOW_SHIPS)) {
             s_any_radar = true;
         }
     }
@@ -398,6 +421,9 @@ static void build_stops(void)
         if (s_cfg.show[i] & APP_SHOW_RADAR) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_RADAR, (uint8_t)i };
         }
+        if (s_cfg.show[i] & APP_SHOW_SHIPS) {
+            s_stops[s_stop_count++] = (view_stop_t){ STOP_SHIPS, (uint8_t)i };
+        }
     }
 }
 
@@ -409,11 +435,12 @@ static void show_view(stop_kind_t kind)
     roots[STOP_OVERVIEW] = s_overview_root;
     roots[STOP_WEATHER] = s_detail_root;
     roots[STOP_RADAR] = s_radar_root;
+    int shown = (kind == STOP_SHIPS) ? STOP_RADAR : (int)kind;
     for (int k = 0; k < 3; k++) {
         if (roots[k] == NULL) {
             continue;
         }
-        if (k == (int)kind) {
+        if (k == shown) {
             lv_obj_clear_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
@@ -423,7 +450,7 @@ static void show_view(stop_kind_t kind)
     /* The status text sits above whichever screen is shown. On the radar it
      * takes the radar's text colour, and is moved over the table half so it
      * doesn't sit on the plot. */
-    if (kind == STOP_RADAR) {
+    if (kind == STOP_RADAR || kind == STOP_SHIPS) {
         lv_obj_set_style_text_color(s_status_label, lv_color_hex(s_rp->txt), 0);
         lv_obj_align(s_status_label, LV_ALIGN_CENTER, 245, 0);
     } else {
@@ -853,6 +880,181 @@ static void radar_draw_airport_labels(lv_layer_t *layer, int range, int lh, lv_a
     }
 }
 
+/* Draw `txt` left-aligned in w px, shortened with ".." if it doesn't fit. */
+static void radar_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color)
+{
+    if (!radar_vis(layer, x, y, x + w - 1, y + lv_font_get_line_height(s_font_body) - 1)) {
+        return;
+    }
+    char buf[sizeof(((ais_ship_t *)0)->name) + 2];
+    size_t len = strlen(txt);
+    if (len > sizeof(buf) - 3) {
+        len = sizeof(buf) - 3;
+    }
+    for (size_t n = len;; n--) {
+        memcpy(buf, txt, n);
+        if (n < len) {
+            memcpy(buf + n, "..", 3);
+        } else {
+            buf[n] = '\0';
+        }
+        lv_point_t sz;
+        lv_text_get_size(&sz, buf, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        if (sz.x <= w || n <= 1) {
+            break;
+        }
+    }
+    radar_text(layer, buf, x, y, w, LV_TEXT_ALIGN_LEFT, color);
+}
+
+/* Where ship `s` is now on the plot, in px from the centre (y up): its reported
+ * position moved along its course for the report's age, unless it's moored.
+ * False if that is outside the outer ring. */
+static bool ship_plot_pos(const ais_ship_t *s, int range, float since_fetch_s, float *sx, float *sy)
+{
+    const float deg = (float)M_PI / 180.0f;
+    float x_km = s->dist_km * sinf(s->bearing_deg * deg);
+    float y_km = s->dist_km * cosf(s->bearing_deg * deg);
+    if (!s->moored) {
+        float t = fminf(s->age_s + since_fetch_s, SHIP_EXTRAP_MAX_S);
+        float moved_km = s->sog_kn * KM_PER_NM * t / 3600.0f;
+        x_km += moved_km * sinf(s->cog_deg * deg);
+        y_km += moved_km * cosf(s->cog_deg * deg);
+    }
+    *sx = x_km / (float)range * RADAR_R;
+    *sy = y_km / (float)range * RADAR_R;
+    return *sx * *sx + *sy * *sy <= (float)(RADAR_R * RADAR_R);
+}
+
+/* Ship traffic on the radar grid (already drawn): a hull-shaped marker along
+ * each ship's heading with a SHIP_VEC_MIN-minute course vector, a dot for
+ * moored / anchored ones, name tags for the nearest, and the table. */
+static void ships_draw(lv_layer_t *layer, int range, int lh)
+{
+    const lv_color_t c_ring = lv_color_hex(s_rp->ring);
+    const lv_color_t c_txt = lv_color_hex(s_rp->txt);
+    const lv_color_t c_dim = lv_color_hex(s_rp->dim);
+
+    radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
+    radar_text(layer, "Navn", RADAR_LIST_X, 50, 136, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_text(layer, "Type", RADAR_LIST_X + 136, 50, 58, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_text(layer, "kn", RADAR_LIST_X + 194, 50, 44, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_text(layer, "km", RADAR_LIST_X + 238, 50, 56, LV_TEXT_ALIGN_RIGHT, c_dim);
+
+    const ais_result_t *res = (s_radar_valid && s_ship_data != NULL) ? s_ship_data : NULL;
+    if (res == NULL) {
+        return;
+    }
+
+    lv_area_t tags[RADAR_TAGS];
+    int n_tags = 0;
+    const float since_fetch_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
+    const float deg = (float)M_PI / 180.0f;
+
+    /* Farthest first, so the nearest ships end up on top. */
+    for (int i = res->count - 1; i >= 0; i--) {
+        const ais_ship_t *s = &res->ship[i];
+        const lv_color_t col = lv_color_hex(s_rp->ship[s->category < AIS_CAT_COUNT ? s->category : 0]);
+
+        float sx, sy;
+        if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
+            continue;
+        }
+        int px = RADAR_CX + (int)lroundf(sx);
+        int py = RADAR_CY - (int)lroundf(sy);
+
+        if (s->moored) {
+            radar_dot(layer, px, py, 3, col);
+        } else {
+            float hr = s->heading_deg * deg;
+            float fx = sinf(hr), fy = -cosf(hr);
+            float qx = -fy, qy = fx;
+            int tri[3][2] = {
+                { px + (int)lroundf(fx * 10), py + (int)lroundf(fy * 10) },
+                { px + (int)lroundf(-fx * 6 + qx * 4), py + (int)lroundf(-fy * 6 + qy * 4) },
+                { px + (int)lroundf(-fx * 6 - qx * 4), py + (int)lroundf(-fy * 6 - qy * 4) },
+            };
+            float vx = sinf(s->cog_deg * deg), vy = -cosf(s->cog_deg * deg);
+            float vec_px = s->sog_kn * KM_PER_NM * SHIP_VEC_MIN / 60.0f / (float)range * RADAR_R;
+            if (vec_px > 70.0f) {
+                vec_px = 70.0f;
+            }
+            float b = sx * vx - sy * vy;
+            float c = sx * sx + sy * sy - (float)(RADAR_R * RADAR_R);
+            float t_max = -b + sqrtf(b * b - c);
+            if (vec_px > t_max) {
+                vec_px = t_max;
+            }
+            if (vec_px > 3.0f) {
+                radar_line(layer, px, py, px + (int)lroundf(vx * vec_px), py + (int)lroundf(vy * vec_px),
+                           1, col);
+            }
+            radar_triangle(layer, tri, col);
+        }
+    }
+
+    /* Name tags for the nearest few, on the side facing the centre, skipped
+     * where they'd overlap an earlier one. Computed in the same order on every
+     * strip so the choice is consistent across the whole frame. */
+    for (int i = 0; i < res->count && i < RADAR_TAGS; i++) {
+        const ais_ship_t *s = &res->ship[i];
+        float sx, sy;
+        if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
+            continue;
+        }
+        int px = RADAR_CX + (int)lroundf(sx);
+        int py = RADAR_CY - (int)lroundf(sy);
+        lv_point_t sz;
+        lv_text_get_size(&sz, s->name, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int w = sz.x + 2 < SHIP_TAG_MAX_W ? sz.x + 2 : SHIP_TAG_MAX_W;
+        lv_area_t tag = { (px < RADAR_CX) ? px + 10 : px - 10 - w, py - lh / 2, 0, py + lh / 2 };
+        tag.x2 = tag.x1 + w;
+        bool clash = false;
+        for (int k = 0; k < n_tags; k++) {
+            const lv_area_t *o = &tags[k];
+            if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
+                clash = true;
+                break;
+            }
+        }
+        if (!clash) {
+            tags[n_tags++] = tag;
+            radar_text_fit(layer, s->name, tag.x1, tag.y1, w, c_txt);
+        }
+    }
+
+    if (res->count == 0) {
+        char none[48];
+        snprintf(none, sizeof(none), "Ingen skip innen %d km", range);
+        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
+        return;
+    }
+
+    for (int i = 0; i < res->count && i < RADAR_LIST_ROWS; i++) {
+        const ais_ship_t *s = &res->ship[i];
+        const lv_color_t col = lv_color_hex(s_rp->ship[s->category < AIS_CAT_COUNT ? s->category : 0]);
+        int y = RADAR_LIST_Y + i * RADAR_LIST_ROW_H;
+        char kn[8], dist[8];
+        if (s->moored) {
+            snprintf(kn, sizeof(kn), "-");
+        } else {
+            snprintf(kn, sizeof(kn), "%.0f", (double)s->sog_kn);
+        }
+        snprintf(dist, sizeof(dist), s->dist_km < 10.0f ? "%.1f" : "%.0f", (double)s->dist_km);
+        radar_text_fit(layer, s->name, RADAR_LIST_X, y, 132, c_txt);
+        radar_text(layer, ais_category_label(s->category), RADAR_LIST_X + 136, y, 58,
+                   LV_TEXT_ALIGN_LEFT, col);
+        radar_text(layer, kn, RADAR_LIST_X + 194, y, 44, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_text(layer, dist, RADAR_LIST_X + 238, y, 56, LV_TEXT_ALIGN_RIGHT, c_txt);
+    }
+    if (res->total > res->count) {
+        char more[40];
+        snprintf(more, sizeof(more), "Viser %d av %d skip", res->count, res->total);
+        radar_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
+                   290, LV_TEXT_ALIGN_LEFT, c_dim);
+    }
+}
+
 static void radar_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -901,6 +1103,11 @@ static void radar_draw_cb(lv_event_t *e)
             radar_text(layer, num, ring_x - 4 - 60, y, 60, LV_TEXT_ALIGN_RIGHT, c_dim);
             radar_text(layer, "km", ring_x + 4, y, 34, LV_TEXT_ALIGN_LEFT, c_dim);
         }
+    }
+
+    if (s_ship_mode) {
+        ships_draw(layer, range, lh);
+        return;
     }
 
     radar_draw_airports(layer, range);
@@ -1033,7 +1240,23 @@ static void radar_redraw_timer_cb(lv_timer_t *t)
     (void)t;
     if (s_radar_valid && s_radar_canvas != NULL && !lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_invalidate(s_radar_canvas);
+        if (s_ship_mode) {
+            lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km, oppdatert %u s siden",
+                                  s_ship_data->total, (unsigned)s_radar_range_km,
+                                  (unsigned)((lv_tick_get() - s_radar_tick) / 1000));
+        }
     }
+}
+
+/* Called with the adapter lock held. */
+static void ships_apply(const ais_result_t *res)
+{
+    memcpy(s_ship_data, res, sizeof(*res));
+    s_radar_valid = true;
+    s_radar_tick = lv_tick_get();
+    lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km, oppdatert 0 s siden",
+                          res->total, (unsigned)s_radar_range_km);
+    lv_obj_invalidate(s_radar_canvas);
 }
 
 /* Called with the adapter lock held. */
@@ -1061,9 +1284,10 @@ static void radar_apply(const adsb_result_t *res)
 static void build_radar(lv_obj_t *root)
 {
     s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
+    s_ship_data = heap_caps_calloc(1, sizeof(*s_ship_data), MALLOC_CAP_SPIRAM);
     s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
+    assert(s_radar_data != NULL && s_ship_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
@@ -1095,9 +1319,18 @@ static void build_radar(lv_obj_t *root)
  * airports within range. */
 static void radar_set_location(int loc)
 {
+    s_ship_mode = false;
     lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[loc].name);
     s_radar_range_km = s_cfg.radar_km[loc];
     radar_load_airports(atof(s_cfg.locations[loc].lat), atof(s_cfg.locations[loc].lon));
+}
+
+/* Point the radar screen at location `loc`'s ship traffic (adapter lock held). */
+static void ships_set_location(int loc)
+{
+    s_ship_mode = true;
+    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", s_cfg.locations[loc].name);
+    s_radar_range_km = s_cfg.ship_km[loc];
 }
 
 static void build_ui(lv_obj_t *screen)
@@ -1362,6 +1595,8 @@ static void build_ui(lv_obj_t *screen)
         build_radar(s_radar_root);
         if (initial_stop->kind == STOP_RADAR) {
             radar_set_location(initial_loc);
+        } else if (initial_stop->kind == STOP_SHIPS) {
+            ships_set_location(initial_loc);
         }
     }
 
@@ -2154,6 +2389,30 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
     esp_lv_adapter_unlock();
 }
 
+static void ships_poll(int loc, ais_result_t *scratch, int for_view)
+{
+    double lat = atof(s_cfg.locations[loc].lat);
+    double lon = atof(s_cfg.locations[loc].lon);
+    esp_err_t err = ais_client_fetch(s_cfg.ais_client_id, s_cfg.ais_client_secret,
+                                     lat, lon, (float)s_cfg.ship_km[loc], s_cfg.ship_min_len_m,
+                                     scratch);
+
+    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    if (err == ESP_OK) {
+        lv_label_set_text(s_status_label, "");
+        ships_apply(scratch);
+    } else if (err == ESP_ERR_INVALID_ARG) {
+        lv_label_set_text(s_status_label, "Mangler BarentsWatch-n\xC3\xB8kkel");
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        lv_label_set_text(s_status_label, "Innlogging feilet");
+    } else if (!s_radar_valid) {
+        lv_label_set_text(s_status_label, "Kunne ikke hente skip. Pr\xC3\xB8ver igjen...");
+    }
+    esp_lv_adapter_unlock();
+}
+
 /* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
  * hasn't happened yet, otherwise tomorrow's. `now` must already be a plausible
  * (synced) epoch. */
@@ -2209,9 +2468,11 @@ static void yr_weather_task(void *arg)
     yr_forecast_t *resampled = heap_caps_malloc(sizeof(*resampled), MALLOC_CAP_SPIRAM);
     yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
     adsb_result_t *adsb_scratch = heap_caps_malloc(sizeof(*adsb_scratch), MALLOC_CAP_SPIRAM);
+    ais_result_t *ais_scratch = heap_caps_malloc(sizeof(*ais_scratch), MALLOC_CAP_SPIRAM);
     met_alerts_t *alert_scratch = heap_caps_malloc(sizeof(*alert_scratch), MALLOC_CAP_SPIRAM);
     bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL &&
-                      nowcast != NULL && adsb_scratch != NULL && alert_scratch != NULL);
+                      nowcast != NULL && adsb_scratch != NULL && ais_scratch != NULL &&
+                      alert_scratch != NULL);
     for (int i = 0; i < s_cfg.location_count; i++) {
         s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
         s_alert_cache[i] = heap_caps_malloc(sizeof(met_alerts_t), MALLOC_CAP_SPIRAM);
@@ -2228,6 +2489,7 @@ static void yr_weather_task(void *arg)
     int active_view = -1;   /* -1 forces a first render; else == s_view_index  */
     bool overview = false;
     bool radar = false;
+    bool ships = false;
     int sel = 0;            /* selected location index when not on the overview */
     time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
     bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
@@ -2285,6 +2547,7 @@ static void yr_weather_task(void *arg)
             const view_stop_t *stop = &s_stops[want_view];
             overview = (stop->kind == STOP_OVERVIEW);
             radar = (stop->kind == STOP_RADAR);
+            ships = (stop->kind == STOP_SHIPS);
             sel = overview ? 0 : stop->loc;
             force_sel_refetch = (stop->kind == STOP_WEATHER);
 
@@ -2296,6 +2559,9 @@ static void yr_weather_task(void *arg)
              * (and its TLS buffers) as soon as the radar isn't on screen. */
             if (!radar) {
                 adsb_client_close();
+            }
+            if (!ships) {
+                ais_client_close();
             }
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -2314,6 +2580,12 @@ static void yr_weather_task(void *arg)
                     lv_label_set_text(s_radar_info, "");
                     lv_obj_invalidate(s_radar_canvas);
                     lv_label_set_text(s_status_label, "Henter fly...");
+                } else if (ships) {
+                    s_radar_valid = false;
+                    ships_set_location(sel);
+                    lv_label_set_text(s_radar_info, "");
+                    lv_obj_invalidate(s_radar_canvas);
+                    lv_label_set_text(s_status_label, "Henter skip...");
                 } else {
                     const app_location_t *loc = &s_cfg.locations[sel];
                     lv_label_set_text(s_location_label, loc->name);
@@ -2331,6 +2603,8 @@ static void yr_weather_task(void *arg)
 
         if (radar) {
             radar_poll(sel, adsb_scratch, active_view);
+        } else if (ships) {
+            ships_poll(sel, ais_scratch, active_view);
         }
 
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
@@ -2342,7 +2616,7 @@ static void yr_weather_task(void *arg)
          * every few seconds and is the only thing that should use the network
          * there. Whatever went stale is refreshed when a weather screen or the
          * overview is next shown. */
-        for (int k = 0; !radar && k < s_cfg.location_count; k++) {
+        for (int k = 0; !radar && !ships && k < s_cfg.location_count; k++) {
             if (s_view_index != active_view) {
                 break; /* view changed mid-scan - restart the loop */
             }
@@ -2416,7 +2690,7 @@ static void yr_weather_task(void *arg)
                 lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
                 esp_lv_adapter_unlock();
             }
-        } else if (radar) {
+        } else if (radar || ships) {
             /* Already handled above; nothing weather-related to draw here. */
         } else {
             /* Keeps the banner in sync with whatever the fetch loop below
@@ -2471,6 +2745,7 @@ static void yr_weather_task(void *arg)
          * the wait short. */
         bool ready = overview ? !overview_loading() : s_fc_valid[sel];
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
+                                               : ships ? SHIP_POLL_MS
                                                : (ready ? NOWCAST_REFRESH_INTERVAL_MS
                                                         : WEATHER_RETRY_INTERVAL_MS)));
     }

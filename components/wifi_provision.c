@@ -121,6 +121,8 @@ static const char PAGE_HEAD[] =
     "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
     "legend{padding:0 .4rem;color:#555;font-weight:600}"
     "select{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem;background:#fff}"
+    ".chk{display:flex;gap:1.2rem;flex-wrap:wrap}.chk label{display:flex;align-items:center;gap:.35rem;margin:.2rem 0;font-weight:400}"
+    ".chk input{width:auto;margin:0}"
     "</style><h1>MultiDisplay setup</h1><form method=post action=/save>";
 
 static const char PAGE_TAIL[] =
@@ -131,7 +133,7 @@ static const char PAGE_TAIL[] =
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 12288;
+    const size_t cap = 16384;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -159,12 +161,28 @@ static char *build_page(const app_config_t *cfg)
                   cfg->theme == APP_THEME_DARK ? " selected" : "");
 
     p += snprintf(p, end - p,
-                  "<p style='margin:1.4rem 0 .2rem'><small>One or more forecast "
+                  "<fieldset><legend>BarentsWatch (ship traffic)</legend>"
+                  "<small>API client from barentswatch.no/minside, with access "
+                  "to the AIS API. Only needed for ship traffic.</small>"
+                  "<label>Client ID</label><input name=aisid autocomplete=off value=\"");
+    p = html_escape_append(p, end, cfg->ais_client_id);
+    p += snprintf(p, end - p, "\"><label>Client secret</label>"
+                  "<input name=aissec type=password autocomplete=off value=\"");
+    p = html_escape_append(p, end, cfg->ais_client_secret);
+    p += snprintf(p, end - p, "\"><label>Minimum ship length (m)</label>"
+                  "<input name=shipminlen type=number inputmode=numeric min=0 max=%d value=%u>"
+                  "<small>Shorter ships, and ships that don't report a length, are "
+                  "hidden. 0 shows every ship.</small></fieldset>",
+                  APP_CONFIG_SHIP_MIN_LEN_MAX, cfg->ship_min_len_m);
+
+    p += snprintf(p, end - p,
+                  "<p style='margin:1.4rem 0 .2rem'><small>One or more "
                   "locations. The screen shows one at a time; tap the right "
-                  "half for the next, the left half for the previous. Leave a block empty to skip it. For "
-                  "each location choose whether it shows its weather, a live "
-                  "aircraft radar, or both (radar after weather), and how far "
-                  "the radar looks.</small>");
+                  "half for the next, the left half for the previous. Leave a "
+                  "block empty to skip it. For each location choose any of its "
+                  "weather, a live aircraft radar and live ship traffic (shown "
+                  "in that order), and how far the radar and ship traffic "
+                  "look.</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -186,19 +204,22 @@ static char *build_page(const app_config_t *cfg)
         }
         int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
         int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
+        int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         p += snprintf(p, end - p, "\"></div></div>"
-                      "<label>Show</label><select name=show%d>"
-                      "<option value=1%s>Weather</option>"
-                      "<option value=2%s>Aircraft radar</option>"
-                      "<option value=3%s>Weather and aircraft radar</option></select>"
-                      "<label>Radar range (km, %d&ndash;%d)</label>"
-                      "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d>"
+                      "<label>Show</label><div class=chk>"
+                      "<label><input type=checkbox name=wx%d value=1%s>Weather</label>"
+                      "<label><input type=checkbox name=ac%d value=1%s>Aircraft</label>"
+                      "<label><input type=checkbox name=sh%d value=1%s>Ships</label></div>"
+                      "<div class=row><div><label>Aircraft range (km)</label>"
+                      "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                      "<div><label>Ship range (km)</label>"
+                      "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
                       "</fieldset>",
-                      i, show == APP_SHOW_WEATHER ? " selected" : "",
-                      show == APP_SHOW_RADAR ? " selected" : "",
-                      show == (APP_SHOW_WEATHER | APP_SHOW_RADAR) ? " selected" : "",
-                      APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
-                      i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km);
+                      i, (show & APP_SHOW_WEATHER) ? " checked" : "",
+                      i, (show & APP_SHOW_RADAR) ? " checked" : "",
+                      i, (show & APP_SHOW_SHIPS) ? " checked" : "",
+                      i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
+                      i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km);
     }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
@@ -272,18 +293,33 @@ static void reboot_task(void *arg)
     esp_restart();
 }
 
+#define SAVE_BODY_MAX 4096
+
+static esp_err_t save_form(httpd_req_t *req, const char *body);
+
 static esp_err_t h_save(httpd_req_t *req)
 {
-    char body[2048];
+    char *body = malloc(SAVE_BODY_MAX);
+    if (body == NULL) {
+        return httpd_resp_send_500(req);
+    }
     int total = 0;
-    while (total < req->content_len && total < (int)sizeof(body) - 1) {
-        int r = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
+    while (total < req->content_len && total < SAVE_BODY_MAX - 1) {
+        int r = httpd_req_recv(req, body + total, SAVE_BODY_MAX - 1 - total);
         if (r <= 0) {
+            free(body);
             return httpd_resp_send_500(req);
         }
         total += r;
     }
     body[total] = '\0';
+    esp_err_t err = save_form(req, body);
+    free(body);
+    return err;
+}
+
+static esp_err_t save_form(httpd_req_t *req, const char *body)
+{
 
     app_config_t cfg;
     app_config_load(&cfg); /* keep the WiFi fields at their current value if omitted */
@@ -292,6 +328,13 @@ static esp_err_t h_save(httpd_req_t *req)
     char theme[4];
     if (form_field(body, "theme", theme, sizeof(theme))) {
         cfg.theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
+    }
+    form_field(body, "aisid", cfg.ais_client_id, sizeof(cfg.ais_client_id));
+    form_field(body, "aissec", cfg.ais_client_secret, sizeof(cfg.ais_client_secret));
+    char minlen[8];
+    if (form_field(body, "shipminlen", minlen, sizeof(minlen))) {
+        long v = strtol(minlen, NULL, 10);
+        cfg.ship_min_len_m = (v > 0 && v <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)v : 0;
     }
 
     httpd_resp_set_type(req, "text/html");
@@ -308,6 +351,7 @@ static esp_err_t h_save(httpd_req_t *req)
     app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint8_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -339,16 +383,26 @@ static esp_err_t h_save(httpd_req_t *req)
         snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
         snprintf(locs[n].lon, sizeof(locs[n].lon), "%s", lon);
 
-        /* What to show (1 weather, 2 radar, 3 both) and the radar range;
-         * anything missing or out of range falls back to weather / default. */
+        /* Which screens (checkboxes: only ticked ones are sent) and the
+         * ranges; nothing ticked or out of range falls back to weather / the
+         * default range. */
         char val[8];
-        snprintf(key, sizeof(key), "show%d", i);
-        long sh = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : APP_SHOW_WEATHER;
-        show[n] = (sh >= 1 && sh <= 3) ? (uint8_t)sh : APP_SHOW_WEATHER;
+        uint8_t sh = 0;
+        snprintf(key, sizeof(key), "wx%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_WEATHER : 0;
+        snprintf(key, sizeof(key), "ac%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RADAR : 0;
+        snprintf(key, sizeof(key), "sh%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_SHIPS : 0;
+        show[n] = sh ? sh : APP_SHOW_WEATHER;
         snprintf(key, sizeof(key), "radarkm%d", i);
         long km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         radar_km[n] = (km >= APP_CONFIG_RADAR_KM_MIN && km <= APP_CONFIG_RADAR_KM_MAX)
                           ? (uint16_t)km : APP_CONFIG_RADAR_KM_DEFAULT;
+        snprintf(key, sizeof(key), "shipkm%d", i);
+        km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        ship_km[n] = (km >= APP_CONFIG_SHIP_KM_MIN && km <= APP_CONFIG_SHIP_KM_MAX)
+                         ? (uint16_t)km : APP_CONFIG_SHIP_KM_DEFAULT;
         n++;
     }
 
@@ -359,6 +413,7 @@ static esp_err_t h_save(httpd_req_t *req)
         snprintf(locs[0].lon, sizeof(locs[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
         show[0] = APP_SHOW_WEATHER;
         radar_km[0] = APP_CONFIG_RADAR_KM_DEFAULT;
+        ship_km[0] = APP_CONFIG_SHIP_KM_DEFAULT;
         n = 1;
     }
 
@@ -367,6 +422,7 @@ static esp_err_t h_save(httpd_req_t *req)
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cfg.show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
         cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
+        cfg.ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
     }
 
     if (app_config_save(&cfg) != ESP_OK) {

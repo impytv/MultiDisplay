@@ -19,11 +19,24 @@
 /* What a location shows: bit flags in app_config_t.show[]. */
 #define APP_SHOW_WEATHER 0x01
 #define APP_SHOW_RADAR   0x02
+#define APP_SHOW_SHIPS   0x04
+#define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS)
 
 /* Aircraft radar: how far out (kilometres) it looks around a location. */
 #define APP_CONFIG_RADAR_KM_DEFAULT 40
 #define APP_CONFIG_RADAR_KM_MIN     10
 #define APP_CONFIG_RADAR_KM_MAX     185
+
+/* Ship traffic: how far out (kilometres) it looks around a location. */
+#define APP_CONFIG_SHIP_KM_DEFAULT 20
+#define APP_CONFIG_SHIP_KM_MIN     2
+#define APP_CONFIG_SHIP_KM_MAX     100
+
+/* Ships shorter than this (metres) are not shown; 0 shows every ship. */
+#define APP_CONFIG_SHIP_MIN_LEN_MAX 400
+
+/* BarentsWatch API client credentials (https://www.barentswatch.no/minside/). */
+#define APP_CONFIG_AIS_CRED_MAX 128
 
 /* Colour theme for every screen: app_config_t.theme. */
 #define APP_THEME_LIGHT 0
@@ -41,12 +54,17 @@ typedef struct {
     app_location_t locations[APP_CONFIG_MAX_LOCATIONS];
     uint8_t location_count; /* always in [1, APP_CONFIG_MAX_LOCATIONS] */
     /* Per location, kept out of app_location_t so the stored "locs" blob
-     * layout doesn't change. show[i] is APP_SHOW_WEATHER and/or APP_SHOW_RADAR
-     * (never 0): which screens location i gets - weather, radar after it, or
-     * both. radar_km[i] is the range of its radar. */
+     * layout doesn't change. show[i] is any non-empty mix of APP_SHOW_WEATHER,
+     * APP_SHOW_RADAR and APP_SHOW_SHIPS: which screens location i gets, in
+     * that order. radar_km[i] / ship_km[i] are the ranges of its aircraft
+     * radar and ship traffic screens. */
     uint8_t show[APP_CONFIG_MAX_LOCATIONS];
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS]; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
+    uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX] */
+    uint16_t ship_min_len_m; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX]; applies to every location */
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
+    char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
+    char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
 } app_config_t;
 
 /**

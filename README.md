@@ -43,8 +43,9 @@ every 10 minutes.
 
 ### Multiple locations
 
-Up to 5 forecast locations can be stored. **Tap anywhere on the screen** to
-cycle through the stops:
+Up to 5 forecast locations can be stored. **Tap the right half of the screen**
+for the next stop and **the left half** for the previous one (both wrap
+around):
 
 1. **Oversikt** – an overview table with one row per location that shows
    weather and 6-hour columns, each showing the weather icon, temperature and
@@ -53,16 +54,18 @@ cycle through the stops:
    This is always the first stop, even with only one location or a purely
    radar-only setup - it's the only screen showing the IP address, so it must
    always stay reachable by tap.
-2. One detail screen per location (chart + wind), in order. The top-left
-   label shows e.g. `Oslo  2/3`.
+2. For each location in order, whichever of its weather screen (chart + wind),
+   aircraft radar and ship traffic are enabled.
+
+The setup page also has a **Theme** choice (light or dark) that applies to
+every screen.
 
 ### Aircraft radar
 
-For each location on the setup page, choose what it shows: **Weather**,
-**Aircraft radar** or **Weather and aircraft radar** (the radar then follows
-that location's weather screen: Oslo weather, Oslo radar, next location, ...).
-Each location also has its own **Radar range** (kilometres, 10-185, default
-40). A radar-only location has no weather screen and isn't a row in the
+For each location on the setup page, tick what it shows: **Weather**,
+**Aircraft** and/or **Ships** (shown in that order: Oslo weather, Oslo
+aircraft, Oslo ships, next location, ...). Each location also has its own
+**Aircraft range** (kilometres, 10-185, default 40). A location without weather has no weather screen and isn't a row in the
 overview table (the overview lists only the locations that show weather, and
 is empty of rows - but still shown, for its IP address - if none do).
 
@@ -85,6 +88,26 @@ free, no key, personal non-commercial use, one request per second at most - and
 are polled every 5 s while a radar screen is showing (the connection is kept
 open between polls, and no weather forecasts are fetched meanwhile), then
 extrapolated along each aircraft's track in between.
+
+### Ship traffic
+
+Ships use the same screen layout as the aircraft radar: a plot centred on the
+location with a hull-shaped marker along each ship's heading and a 10-minute
+course vector (moored or anchored ships are plain dots), name tags for the
+nearest ones, and a table of the nearest 14: name, type (Last, Tank, Pass,
+Fiske, Fritid, Slep, Annet - also the marker colour), speed in knots and
+distance in kilometres. Each location has its own **Ship range** (kilometres,
+2-100, default 20).
+
+Positions come from the [BarentsWatch Live AIS
+API](https://developer.barentswatch.no/docs/AIS/live-ais-api), which needs a
+free API client: create one at [BarentsWatch](https://www.barentswatch.no/minside/)
+with access to AIS, and enter its **Client ID** and **Client secret** on the
+setup page. The screen fetches the latest positions every 30 s (ships that
+haven't reported for 15 minutes are left out) and moves moving ships along
+their course in between. Coverage is Norwegian waters only, and small vessels
+are filtered out by BarentsWatch (fishing boats under 15 m, leisure boats under
+45 m).
 
 The overview stop always exists and is always reachable by tap, regardless of
 how many locations show weather. All locations that show weather have their

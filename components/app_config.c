@@ -27,13 +27,19 @@ static void load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_len)
 static void sanitize_view_settings(app_config_t *c)
 {
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-        c->show[i] &= (APP_SHOW_WEATHER | APP_SHOW_RADAR);
+        c->show[i] &= APP_SHOW_ALL;
         if (c->show[i] == 0) {
             c->show[i] = APP_SHOW_WEATHER;
         }
         if (c->radar_km[i] < APP_CONFIG_RADAR_KM_MIN || c->radar_km[i] > APP_CONFIG_RADAR_KM_MAX) {
             c->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
         }
+        if (c->ship_km[i] < APP_CONFIG_SHIP_KM_MIN || c->ship_km[i] > APP_CONFIG_SHIP_KM_MAX) {
+            c->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
+        }
+    }
+    if (c->ship_min_len_m > APP_CONFIG_SHIP_MIN_LEN_MAX) {
+        c->ship_min_len_m = 0;
     }
     if (c->theme != APP_THEME_DARK) {
         c->theme = APP_THEME_LIGHT;
@@ -51,6 +57,7 @@ static void seed_defaults(app_config_t *out)
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
+        out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
     }
 }
 
@@ -106,19 +113,33 @@ esp_err_t app_config_load(app_config_t *out)
             out->radar_km[i] = km;
         }
     }
+    len = sizeof(out->ship_km);
+    if (nvs_get_blob(h, "shipkms", out->ship_km, &len) != ESP_OK || len != sizeof(out->ship_km)) {
+        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+            out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
+        }
+    }
+    nvs_get_u16(h, "shipminlen", &out->ship_min_len_m);
+    load_str(h, "aisid", out->ais_client_id, sizeof(out->ais_client_id));
+    load_str(h, "aissec", out->ais_client_secret, sizeof(out->ais_client_secret));
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
     nvs_close(h);
     sanitize_view_settings(out);
 
-    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme",
+    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme, "
+             "BarentsWatch credentials %s, ships from %u m",
              out->wifi_ssid, out->location_count, out->locations[0].name,
              out->locations[0].lat, out->locations[0].lon,
-             out->theme == APP_THEME_DARK ? "dark" : "light");
+             out->theme == APP_THEME_DARK ? "dark" : "light",
+             (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
+             out->ship_min_len_m);
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show %s%s, radar range %u km", i, out->locations[i].name,
-                 (out->show[i] & APP_SHOW_WEATHER) ? "weather" : "",
-                 (out->show[i] & APP_SHOW_RADAR) ? (out->show[i] & APP_SHOW_WEATHER ? "+radar" : "radar") : "",
-                 out->radar_km[i]);
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s, radar range %u km, ship range %u km",
+                 i, out->locations[i].name,
+                 (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
+                 (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
+                 (out->show[i] & APP_SHOW_SHIPS) ? " ships" : "",
+                 out->radar_km[i], out->ship_km[i]);
     }
     return ESP_OK;
 }
@@ -144,6 +165,10 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
     if (err == ESP_OK) err = nvs_set_blob(h, "show", cfg->show, sizeof(cfg->show));
     if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
+    if (err == ESP_OK) err = nvs_set_blob(h, "shipkms", cfg->ship_km, sizeof(cfg->ship_km));
+    if (err == ESP_OK) err = nvs_set_u16(h, "shipminlen", cfg->ship_min_len_m);
+    if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
+    if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
