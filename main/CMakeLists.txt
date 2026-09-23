@@ -21,6 +21,7 @@ idf_component_register(
         nvs_flash
         esp_http_client
         esp_http_server
+        esp_partition
         esp_driver_gpio
         lwip
         esp-tls
@@ -56,3 +57,8 @@ add_dependencies(${COMPONENT_LIB} assets_fonts_bin)
 # command, so depending on it directly gives ninja "no known rule" errors.
 set_source_files_properties(main.c PROPERTIES
     OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/mmap_build/fonts/fonts/fonts.bin")
+
+# Coastline for the ship traffic screen (see scripts/build_coast.py), in its
+# own data partition rather than the app image - it's several MB. Read with
+# esp_partition_read() around the location on show.
+esptool_py_flash_to_partition(flash "coast" "${CMAKE_CURRENT_SOURCE_DIR}/../components/coast.bin")

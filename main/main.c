@@ -10,6 +10,7 @@
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 #include "esp_netif_sntp.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -192,13 +193,14 @@ static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim
 /* Aircraft radar / ship traffic colours, one set per theme. ship[] is per
  * ais_category_t. */
 typedef struct {
-    uint32_t bg, disc, ring, txt, dim, plane, vec, apt;
+    uint32_t bg, disc, ring, txt, dim, plane, vec, apt, coast;
     uint32_t ship[AIS_CAT_COUNT];
 } radar_palette_t;
 
 static const radar_palette_t RADAR_DARK = {
     .bg = 0x050B12, .disc = 0x0A1E30, .ring = 0x1F6E45, .txt = 0xDDE6EE,
     .dim = 0x8AA0B4, .plane = 0xFF5A4F, .vec = 0xE060E0, .apt = 0x3FBFB0,
+    .coast = 0x6F93AD,
     .ship = {
         [AIS_CAT_OTHER] = 0xB0BEC5, [AIS_CAT_CARGO] = 0x66BB6A, [AIS_CAT_TANKER] = 0xFF7043,
         [AIS_CAT_PASSENGER] = 0x42A5F5, [AIS_CAT_FISHING] = 0xFFCA28, [AIS_CAT_LEISURE] = 0xE040FB,
@@ -208,6 +210,7 @@ static const radar_palette_t RADAR_DARK = {
 static const radar_palette_t RADAR_LIGHT = {
     .bg = 0xEEF2F6, .disc = 0xFFFFFF, .ring = 0x6BAF8A, .txt = 0x1B2631,
     .dim = 0x5D6D7E, .plane = 0xD62D20, .vec = 0xA83CA8, .apt = 0x1B8A7E,
+    .coast = 0x7F9AB0,
     .ship = {
         [AIS_CAT_OTHER] = 0x607D8B, [AIS_CAT_CARGO] = 0x2E7D32, [AIS_CAT_TANKER] = 0xD84315,
         [AIS_CAT_PASSENGER] = 0x1565C0, [AIS_CAT_FISHING] = 0xB28704, [AIS_CAT_LEISURE] = 0x9C27B0,
@@ -232,6 +235,14 @@ static bool s_radar_valid;
 static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data / s_ship_data was stored */
 static ais_result_t *s_ship_data;   /* PSRAM; last ship fetch for the location on show */
 static bool s_ship_mode;
+
+/* Coastline under the ships (see coast_render): an A8 coverage image of the
+ * radar disc, drawn in s_rp->coast. */
+#define COAST_D  (2 * RADAR_R + 1)
+static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
+static lv_image_dsc_t s_coast_img;
+static bool s_coast_valid;
+static int s_coast_loc = -1;
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
@@ -1067,8 +1078,19 @@ static void radar_draw_cb(lv_event_t *e)
     const int lh = lv_font_get_line_height(s_font_body);
     const int range = s_radar_range_km;
 
-    /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot. */
+    /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot - with the
+     * coastline under the rings on the ship screen. */
     radar_circle(layer, RADAR_R, 2, c_ring, true, c_disc);
+    if (s_ship_mode && s_coast_valid &&
+        radar_vis(layer, RADAR_CX - RADAR_R, RADAR_CY - RADAR_R, RADAR_CX + RADAR_R, RADAR_CY + RADAR_R)) {
+        lv_draw_image_dsc_t d;
+        lv_draw_image_dsc_init(&d);
+        d.src = &s_coast_img;
+        d.recolor = lv_color_hex(s_rp->coast); /* the colour of an A8 image */
+        lv_area_t a = { RADAR_CX - RADAR_R, RADAR_CY - RADAR_R,
+                        RADAR_CX - RADAR_R + COAST_D - 1, RADAR_CY - RADAR_R + COAST_D - 1 };
+        lv_draw_image(layer, &d, &a);
+    }
     for (int i = 1; i < 4; i++) {
         radar_circle(layer, RADAR_R * i / 4, 1, c_ring, false, c_disc);
     }
@@ -1106,6 +1128,9 @@ static void radar_draw_cb(lv_event_t *e)
     }
 
     if (s_ship_mode) {
+        if (s_coast_valid) {
+            radar_text(layer, "\xC2\xA9 OpenStreetMap", 8, 480 - lh - 4, 200, LV_TEXT_ALIGN_LEFT, c_dim);
+        }
         ships_draw(layer, range, lh);
         return;
     }
@@ -1285,9 +1310,16 @@ static void build_radar(lv_obj_t *root)
 {
     s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
     s_ship_data = heap_caps_calloc(1, sizeof(*s_ship_data), MALLOC_CAP_SPIRAM);
+    s_coast_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
+    s_coast_img = (lv_image_dsc_t){
+        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_A8,
+                    .w = COAST_D, .h = COAST_D, .stride = COAST_D },
+        .data = s_coast_px,
+        .data_size = COAST_D * COAST_D,
+    };
     s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL && s_ship_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
+    assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
@@ -2389,6 +2421,183 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
     esp_lv_adapter_unlock();
 }
 
+/* --------------------------------------------------------------------------
+ * Coastline (components/coast.bin, built by scripts/build_coast.py from
+ * OpenStreetMap, in the "coast" partition): a grid of tiles, each a list of
+ * lines in 1e-5 degree offsets from the tile's corner. coast_render reads the
+ * tiles around a location and draws them, anti-aliased, into s_coast_px once
+ * per location; the radar draw callback then only blits that image.
+ * ------------------------------------------------------------------------ */
+
+typedef struct __attribute__((packed)) {
+    char magic[4];
+    uint16_t rows, cols;
+    int32_t lat_min_e5, lon_min_e5, tile_dlat_e5, tile_dlon_e5;
+} coast_hdr_t;
+
+static void coast_plot(int x, int y, float cover)
+{
+    if (x < 0 || y < 0 || x >= COAST_D || y >= COAST_D) {
+        return;
+    }
+    int dx = x - RADAR_R, dy = y - RADAR_R;
+    if (dx * dx + dy * dy > RADAR_R * RADAR_R) {
+        return;
+    }
+    int a = (int)(cover * 255.0f + 0.5f);
+    uint8_t *p = &s_coast_px[y * COAST_D + x];
+    if (a > *p) {
+        *p = (uint8_t)a;
+    }
+}
+
+/* Xiaolin Wu's anti-aliased line, in image pixels. */
+static void coast_line(float x0, float y0, float x1, float y1)
+{
+    if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) ||
+        (x0 >= COAST_D && x1 >= COAST_D) || (y0 >= COAST_D && y1 >= COAST_D)) {
+        return;
+    }
+    bool steep = fabsf(y1 - y0) > fabsf(x1 - x0);
+    if (steep) {
+        float t = x0; x0 = y0; y0 = t;
+        t = x1; x1 = y1; y1 = t;
+    }
+    if (x0 > x1) {
+        float t = x0; x0 = x1; x1 = t;
+        t = y0; y0 = y1; y1 = t;
+    }
+    float dx = x1 - x0;
+    float grad = dx > 0.0f ? (y1 - y0) / dx : 1.0f;
+    int xs = (int)lroundf(x0), xe = (int)lroundf(x1);
+    float y = y0 + grad * ((float)xs - x0);
+    for (int x = xs; x <= xe; x++, y += grad) {
+        int yi = (int)floorf(y);
+        float f = y - (float)yi;
+        if (steep) {
+            coast_plot(yi, x, 1.0f - f);
+            coast_plot(yi + 1, x, f);
+        } else {
+            coast_plot(x, yi, 1.0f - f);
+            coast_plot(x, yi + 1, f);
+        }
+    }
+}
+
+/* Draw location `loc`'s coastline at its ship range into s_coast_px, unless
+ * it's already there. Runs in the weather task; flash reads, so not under the
+ * adapter lock except to flip s_coast_valid. */
+static void coast_render(int loc)
+{
+    static const esp_partition_t *part;
+    static coast_hdr_t hdr;
+    static int rendered_km;
+    const int range = s_cfg.ship_km[loc];
+    if (s_coast_px == NULL || (s_coast_loc == loc && rendered_km == range)) {
+        return;
+    }
+    if (part == NULL) {
+        part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "coast");
+        if (part == NULL || esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK ||
+            memcmp(hdr.magic, "CST1", 4) != 0) {
+            ESP_LOGW(TAG, "No coastline data in the coast partition");
+            s_coast_px = NULL; /* don't try again */
+            return;
+        }
+    }
+
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        s_coast_valid = false;
+        esp_lv_adapter_unlock();
+    }
+    memset(s_coast_px, 0, COAST_D * COAST_D);
+
+    const double lat0 = atof(s_cfg.locations[loc].lat);
+    const double lon0 = atof(s_cfg.locations[loc].lon);
+    const float km_lat = 110.574f / 1e5f;                                   /* km per 1e-5 deg */
+    const float km_lon = 111.320f * cosf((float)(lat0 * M_PI / 180.0)) / 1e5f;
+    const float px_per_km = (float)RADAR_R / (float)range;
+    const double span_lat = range / 110.574, span_lon = range / (111.320 * cos(lat0 * M_PI / 180.0));
+
+    /* One tile of margin: a line's last point can reach into the next tile. */
+    int r0 = (int)floor(((lat0 - span_lat) * 1e5 - hdr.lat_min_e5) / hdr.tile_dlat_e5) - 1;
+    int r1 = (int)floor(((lat0 + span_lat) * 1e5 - hdr.lat_min_e5) / hdr.tile_dlat_e5) + 1;
+    int c0 = (int)floor(((lon0 - span_lon) * 1e5 - hdr.lon_min_e5) / hdr.tile_dlon_e5) - 1;
+    int c1 = (int)floor(((lon0 + span_lon) * 1e5 - hdr.lon_min_e5) / hdr.tile_dlon_e5) + 1;
+    r0 = r0 < 0 ? 0 : r0;
+    c0 = c0 < 0 ? 0 : c0;
+    r1 = r1 >= hdr.rows ? hdr.rows - 1 : r1;
+    c1 = c1 >= hdr.cols ? hdr.cols - 1 : c1;
+
+    const size_t index_off = sizeof(hdr);
+    const size_t data_off = index_off + 4 * ((size_t)hdr.rows * hdr.cols + 1);
+    uint32_t idx[64];
+    uint8_t *buf = NULL;
+    size_t buf_cap = 0;
+    int lines = 0;
+
+    for (int r = r0; r <= r1 && c1 >= c0 && c1 - c0 + 2 <= 64; r++) {
+        int n_idx = c1 - c0 + 2;
+        if (esp_partition_read(part, index_off + 4 * ((size_t)r * hdr.cols + c0), idx, 4 * n_idx) != ESP_OK) {
+            break;
+        }
+        size_t len = idx[n_idx - 1] - idx[0];
+        if (len == 0) {
+            continue;
+        }
+        if (len > buf_cap) {
+            uint8_t *nb = heap_caps_realloc(buf, len, MALLOC_CAP_SPIRAM);
+            if (nb == NULL) {
+                break;
+            }
+            buf = nb;
+            buf_cap = len;
+        }
+        if (esp_partition_read(part, data_off + idx[0], buf, len) != ESP_OK) {
+            break;
+        }
+        for (int c = c0; c <= c1; c++) {
+            const uint8_t *p = buf + (idx[c - c0] - idx[0]);
+            const uint8_t *end = buf + (idx[c - c0 + 1] - idx[0]);
+            /* Tile corner relative to the centre, in 1e-5 degrees. */
+            float tile_dlat = (float)(hdr.lat_min_e5 + (int64_t)r * hdr.tile_dlat_e5 - lat0 * 1e5);
+            float tile_dlon = (float)(hdr.lon_min_e5 + (int64_t)c * hdr.tile_dlon_e5 - lon0 * 1e5);
+            while (p + 2 <= end) {
+                uint16_t n;
+                memcpy(&n, p, 2);
+                p += 2;
+                if (p + 4 * (size_t)n > end) {
+                    break;
+                }
+                float px = 0, py = 0;
+                for (int i = 0; i < n; i++, p += 4) {
+                    int16_t d[2];
+                    memcpy(d, p, 4);
+                    float x = RADAR_R + (tile_dlon + d[0]) * km_lon * px_per_km;
+                    float y = RADAR_R - (tile_dlat + d[1]) * km_lat * px_per_km;
+                    if (i > 0) {
+                        coast_line(px, py, x, y);
+                    }
+                    px = x;
+                    py = y;
+                }
+                lines++;
+            }
+        }
+    }
+    free(buf);
+    ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
+             s_cfg.locations[loc].name, lines, r0, r1, c0, c1);
+
+    s_coast_loc = loc;
+    rendered_km = range;
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        s_coast_valid = true;
+        lv_obj_invalidate(s_radar_canvas);
+        esp_lv_adapter_unlock();
+    }
+}
+
 static void ships_poll(int loc, ais_result_t *scratch, int for_view)
 {
     double lat = atof(s_cfg.locations[loc].lat);
@@ -2604,6 +2813,7 @@ static void yr_weather_task(void *arg)
         if (radar) {
             radar_poll(sel, adsb_scratch, active_view);
         } else if (ships) {
+            coast_render(sel);
             ships_poll(sel, ais_scratch, active_view);
         }
 

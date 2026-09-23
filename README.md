@@ -109,6 +109,15 @@ their course in between. Coverage is Norwegian waters only, and small vessels
 are filtered out by BarentsWatch (fishing boats under 15 m, leisure boats under
 45 m).
 
+The plot also shows the coastline, from [OpenStreetMap](https://www.openstreetmap.org/copyright)
+(© OpenStreetMap contributors, ODbL; credited on screen). The coast of Norway
+and its neighbours (57.5-71.5° N, 4-31.5° E) is simplified to about 40 m and
+stored as `components/coast.bin` (about 3.8 MB) in its own `coast` flash
+partition; the tiles around a location are read and drawn once when its ship
+screen is shown. Regenerate it with `python3 scripts/build_coast.py`, which
+downloads the processed OSM coastlines (about 900 MB) from
+[osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/coastlines.html).
+
 The overview stop always exists and is always reachable by tap, regardless of
 how many locations show weather. All locations that show weather have their
 hourly forecasts kept refreshed in the background so the table is always
