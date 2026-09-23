@@ -318,13 +318,12 @@ static void init_fonts(void)
     assert(s_font_large != NULL);
 }
 
-/* Tap anywhere on the screen: advance to the next stop (overview -> location 1
- * -> location 2 -> ... -> overview) and wake the weather task so it
+/* Tap the right half of the screen: next stop (overview -> location 1 ->
+ * location 2 -> ... -> overview); tap the left half: previous stop. Wakes the weather task so it
  * re-renders / refetches. Runs in the LVGL context (which already holds the
  * adapter lock), so it only pokes volatiles + a notify. */
 static void screen_touch_cb(lv_event_t *e)
 {
-    (void)e;
     if (s_stop_count <= 1) {
         return; /* nothing to cycle through */
     }
@@ -338,9 +337,18 @@ static void screen_touch_cb(lv_event_t *e)
     }
     last_tap_ms = now_ms;
 
-    int next = s_view_index + 1;
+    lv_point_t p = { 0, 0 };
+    lv_indev_t *indev = lv_indev_active();
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    bool left = p.x < lv_obj_get_width(lv_event_get_target_obj(e)) / 2;
+
+    int next = s_view_index + (left ? -1 : 1);
     if (next >= s_stop_count) {
         next = 0;
+    } else if (next < 0) {
+        next = s_stop_count - 1;
     }
     s_view_index = next;
     ESP_LOGI(TAG, "Tap: view %d/%d", next, s_stop_count);
@@ -2263,12 +2271,7 @@ static void yr_weather_task(void *arg)
                     lv_label_set_text(s_status_label, "Henter fly...");
                 } else {
                     const app_location_t *loc = &s_cfg.locations[sel];
-                    if (s_weather_count > 1) {
-                        lv_label_set_text_fmt(s_location_label, "%s  %d/%d", loc->name,
-                                              s_wx_pos[sel] + 1, s_weather_count);
-                    } else {
-                        lv_label_set_text(s_location_label, loc->name);
-                    }
+                    lv_label_set_text(s_location_label, loc->name);
                     /* Unlike the forecast, the alert cache carries over as-is
                      * from whatever this location's last fetch found. */
                     update_alert_banner(sel);
