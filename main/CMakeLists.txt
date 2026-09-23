@@ -58,7 +58,12 @@ add_dependencies(${COMPONENT_LIB} assets_fonts_bin)
 set_source_files_properties(main.c PROPERTIES
     OBJECT_DEPENDS "${CMAKE_BINARY_DIR}/mmap_build/fonts/fonts/fonts.bin")
 
-# Coastline for the ship traffic screen (see scripts/build_coast.py), in its
-# own data partition rather than the app image - it's several MB. Read with
-# esp_partition_read() around the location on show.
-esptool_py_flash_to_partition(flash "coast" "${CMAKE_CURRENT_SOURCE_DIR}/../components/coast.bin")
+# Coastline for the radar and ship traffic screens (see scripts/build_coast.py),
+# in its own data partition rather than the app image - it's several MB. Read
+# with esp_partition_read() around the location on show. Not part of
+# `idf.py flash` (writing it takes over a minute and it rarely changes):
+# flash it once, and again after rebuilding the data, with `idf.py coast-flash`.
+idf_component_get_property(coast_main_args esptool_py FLASH_ARGS)
+idf_component_get_property(coast_sub_args esptool_py FLASH_SUB_ARGS)
+esptool_py_flash_target(coast-flash "${coast_main_args}" "${coast_sub_args}" ALWAYS_PLAINTEXT)
+esptool_py_flash_to_partition(coast-flash "coast" "${CMAKE_CURRENT_SOURCE_DIR}/../components/coast.bin")

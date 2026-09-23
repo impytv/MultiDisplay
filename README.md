@@ -29,6 +29,14 @@ idf.py build
 idf.py -p PORT flash monitor
 ```
 
+The coastline map data is in its own partition and is not written by
+`idf.py flash` (it takes over a minute). Write it once on a new board, and
+again only after regenerating it:
+
+```bash
+idf.py -p PORT coast-flash
+```
+
 ## Notes
 
 - The example keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.

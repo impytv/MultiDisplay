@@ -13,15 +13,23 @@ reads the tiles around a location. Islands smaller than MIN_ISLAND_M across
 are dropped.
 
 File layout (little-endian; reader: main/main.c, coast_render):
-    header : char magic[4] = "CST1", u16 rows, u16 cols,
-             i32 lat_min_e5, i32 lon_min_e5, i32 tile_dlat_e5, i32 tile_dlon_e5
+    header : char magic[4] = "CST2", u16 rows, u16 cols,
+             i32 lat_min_e5, i32 lon_min_e5, i32 tile_dlat_e5, i32 tile_dlon_e5,
+             i32 unit_e5 (the coordinate step, in 1e-5 degrees)
     index  : (rows * cols + 1) x u32 - byte offset of each tile's data from the
              start of the data area; tile (r, c) is index r * cols + c, rows
              counted from lat_min northwards; tile t's data ends where t+1's starts
-    data   : per tile, a sequence of lines: u16 n, then n x (i16 dlon, i16 dlat)
-             in 1e-5 degrees from the tile's south-west corner
-Degrees x 1e5 is about 1.1 m. A line's last point may lie just outside its
-tile (where it crosses into the next), so every segment is stored exactly once.
+    data   : per tile, a sequence of lines: varint n, then n points, each as
+             zigzag varints (dlon, dlat) in units from the previous point - the
+             first point of a tile's first line from the tile's south-west
+             corner, the first point of each later line from the end of the one
+             before it
+A varint is 7 bits per byte, low bits first, high bit set on all but the last
+byte; zigzag maps 0, -1, 1, -2, ... to 0, 1, 2, 3, ... Points are rounded to
+UNIT_E5 (1e-4 degrees: about 11 m north-south, 4-6 m east-west here), well
+inside the simplification tolerance, which keeps most steps to one byte each.
+A line's last point may lie just outside its tile (where it crosses into the
+next), so every segment is stored exactly once.
 """
 import math
 import os
@@ -41,7 +49,8 @@ LON_MIN, LON_MAX = 4.0, 31.5
 TILE_DLAT_E5, TILE_DLON_E5 = 10000, 20000   # 0.1 x 0.2 degrees, ~11 x 11 km here
 TOLERANCE_M = 40.0
 MIN_ISLAND_M = 80.0
-MAX_STEP_E5 = 5000                           # keep tile offsets well inside i16
+MAX_STEP_E5 = 5000                           # no single step longer than 0.05 degrees
+UNIT_E5 = 10                                 # stored coordinate step: 1e-4 degrees
 
 
 def read_lines(path):
@@ -127,16 +136,34 @@ def simplify(ln, tol_m):
     return ln[keep], extent
 
 
-def densify(e5):
-    """Insert points so no step is longer than MAX_STEP_E5 in either axis."""
-    out = [e5[0]]
-    for p in e5[1:]:
+def densify(u):
+    """Insert points (in whole units) so no step is longer than MAX_STEP_E5 in
+    either axis."""
+    max_step = MAX_STEP_E5 // UNIT_E5
+    out = [u[0]]
+    for p in u[1:]:
         q = out[-1]
-        steps = int(max(abs(p[0] - q[0]), abs(p[1] - q[1])) // MAX_STEP_E5) + 1
+        steps = int(max(abs(p[0] - q[0]), abs(p[1] - q[1])) // max_step) + 1
         for s in range(1, steps):
             out.append(q + (p - q) * s // steps)
         out.append(p)
     return np.array(out, dtype=np.int64)
+
+
+def varint(v):
+    out = bytearray()
+    while True:
+        b = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return out
+
+
+def zigzag(v):
+    return (v << 1) if v >= 0 else ((-v << 1) - 1)
 
 
 def main():
@@ -172,7 +199,12 @@ def main():
             continue
         if len(s) < 2:
             continue
-        e5 = densify(np.round(s * 1e5).astype(np.int64))
+        u = np.round(s * 1e5 / UNIT_E5).astype(np.int64)
+        # Rounding can make neighbours coincide; drop the repeats.
+        u = u[np.concatenate(([True], np.any(np.diff(u, axis=0) != 0, axis=1)))]
+        if len(u) < 2:
+            continue
+        e5 = densify(u) * UNIT_E5
         kept_pts += len(e5)
         # Split into per-tile runs; each run ends with the first point of the
         # next tile so the crossing segment is kept (once).
@@ -195,19 +227,19 @@ def main():
     for t, runs in enumerate(tiles):
         index.append(len(data))
         r, c = divmod(t, cols)
-        lat0 = lat_min_e5 + r * TILE_DLAT_E5
-        lon0 = lon_min_e5 + c * TILE_DLON_E5
+        prev = (lon_min_e5 + c * TILE_DLON_E5, lat_min_e5 + r * TILE_DLAT_E5)
         for run in runs:
-            for start in range(0, len(run) - 1, 65534):
-                part = run[start:start + 65535]
-                data += struct.pack("<H", len(part))
-                for p in part:
-                    data += struct.pack("<hh", int(p[0] - lon0), int(p[1] - lat0))
+            data += varint(len(run))
+            for p in run:
+                assert (p[0] - prev[0]) % UNIT_E5 == 0 and (p[1] - prev[1]) % UNIT_E5 == 0
+                data += varint(zigzag(int(p[0] - prev[0]) // UNIT_E5))
+                data += varint(zigzag(int(p[1] - prev[1]) // UNIT_E5))
+                prev = (int(p[0]), int(p[1]))
     index.append(len(data))
 
     with open(OUT, "wb") as f:
-        f.write(b"CST1")
-        f.write(struct.pack("<HHiiii", rows, cols, lat_min_e5, lon_min_e5, TILE_DLAT_E5, TILE_DLON_E5))
+        f.write(b"CST2")
+        f.write(struct.pack("<HHiiiii", rows, cols, lat_min_e5, lon_min_e5, TILE_DLAT_E5, TILE_DLON_E5, UNIT_E5))
         f.write(struct.pack("<%dI" % len(index), *index))
         f.write(data)
     print("wrote %s: %d x %d tiles, %d bytes" % (os.path.normpath(OUT), rows, cols, os.path.getsize(OUT)))

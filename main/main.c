@@ -2439,7 +2439,7 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
 /* --------------------------------------------------------------------------
  * Coastline (components/coast.bin, built by scripts/build_coast.py from
  * OpenStreetMap, in the "coast" partition): a grid of tiles, each a list of
- * lines in 1e-5 degree offsets from the tile's corner. coast_render reads the
+ * lines stored as varint steps from point to point (layout in the script). coast_render reads the
  * tiles around a location and draws them, anti-aliased, into s_coast_px once
  * per location and range; the radar draw callback then only blits that image.
  * ------------------------------------------------------------------------ */
@@ -2447,8 +2447,23 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
 typedef struct __attribute__((packed)) {
     char magic[4];
     uint16_t rows, cols;
-    int32_t lat_min_e5, lon_min_e5, tile_dlat_e5, tile_dlon_e5;
+    int32_t lat_min_e5, lon_min_e5, tile_dlat_e5, tile_dlon_e5, unit_e5;
 } coast_hdr_t;
+
+/* One varint (7 bits per byte, low first); false if it runs past `end`. */
+static bool coast_varint(const uint8_t **p, const uint8_t *end, uint32_t *v)
+{
+    uint32_t r = 0;
+    for (int shift = 0; *p < end && shift < 32; shift += 7) {
+        uint8_t b = *(*p)++;
+        r |= (uint32_t)(b & 0x7F) << shift;
+        if (!(b & 0x80)) {
+            *v = r;
+            return true;
+        }
+    }
+    return false;
+}
 
 static void coast_plot(int x, int y, float cover)
 {
@@ -2512,7 +2527,7 @@ static void coast_render(int loc, int range)
     if (part == NULL) {
         part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "coast");
         if (part == NULL || esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK ||
-            memcmp(hdr.magic, "CST1", 4) != 0) {
+            memcmp(hdr.magic, "CST2", 4) != 0) {
             ESP_LOGW(TAG, "No coastline data in the coast partition");
             s_coast_px = NULL; /* don't try again */
             return;
@@ -2547,6 +2562,8 @@ static void coast_render(int loc, int range)
     uint32_t idx[64];
     uint8_t *buf = NULL;
     size_t buf_cap = 0;
+    int32_t *pts = NULL; /* one decoded line: x, y pairs */
+    uint32_t pts_cap = 0;
     int lines = 0;
 
     for (int r = r0; r <= r1 && c1 >= c0 && c1 - c0 + 2 <= 64; r++) {
@@ -2575,38 +2592,47 @@ static void coast_render(int loc, int range)
             /* Tile corner relative to the centre, in 1e-5 degrees. */
             float tile_dlat = (float)(hdr.lat_min_e5 + (int64_t)r * hdr.tile_dlat_e5 - lat0 * 1e5);
             float tile_dlon = (float)(hdr.lon_min_e5 + (int64_t)c * hdr.tile_dlon_e5 - lon0 * 1e5);
-            while (p + 2 <= end) {
-                uint16_t n;
-                memcpy(&n, p, 2);
-                p += 2;
-                if (p + 4 * (size_t)n > end) {
-                    break;
+            int32_t cur[2] = { 0, 0 }; /* e5 from the tile corner; see coast.bin's layout */
+            uint32_t n;
+            while (p < end && coast_varint(&p, end, &n) && n > 0) {
+                if (n > pts_cap) {
+                    int32_t *np = heap_caps_realloc(pts, 2 * sizeof(int32_t) * n, MALLOC_CAP_SPIRAM);
+                    if (np == NULL) {
+                        break;
+                    }
+                    pts = np;
+                    pts_cap = n;
+                }
+                int32_t lo[2] = { INT32_MAX, INT32_MAX }, hi[2] = { INT32_MIN, INT32_MIN };
+                uint32_t i = 0;
+                bool ok = true;
+                for (; ok && i < n; i++) {
+                    for (int k = 0; k < 2; k++) {
+                        uint32_t z;
+                        if (!coast_varint(&p, end, &z)) {
+                            ok = false;
+                            break;
+                        }
+                        cur[k] += (int32_t)((z >> 1) ^ -(z & 1)) * hdr.unit_e5;
+                        pts[2 * i + k] = cur[k];
+                        lo[k] = cur[k] < lo[k] ? cur[k] : lo[k];
+                        hi[k] = cur[k] > hi[k] ? cur[k] : hi[k];
+                    }
+                }
+                if (!ok) {
+                    break; /* truncated tile */
                 }
                 /* An island a couple of pixels across at this scale is only
                  * speckle: skip closed rings that small. */
-                if (n >= 3 && memcmp(p, p + 4 * (n - 1), 4) == 0) {
-                    int16_t lo[2] = { INT16_MAX, INT16_MAX }, hi[2] = { INT16_MIN, INT16_MIN };
-                    for (int i = 0; i < n; i++) {
-                        int16_t d[2];
-                        memcpy(d, p + 4 * i, 4);
-                        for (int k = 0; k < 2; k++) {
-                            lo[k] = d[k] < lo[k] ? d[k] : lo[k];
-                            hi[k] = d[k] > hi[k] ? d[k] : hi[k];
-                        }
-                    }
-                    float w = (hi[0] - lo[0]) * km_lon * px_per_km;
-                    float h = (hi[1] - lo[1]) * km_lat * px_per_km;
-                    if (w < 2.0f && h < 2.0f) {
-                        p += 4 * (size_t)n;
-                        continue;
-                    }
+                if (n >= 3 && pts[0] == pts[2 * (n - 1)] && pts[1] == pts[2 * (n - 1) + 1] &&
+                    (hi[0] - lo[0]) * km_lon * px_per_km < 2.0f &&
+                    (hi[1] - lo[1]) * km_lat * px_per_km < 2.0f) {
+                    continue;
                 }
                 float px = 0, py = 0;
-                for (int i = 0; i < n; i++, p += 4) {
-                    int16_t d[2];
-                    memcpy(d, p, 4);
-                    float x = RADAR_R + (tile_dlon + d[0]) * km_lon * px_per_km;
-                    float y = RADAR_R - (tile_dlat + d[1]) * km_lat * px_per_km;
+                for (i = 0; i < n; i++) {
+                    float x = RADAR_R + (tile_dlon + pts[2 * i]) * km_lon * px_per_km;
+                    float y = RADAR_R - (tile_dlat + pts[2 * i + 1]) * km_lat * px_per_km;
                     if (i > 0) {
                         coast_line(px, py, x, y);
                     }
@@ -2618,6 +2644,7 @@ static void coast_render(int loc, int range)
         }
     }
     free(buf);
+    free(pts);
     ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
              s_cfg.locations[loc].name, lines, r0, r1, c0, c1);
 
