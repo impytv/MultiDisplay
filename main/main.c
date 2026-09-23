@@ -236,13 +236,26 @@ static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data / s_ship_
 static ais_result_t *s_ship_data;   /* PSRAM; last ship fetch for the location on show */
 static bool s_ship_mode;
 
-/* Coastline under the ships (see coast_render): an A8 coverage image of the
- * radar disc, drawn in s_rp->coast. */
+/* Coastline under the aircraft or ships (see coast_render): an A8 coverage
+ * image of the radar disc, drawn in s_rp->coast. It shows s_coast_loc at
+ * s_coast_km; s_coast_valid gates drawing it. */
 #define COAST_D  (2 * RADAR_R + 1)
 static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
 static lv_image_dsc_t s_coast_img;
 static bool s_coast_valid;
 static int s_coast_loc = -1;
+static int s_coast_km;
+static int s_radar_loc = -1;        /* location the radar screen is set to */
+
+/* The radar screen now shows `loc` at `range_km` (adapter lock held): stop
+ * drawing a coastline image made for anything else until coast_render redoes it. */
+static void coast_mark(int loc, int range_km)
+{
+    s_radar_loc = loc;
+    if (loc != s_coast_loc || range_km != s_coast_km) {
+        s_coast_valid = false;
+    }
+}
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
@@ -1079,9 +1092,9 @@ static void radar_draw_cb(lv_event_t *e)
     const int range = s_radar_range_km;
 
     /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot - with the
-     * coastline under the rings on the ship screen. */
+     * coastline under the rings. */
     radar_circle(layer, RADAR_R, 2, c_ring, true, c_disc);
-    if (s_ship_mode && s_coast_valid &&
+    if (s_coast_valid &&
         radar_vis(layer, RADAR_CX - RADAR_R, RADAR_CY - RADAR_R, RADAR_CX + RADAR_R, RADAR_CY + RADAR_R)) {
         lv_draw_image_dsc_t d;
         lv_draw_image_dsc_init(&d);
@@ -1127,10 +1140,10 @@ static void radar_draw_cb(lv_event_t *e)
         }
     }
 
+    if (s_coast_valid) {
+        radar_text(layer, "\xC2\xA9 OpenStreetMap", 8, 480 - lh - 4, 200, LV_TEXT_ALIGN_LEFT, c_dim);
+    }
     if (s_ship_mode) {
-        if (s_coast_valid) {
-            radar_text(layer, "\xC2\xA9 OpenStreetMap", 8, 480 - lh - 4, 200, LV_TEXT_ALIGN_LEFT, c_dim);
-        }
         ships_draw(layer, range, lh);
         return;
     }
@@ -1354,6 +1367,7 @@ static void radar_set_location(int loc)
     s_ship_mode = false;
     lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[loc].name);
     s_radar_range_km = s_cfg.radar_km[loc];
+    coast_mark(loc, s_radar_range_km);
     radar_load_airports(atof(s_cfg.locations[loc].lat), atof(s_cfg.locations[loc].lon));
 }
 
@@ -1363,6 +1377,7 @@ static void ships_set_location(int loc)
     s_ship_mode = true;
     lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", s_cfg.locations[loc].name);
     s_radar_range_km = s_cfg.ship_km[loc];
+    coast_mark(loc, s_radar_range_km);
 }
 
 static void build_ui(lv_obj_t *screen)
@@ -2426,7 +2441,7 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
  * OpenStreetMap, in the "coast" partition): a grid of tiles, each a list of
  * lines in 1e-5 degree offsets from the tile's corner. coast_render reads the
  * tiles around a location and draws them, anti-aliased, into s_coast_px once
- * per location; the radar draw callback then only blits that image.
+ * per location and range; the radar draw callback then only blits that image.
  * ------------------------------------------------------------------------ */
 
 typedef struct __attribute__((packed)) {
@@ -2484,16 +2499,14 @@ static void coast_line(float x0, float y0, float x1, float y1)
     }
 }
 
-/* Draw location `loc`'s coastline at its ship range into s_coast_px, unless
- * it's already there. Runs in the weather task; flash reads, so not under the
+/* Draw location `loc`'s coastline at `range` km into s_coast_px, unless it's
+ * already there. Runs in the weather task; flash reads, so not under the
  * adapter lock except to flip s_coast_valid. */
-static void coast_render(int loc)
+static void coast_render(int loc, int range)
 {
     static const esp_partition_t *part;
     static coast_hdr_t hdr;
-    static int rendered_km;
-    const int range = s_cfg.ship_km[loc];
-    if (s_coast_px == NULL || (s_coast_loc == loc && rendered_km == range)) {
+    if (s_coast_px == NULL || (s_coast_loc == loc && s_coast_km == range && s_coast_valid)) {
         return;
     }
     if (part == NULL) {
@@ -2569,6 +2582,25 @@ static void coast_render(int loc)
                 if (p + 4 * (size_t)n > end) {
                     break;
                 }
+                /* An island a couple of pixels across at this scale is only
+                 * speckle: skip closed rings that small. */
+                if (n >= 3 && memcmp(p, p + 4 * (n - 1), 4) == 0) {
+                    int16_t lo[2] = { INT16_MAX, INT16_MAX }, hi[2] = { INT16_MIN, INT16_MIN };
+                    for (int i = 0; i < n; i++) {
+                        int16_t d[2];
+                        memcpy(d, p + 4 * i, 4);
+                        for (int k = 0; k < 2; k++) {
+                            lo[k] = d[k] < lo[k] ? d[k] : lo[k];
+                            hi[k] = d[k] > hi[k] ? d[k] : hi[k];
+                        }
+                    }
+                    float w = (hi[0] - lo[0]) * km_lon * px_per_km;
+                    float h = (hi[1] - lo[1]) * km_lat * px_per_km;
+                    if (w < 2.0f && h < 2.0f) {
+                        p += 4 * (size_t)n;
+                        continue;
+                    }
+                }
                 float px = 0, py = 0;
                 for (int i = 0; i < n; i++, p += 4) {
                     int16_t d[2];
@@ -2589,10 +2621,11 @@ static void coast_render(int loc)
     ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
              s_cfg.locations[loc].name, lines, r0, r1, c0, c1);
 
-    s_coast_loc = loc;
-    rendered_km = range;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        s_coast_valid = true;
+        s_coast_loc = loc;
+        s_coast_km = range;
+        /* Unless the screen moved on while drawing. */
+        s_coast_valid = (s_radar_loc == loc && s_radar_range_km == range);
         lv_obj_invalidate(s_radar_canvas);
         esp_lv_adapter_unlock();
     }
@@ -2811,9 +2844,10 @@ static void yr_weather_task(void *arg)
         }
 
         if (radar) {
+            coast_render(sel, s_cfg.radar_km[sel]);
             radar_poll(sel, adsb_scratch, active_view);
         } else if (ships) {
-            coast_render(sel);
+            coast_render(sel, s_cfg.ship_km[sel]);
             ships_poll(sel, ais_scratch, active_view);
         }
 

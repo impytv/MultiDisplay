@@ -65,8 +65,8 @@ every screen.
 For each location on the setup page, tick what it shows: **Weather**,
 **Aircraft** and/or **Ships** (shown in that order: Oslo weather, Oslo
 aircraft, Oslo ships, next location, ...). Each location also has its own
-**Aircraft range** (kilometres, 10-185, default 40). A location without weather has no weather screen and isn't a row in the
-overview table (the overview lists only the locations that show weather, and
+**Aircraft range** (kilometres, 10-185, default 40). A location without
+weather has no weather screen and isn't a row in the overview table (the overview lists only the locations that show weather, and
 is empty of rows - but still shown, for its IP address - if none do).
 
 The screen shows a sonar-style plot centred on the location (north up, range
@@ -109,12 +109,13 @@ their course in between. Coverage is Norwegian waters only, and small vessels
 are filtered out by BarentsWatch (fishing boats under 15 m, leisure boats under
 45 m).
 
-The plot also shows the coastline, from [OpenStreetMap](https://www.openstreetmap.org/copyright)
-(© OpenStreetMap contributors, ODbL; credited on screen). The coast of Norway
+Both the ship traffic and the aircraft radar plots show the coastline, from
+[OpenStreetMap](https://www.openstreetmap.org/copyright) (© OpenStreetMap contributors, ODbL; credited on screen). The coast of Norway
 and its neighbours (57.5-71.5° N, 4-31.5° E) is simplified to about 40 m and
 stored as `components/coast.bin` (about 3.8 MB) in its own `coast` flash
 partition; the tiles around a location are read and drawn once when its ship
-screen is shown. Regenerate it with `python3 scripts/build_coast.py`, which
+or aircraft screen is shown, leaving out islands under a couple of pixels
+across at that range. Regenerate it with `python3 scripts/build_coast.py`, which
 downloads the processed OSM coastlines (about 900 MB) from
 [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/coastlines.html).
 
