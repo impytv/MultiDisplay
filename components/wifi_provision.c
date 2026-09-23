@@ -152,9 +152,16 @@ static char *build_page(const app_config_t *cfg)
     p += snprintf(p, end - p, "\"><small>Leave blank for an open network</small>");
 
     p += snprintf(p, end - p,
+                  "<label>Theme</label><select name=theme>"
+                  "<option value=0%s>Light</option>"
+                  "<option value=1%s>Dark</option></select>",
+                  cfg->theme == APP_THEME_DARK ? "" : " selected",
+                  cfg->theme == APP_THEME_DARK ? " selected" : "");
+
+    p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more forecast "
-                  "locations. The screen shows one at a time; tap anywhere "
-                  "to cycle to the next. Leave a block empty to skip it. For "
+                  "locations. The screen shows one at a time; tap the right "
+                  "half for the next, the left half for the previous. Leave a block empty to skip it. For "
                   "each location choose whether it shows its weather, a live "
                   "aircraft radar, or both (radar after weather), and how far "
                   "the radar looks.</small>");
@@ -282,6 +289,10 @@ static esp_err_t h_save(httpd_req_t *req)
     app_config_load(&cfg); /* keep the WiFi fields at their current value if omitted */
     form_field(body, "ssid", cfg.wifi_ssid, sizeof(cfg.wifi_ssid));
     form_field(body, "pass", cfg.wifi_pass, sizeof(cfg.wifi_pass));
+    char theme[4];
+    if (form_field(body, "theme", theme, sizeof(theme))) {
+        cfg.theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
+    }
 
     httpd_resp_set_type(req, "text/html");
     if (cfg.wifi_ssid[0] == '\0') {

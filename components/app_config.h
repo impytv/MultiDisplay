@@ -25,6 +25,10 @@
 #define APP_CONFIG_RADAR_KM_MIN     10
 #define APP_CONFIG_RADAR_KM_MAX     185
 
+/* Colour theme for every screen: app_config_t.theme. */
+#define APP_THEME_LIGHT 0
+#define APP_THEME_DARK  1
+
 typedef struct {
     char name[APP_CONFIG_NAME_MAX];
     char lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
@@ -42,6 +46,7 @@ typedef struct {
      * both. radar_km[i] is the range of its radar. */
     uint8_t show[APP_CONFIG_MAX_LOCATIONS];
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS]; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
+    uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
 } app_config_t;
 
 /**

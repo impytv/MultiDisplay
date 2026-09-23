@@ -181,6 +181,20 @@ static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
+/* Aircraft radar colours, one set per theme. */
+typedef struct {
+    uint32_t bg, disc, ring, txt, dim, plane, vec, apt;
+} radar_palette_t;
+
+static const radar_palette_t RADAR_DARK = {
+    .bg = 0x050B12, .disc = 0x0A1E30, .ring = 0x1F6E45, .txt = 0xDDE6EE,
+    .dim = 0x8AA0B4, .plane = 0xFF5A4F, .vec = 0xE060E0, .apt = 0x3FBFB0,
+};
+static const radar_palette_t RADAR_LIGHT = {
+    .bg = 0xEEF2F6, .disc = 0xFFFFFF, .ring = 0x6BAF8A, .txt = 0x1B2631,
+    .dim = 0x5D6D7E, .plane = 0xD62D20, .vec = 0xA83CA8, .apt = 0x1B8A7E,
+};
+static const radar_palette_t *s_rp = &RADAR_DARK; /* set from the theme in build_radar */
 static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
@@ -406,11 +420,11 @@ static void show_view(stop_kind_t kind)
         }
     }
 
-    /* The status text sits above whichever screen is shown. The radar is dark,
-     * so it needs light text there, and is moved over the table half so it
+    /* The status text sits above whichever screen is shown. On the radar it
+     * takes the radar's text colour, and is moved over the table half so it
      * doesn't sit on the plot. */
     if (kind == STOP_RADAR) {
-        lv_obj_set_style_text_color(s_status_label, lv_color_hex(0xDDE6EE), 0);
+        lv_obj_set_style_text_color(s_status_label, lv_color_hex(s_rp->txt), 0);
         lv_obj_align(s_status_label, LV_ALIGN_CENTER, 245, 0);
     } else {
         lv_obj_remove_local_style_prop(s_status_label, LV_STYLE_TEXT_COLOR, 0);
@@ -425,6 +439,8 @@ static void show_view(stop_kind_t kind)
  * and free-heap footnotes are the only content in that case. */
 static void build_overview(lv_obj_t *root)
 {
+    const lv_color_t footnote = (s_cfg.theme == APP_THEME_DARK)
+        ? lv_palette_main(LV_PALETTE_GREY) : lv_palette_darken(LV_PALETTE_GREY, 2);
     s_ov_title = lv_label_create(root);
     lv_obj_set_style_text_font(s_ov_title, s_font_large, 0);
     lv_obj_set_pos(s_ov_title, OV_X, OV_TITLE_Y);
@@ -490,7 +506,7 @@ static void build_overview(lv_obj_t *root)
      * Text is filled in each refresh by update_overview(); muted so it reads
      * as a footnote, not another data row. */
     s_ov_ip_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_ip_label, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_style_text_color(s_ov_ip_label, footnote, 0);
     lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4);
     lv_label_set_text(s_ov_ip_label, "");
 
@@ -498,7 +514,7 @@ static void build_overview(lv_obj_t *root)
      * been tracking throughout - a running diagnostic, not user-facing data,
      * so it's a footnote like the IP label. */
     s_ov_heap_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_heap_label, lv_palette_darken(LV_PALETTE_GREY, 2), 0);
+    lv_obj_set_style_text_color(s_ov_heap_label, footnote, 0);
     lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4);
     lv_label_set_text(s_ov_heap_label, "");
 }
@@ -628,7 +644,6 @@ static void radar_fmt_alt(char *buf, size_t n, int32_t alt_ft)
  * from the radar centre whenever the radar is shown for a location. */
 #define RADAR_APT_MAX      24
 #define RADAR_APT_RWY_MAX  4    /* runways kept per airport */
-#define RADAR_APT_COLOR    0x3FBFB0
 
 typedef struct {
     char label[5];     /* IATA code, or the ICAO code where the airport has none */
@@ -771,7 +786,7 @@ static void radar_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color
 /* Runways (or a dot when they would be under a few pixels), under the aircraft. */
 static void radar_draw_airports(lv_layer_t *layer, int range)
 {
-    const lv_color_t col = lv_color_hex(RADAR_APT_COLOR);
+    const lv_color_t col = lv_color_hex(s_rp->apt);
     const float px_per_km = (float)RADAR_R / (float)range;
     for (int i = 0; i < s_radar_apt_n; i++) {
         const radar_apt_t *a = &s_radar_apt[i];
@@ -801,7 +816,7 @@ static void radar_draw_airports(lv_layer_t *layer, int range)
 static void radar_draw_airport_labels(lv_layer_t *layer, int range, int lh, lv_area_t *tags, int *n_tags,
                                       int max_tags)
 {
-    const lv_color_t col = lv_color_hex(RADAR_APT_COLOR);
+    const lv_color_t col = lv_color_hex(s_rp->apt);
     const float px_per_km = (float)RADAR_R / (float)range;
     for (int i = 0; i < s_radar_apt_n && *n_tags < max_tags; i++) {
         const radar_apt_t *a = &s_radar_apt[i];
@@ -841,12 +856,12 @@ static void radar_draw_airport_labels(lv_layer_t *layer, int range, int lh, lv_a
 static void radar_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
-    const lv_color_t c_disc = lv_color_hex(0x0A1E30);
-    const lv_color_t c_ring = lv_color_hex(0x1F6E45);
-    const lv_color_t c_txt = lv_color_hex(0xDDE6EE);
-    const lv_color_t c_dim = lv_color_hex(0x8AA0B4);
-    const lv_color_t c_plane = lv_color_hex(0xFF5A4F);
-    const lv_color_t c_vec = lv_color_hex(0xE060E0);
+    const lv_color_t c_disc = lv_color_hex(s_rp->disc);
+    const lv_color_t c_ring = lv_color_hex(s_rp->ring);
+    const lv_color_t c_txt = lv_color_hex(s_rp->txt);
+    const lv_color_t c_dim = lv_color_hex(s_rp->dim);
+    const lv_color_t c_plane = lv_color_hex(s_rp->plane);
+    const lv_color_t c_vec = lv_color_hex(s_rp->vec);
     const int lh = lv_font_get_line_height(s_font_body);
     const int range = s_radar_range_km;
 
@@ -1050,11 +1065,12 @@ static void build_radar(lv_obj_t *root)
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
     assert(s_radar_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
 
-    /* A dark screen of its own: reads like a radar, and is easy on the eyes at
-     * night. Text colour is inherited by the labels below. */
-    lv_obj_set_style_bg_color(root, lv_color_hex(0x050B12), 0);
+    /* A screen of its own in the theme's radar palette. Text colour is
+     * inherited by the labels below. */
+    s_rp = (s_cfg.theme == APP_THEME_DARK) ? &RADAR_DARK : &RADAR_LIGHT;
+    lv_obj_set_style_bg_color(root, lv_color_hex(s_rp->bg), 0);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(root, lv_color_hex(0xDDE6EE), 0);
+    lv_obj_set_style_text_color(root, lv_color_hex(s_rp->txt), 0);
 
     s_radar_canvas = lv_obj_create(root);
     lv_obj_remove_style_all(s_radar_canvas);
@@ -1086,6 +1102,12 @@ static void radar_set_location(int loc)
 
 static void build_ui(lv_obj_t *screen)
 {
+    const bool dark = (s_cfg.theme == APP_THEME_DARK);
+    lv_display_t *disp = lv_obj_get_display(screen);
+    lv_display_set_theme(disp, lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
+                                                     lv_palette_main(LV_PALETTE_RED), dark, s_font_body));
+    lv_theme_apply(screen);
+
     lv_obj_set_style_text_font(screen, s_font_body, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
@@ -1126,7 +1148,7 @@ static void build_ui(lv_obj_t *screen)
     /* The selected location's worst active severe weather alert, if any (see
      * update_alert_banner). Sits centred in the gap between the location name
      * and the "updated" timestamp: black text on a solid fill of the alert's
-     * own colour, for contrast against the dark screen background - plain
+     * own colour, for contrast against the screen background - plain
      * coloured text there was hard to read. Hidden (not just empty) when
      * nothing is active, since a background-filled label would otherwise
      * still show as a blank coloured box. */
@@ -1176,7 +1198,11 @@ static void build_ui(lv_obj_t *screen)
     lv_chart_set_div_line_count(s_precip_max_chart, 4, NUM_HOUR_LABELS - 1);
     lv_chart_set_point_count(s_precip_max_chart, YR_FORECAST_MAX_POINTS);
     lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
-    s_precip_max_series = lv_chart_add_series(s_precip_max_chart, lv_palette_lighten(LV_PALETTE_BLUE, 3),
+    /* "Paler" than the main bars means lighter on a light background, darker
+     * on a dark one; the same goes for the gust bars below. */
+    s_precip_max_series = lv_chart_add_series(s_precip_max_chart,
+                                              dark ? lv_palette_darken(LV_PALETTE_BLUE, 3)
+                                                   : lv_palette_lighten(LV_PALETTE_BLUE, 3),
                                               LV_CHART_AXIS_PRIMARY_Y);
 
     /* Precipitation-min bar chart: the low end of the same range, in front -
@@ -1214,14 +1240,18 @@ static void build_ui(lv_obj_t *screen)
      * Any left over are kept hidden. */
     for (int i = 0; i < TEMP_MARKER_POOL; i++) {
         s_temp_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_temp_markers[i], lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+        lv_obj_set_style_text_color(s_temp_markers[i],
+                                    dark ? lv_palette_lighten(LV_PALETTE_ORANGE, 2)
+                                         : lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
         lv_label_set_text(s_temp_markers[i], "");
         lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
         s_precip_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_precip_markers[i], lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
+        lv_obj_set_style_text_color(s_precip_markers[i],
+                                    dark ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
+                                         : lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
         lv_label_set_text(s_precip_markers[i], "");
         lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
@@ -1238,10 +1268,21 @@ static void build_ui(lv_obj_t *screen)
     lv_obj_set_flex_align(wind_dir_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(wind_dir_row, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* One shared style rather than per-arrow local styles (internal DRAM):
+     * the arrow artwork is dark blue, too dim on the dark background. */
+    static lv_style_t arrow_dark;
+    if (dark) {
+        lv_style_init(&arrow_dark);
+        lv_style_set_image_recolor(&arrow_dark, lv_palette_lighten(LV_PALETTE_BLUE, 2));
+        lv_style_set_image_recolor_opa(&arrow_dark, LV_OPA_COVER);
+    }
     for (int i = 0; i < NUM_HOUR_LABELS; i++) {
         s_wind_dir_arrows[i] = lv_image_create(wind_dir_row);
         lv_obj_set_size(s_wind_dir_arrows[i], WIND_ARROW_SIZE, WIND_ARROW_SIZE);
         lv_image_set_src(s_wind_dir_arrows[i], "F:arrow.png");
+        if (dark) {
+            lv_obj_add_style(s_wind_dir_arrows[i], &arrow_dark, 0);
+        }
         lv_image_set_inner_align(s_wind_dir_arrows[i], LV_IMAGE_ALIGN_CENTER);
         lv_image_set_pivot(s_wind_dir_arrows[i], WIND_ARROW_SIZE / 2, WIND_ARROW_SIZE / 2);
         lv_obj_add_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
@@ -1260,7 +1301,9 @@ static void build_ui(lv_obj_t *screen)
     lv_chart_set_type(s_gust_chart, LV_CHART_TYPE_BAR);
     lv_chart_set_point_count(s_gust_chart, YR_FORECAST_MAX_POINTS);
     lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    s_gust_series = lv_chart_add_series(s_gust_chart, lv_palette_lighten(LV_PALETTE_TEAL, 3),
+    s_gust_series = lv_chart_add_series(s_gust_chart,
+                                        dark ? lv_palette_darken(LV_PALETTE_TEAL, 3)
+                                             : lv_palette_lighten(LV_PALETTE_TEAL, 3),
                                         LV_CHART_AXIS_PRIMARY_Y);
 
     /* Wind-speed bar chart (m/s), same x-scale as the main chart above. Its
@@ -1284,7 +1327,9 @@ static void build_ui(lv_obj_t *screen)
      * top, in the wind bar's colour. */
     for (int i = 0; i < WIND_MARKER_POOL; i++) {
         s_wind_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_wind_markers[i], lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
+        lv_obj_set_style_text_color(s_wind_markers[i],
+                                    dark ? lv_palette_lighten(LV_PALETTE_TEAL, 2)
+                                         : lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
         lv_label_set_text(s_wind_markers[i], "");
         lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
     }

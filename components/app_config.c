@@ -35,6 +35,9 @@ static void sanitize_view_settings(app_config_t *c)
             c->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
         }
     }
+    if (c->theme != APP_THEME_DARK) {
+        c->theme = APP_THEME_LIGHT;
+    }
 }
 
 static void seed_defaults(app_config_t *out)
@@ -103,12 +106,14 @@ esp_err_t app_config_load(app_config_t *out)
             out->radar_km[i] = km;
         }
     }
+    nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
     nvs_close(h);
     sanitize_view_settings(out);
 
-    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s)",
+    ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme",
              out->wifi_ssid, out->location_count, out->locations[0].name,
-             out->locations[0].lat, out->locations[0].lon);
+             out->locations[0].lat, out->locations[0].lon,
+             out->theme == APP_THEME_DARK ? "dark" : "light");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show %s%s, radar range %u km", i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? "weather" : "",
@@ -139,6 +144,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
     if (err == ESP_OK) err = nvs_set_blob(h, "show", cfg->show, sizeof(cfg->show));
     if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
+    if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
     nvs_erase_key(h, "radarkm");
