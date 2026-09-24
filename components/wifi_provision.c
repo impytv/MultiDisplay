@@ -161,6 +161,17 @@ static char *build_page(const app_config_t *cfg)
                   cfg->theme == APP_THEME_DARK ? " selected" : "");
 
     p += snprintf(p, end - p,
+                  "<label>Night dimming</label><div class=chk>"
+                  "<label><input type=checkbox name=dimon value=1%s>Dim the screen</label></div>"
+                  "<div class=row><div><label>From</label>"
+                  "<input name=dimstart type=time value=%02u:%02u></div>"
+                  "<div><label>To</label>"
+                  "<input name=dimend type=time value=%02u:%02u></div></div>"
+                  "<small>Local time. The screen stays readable, just darker.</small>",
+                  cfg->dim_enabled ? " checked" : "",
+                  cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60);
+
+    p += snprintf(p, end - p,
                   "<label>Contact email for yr</label>"
                   "<input name=yremail type=email autocomplete=email value=\"");
     p = html_escape_append(p, end, cfg->yr_email);
@@ -328,6 +339,18 @@ static esp_err_t h_save(httpd_req_t *req)
     return err;
 }
 
+/* "HH:MM" (as an <input type=time> sends it) to minutes after midnight, or
+ * -1 if it isn't a valid time. */
+static int parse_hhmm(const char *s)
+{
+    int h, m;
+    char extra;
+    if (sscanf(s, "%d:%d%c", &h, &m, &extra) != 2 || h < 0 || h > 23 || m < 0 || m > 59) {
+        return -1;
+    }
+    return h * 60 + m;
+}
+
 static esp_err_t save_form(httpd_req_t *req, const char *body)
 {
 
@@ -338,6 +361,20 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     char theme[4];
     if (form_field(body, "theme", theme, sizeof(theme))) {
         cfg.theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
+    }
+    /* The checkbox is only sent when ticked, so go by the time fields, which
+     * the page always sends. */
+    char hhmm[8];
+    if (form_field(body, "dimstart", hhmm, sizeof(hhmm))) {
+        char val[4];
+        int m;
+        cfg.dim_enabled = form_field(body, "dimon", val, sizeof(val)) ? 1 : 0;
+        if ((m = parse_hhmm(hhmm)) >= 0) {
+            cfg.dim_start = (uint16_t)m;
+        }
+        if (form_field(body, "dimend", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
+            cfg.dim_end = (uint16_t)m;
+        }
     }
     form_field(body, "aisid", cfg.ais_client_id, sizeof(cfg.ais_client_id));
     form_field(body, "aissec", cfg.ais_client_secret, sizeof(cfg.ais_client_secret));

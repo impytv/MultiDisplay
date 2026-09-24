@@ -44,6 +44,11 @@ static void sanitize_view_settings(app_config_t *c)
     if (c->theme != APP_THEME_DARK) {
         c->theme = APP_THEME_LIGHT;
     }
+    c->dim_enabled = c->dim_enabled ? 1 : 0;
+    if (c->dim_start >= 24 * 60 || c->dim_end >= 24 * 60) {
+        c->dim_start = APP_CONFIG_DIM_START_DEFAULT;
+        c->dim_end = APP_CONFIG_DIM_END_DEFAULT;
+    }
 }
 
 static void seed_defaults(app_config_t *out)
@@ -54,6 +59,9 @@ static void seed_defaults(app_config_t *out)
     snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
     snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
     out->location_count = 1;
+    out->dim_enabled = 1;
+    out->dim_start = APP_CONFIG_DIM_START_DEFAULT;
+    out->dim_end = APP_CONFIG_DIM_END_DEFAULT;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
@@ -135,6 +143,9 @@ esp_err_t app_config_load(app_config_t *out)
         out->yr_email[0] = '\0';
     }
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
+    nvs_get_u8(h, "dimon", &out->dim_enabled); /* these three keep the defaults if never saved */
+    nvs_get_u16(h, "dimstart", &out->dim_start);
+    nvs_get_u16(h, "dimend", &out->dim_end);
     nvs_close(h);
     sanitize_view_settings(out);
 
@@ -183,6 +194,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
+    if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u16(h, "dimstart", cfg->dim_start);
+    if (err == ESP_OK) err = nvs_set_u16(h, "dimend", cfg->dim_end);
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
     nvs_erase_key(h, "radarkm");

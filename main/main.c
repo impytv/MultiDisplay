@@ -59,10 +59,9 @@ static const char *TAG = "lvgl9_demo";
 
 /* Night dimming: the backlight itself can't be dimmed (see s_tap_layer), so
  * a translucent black layer over the whole screen stands in for it during
- * these local hours. LV_OPA_70 cuts the effective brightness a lot while
- * keeping high-contrast text/lines legible in a dark room. */
-#define NIGHT_DIM_START_HOUR 22
-#define NIGHT_DIM_END_HOUR   7
+ * the local hours set on the setup page (s_cfg.dim_*). LV_OPA_70 cuts the
+ * effective brightness a lot while keeping high-contrast text/lines legible
+ * in a dark room. */
 #define NIGHT_DIM_OPA         LV_OPA_70
 
 #define ICON_ROW_Y 44
@@ -3122,13 +3121,17 @@ static void yr_weather_task(void *arg)
                 esp_restart();
             }
 
-            /* Night dimming - see s_tap_layer / NIGHT_DIM_*. Also checked
-             * every wake; a few minutes of drift at the 22:00/07:00 edges is
-             * unnoticeable. */
+            /* Night dimming - see s_tap_layer / NIGHT_DIM_OPA. Also checked
+             * every wake; a few minutes of drift at the edges is unnoticeable.
+             * A window that ends before it starts wraps past midnight; one
+             * that ends where it starts is empty. */
             struct tm now_lt;
             localtime_r(&now_wall, &now_lt);
-            bool want_dim = (now_lt.tm_hour >= NIGHT_DIM_START_HOUR ||
-                             now_lt.tm_hour < NIGHT_DIM_END_HOUR);
+            const int now_min = now_lt.tm_hour * 60 + now_lt.tm_min;
+            const int from = s_cfg.dim_start, to = s_cfg.dim_end;
+            bool want_dim = s_cfg.dim_enabled &&
+                            (from <= to ? (now_min >= from && now_min < to)
+                                        : (now_min >= from || now_min < to));
             if (want_dim != night_dim_active) {
                 night_dim_active = want_dim;
                 if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -3140,8 +3143,8 @@ static void yr_weather_task(void *arg)
                     }
                     esp_lv_adapter_unlock();
                 }
-                ESP_LOGI(TAG, "Night dimming %s (local hour %d)",
-                         want_dim ? "on" : "off", now_lt.tm_hour);
+                ESP_LOGI(TAG, "Night dimming %s (local time %02d:%02d)",
+                         want_dim ? "on" : "off", now_lt.tm_hour, now_lt.tm_min);
             }
         }
 

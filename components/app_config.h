@@ -45,6 +45,11 @@
 #define APP_THEME_LIGHT 0
 #define APP_THEME_DARK  1
 
+/* Night dimming (app_config_t.dim_*): the default window, in minutes after
+ * local midnight. */
+#define APP_CONFIG_DIM_START_DEFAULT (22 * 60)
+#define APP_CONFIG_DIM_END_DEFAULT   (7 * 60)
+
 typedef struct {
     char name[APP_CONFIG_NAME_MAX];
     char lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
@@ -67,6 +72,12 @@ typedef struct {
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX] */
     uint16_t ship_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
+    /* Dim the screen from dim_start to dim_end local time (minutes after
+     * midnight, each < 24 * 60; the window may wrap past midnight) when
+     * dim_enabled. */
+    uint8_t dim_enabled;
+    uint16_t dim_start;
+    uint16_t dim_end;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
     /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */
