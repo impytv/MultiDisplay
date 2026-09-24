@@ -3121,6 +3121,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_err);
     app_config_load(&s_cfg);
+    yr_client_set_contact_email(s_cfg.yr_email);
 
     /* Resume on whatever screen was showing before this boot (see
      * app_config_save_last_view) rather than always starting at the

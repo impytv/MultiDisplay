@@ -61,6 +61,16 @@ typedef struct {
 } yr_nowcast_t;
 
 /**
+ * Set the contact email sent to api.met.no, making the User-Agent
+ * "MultiDisplay/1.0 (<email>)". NULL or empty goes back to the compiled-in
+ * CONFIG_EXAMPLE_YR_USER_AGENT. Call before any fetch.
+ */
+void yr_client_set_contact_email(const char *email);
+
+/** The User-Agent to send with every api.met.no request. */
+const char *yr_client_user_agent(void);
+
+/**
  * Fetch up to YR_FORECAST_BASE_POINTS hourly forecast points for (lat, lon)
  * from the MET Norway (yr.no) Locationforecast API.
  *

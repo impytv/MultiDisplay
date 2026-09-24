@@ -38,6 +38,9 @@
 /* BarentsWatch API client credentials (https://www.barentswatch.no/minside/). */
 #define APP_CONFIG_AIS_CRED_MAX 128
 
+/* Contact email put in the User-Agent sent to api.met.no (yr). */
+#define APP_CONFIG_EMAIL_MAX 64
+
 /* Colour theme for every screen: app_config_t.theme. */
 #define APP_THEME_LIGHT 0
 #define APP_THEME_DARK  1
@@ -65,6 +68,8 @@ typedef struct {
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
+    /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */
+    char yr_email[APP_CONFIG_EMAIL_MAX];
 } app_config_t;
 
 /**
@@ -99,6 +104,13 @@ esp_err_t app_config_erase(void);
  * lie within [-90, 90] / [-180, 180].
  */
 bool app_config_coord_valid(const char *text, bool is_latitude);
+
+/**
+ * Loose check of a contact email for the api.met.no User-Agent: one '@' with
+ * text on both sides, and nothing that would break the header - no spaces,
+ * control characters or parentheses.
+ */
+bool app_config_email_valid(const char *text);
 
 /**
  * Remember which screen was on display (0 = the locations overview, 1..N =

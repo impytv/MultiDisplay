@@ -51,6 +51,7 @@ menu "MultiDisplay Configuration"
             (e.g. a website or email). Requests with a missing or generic
             User-Agent are rejected with 403 Forbidden. Update this to
             identify yourself before using this outside of testing.
+            A contact email entered on the setup page overrides this.
             See https://developer.yr.no/doc/TermsOfService/
 
 endmenu

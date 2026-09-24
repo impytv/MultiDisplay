@@ -281,6 +281,22 @@ done:
  * api.met.no needs a 4096-bit RSA verify that doesn't reliably fit in this
  * board's internal RAM once LVGL+FreeType+WiFi have their share, and this is
  * a read-only fetch of public weather data, not a channel carrying secrets. */
+static char s_user_agent[96];
+
+void yr_client_set_contact_email(const char *email)
+{
+    if (email == NULL || email[0] == '\0') {
+        s_user_agent[0] = '\0';
+    } else {
+        snprintf(s_user_agent, sizeof(s_user_agent), "MultiDisplay/1.0 (%s)", email);
+    }
+}
+
+const char *yr_client_user_agent(void)
+{
+    return s_user_agent[0] ? s_user_agent : CONFIG_EXAMPLE_YR_USER_AGENT;
+}
+
 static esp_err_t yr_http_get(const char *url, char **body)
 {
     *body = NULL;
@@ -298,7 +314,7 @@ static esp_err_t yr_http_get(const char *url, char **body)
         return ESP_FAIL;
     }
 
-    esp_http_client_set_header(client, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+    esp_http_client_set_header(client, "User-Agent", yr_client_user_agent());
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);

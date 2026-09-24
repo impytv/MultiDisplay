@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "met_alerts_client.h"
+#include "yr_client.h"
 
 #include "cJSON.h"
 #include "esp_heap_caps.h"
@@ -91,7 +92,7 @@ static esp_err_t met_alerts_http_get(const char *url, char **body)
         return ESP_FAIL;
     }
 
-    esp_http_client_set_header(client, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+    esp_http_client_set_header(client, "User-Agent", yr_client_user_agent());
 
     esp_err_t err = esp_http_client_perform(client);
     int status = esp_http_client_get_status_code(client);

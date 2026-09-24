@@ -161,6 +161,14 @@ static char *build_page(const app_config_t *cfg)
                   cfg->theme == APP_THEME_DARK ? " selected" : "");
 
     p += snprintf(p, end - p,
+                  "<label>Contact email for yr</label>"
+                  "<input name=yremail type=email autocomplete=email value=\"");
+    p = html_escape_append(p, end, cfg->yr_email);
+    p += snprintf(p, end - p, "\"><small>Sent to api.met.no in the User-Agent header, "
+                  "as their terms require. Leave blank to use the built-in "
+                  "default.</small>");
+
+    p += snprintf(p, end - p,
                   "<fieldset><legend>BarentsWatch (ship traffic)</legend>"
                   "<small>API client from barentswatch.no/minside, with access "
                   "to the AIS API. Only needed for ship traffic.</small>"
@@ -331,6 +339,10 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     }
     form_field(body, "aisid", cfg.ais_client_id, sizeof(cfg.ais_client_id));
     form_field(body, "aissec", cfg.ais_client_secret, sizeof(cfg.ais_client_secret));
+    if (form_field(body, "yremail", cfg.yr_email, sizeof(cfg.yr_email)) &&
+        !app_config_email_valid(cfg.yr_email)) {
+        cfg.yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
+    }
     char minlen[8];
     if (form_field(body, "shipminlen", minlen, sizeof(minlen))) {
         long v = strtol(minlen, NULL, 10);

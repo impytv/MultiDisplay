@@ -68,6 +68,11 @@ around):
 The setup page also has a **Theme** choice (light or dark) that applies to
 every screen.
 
+**Contact email for yr** goes into the User-Agent header of every api.met.no
+request (`MultiDisplay/1.0 (<email>)`), as MET Norway's
+[Terms of Service](https://developer.yr.no/doc/TermsOfService/) ask. Leave it
+blank to send the build-time **YR API User-Agent** instead.
+
 ### Aircraft radar
 
 For each location on the setup page, tick what it shows: **Weather**,
@@ -174,8 +179,8 @@ later edits.
 
 The values under `idf.py menuconfig` → `MultiDisplay Configuration` only
 pre-fill the portal form (and let you skip the portal by setting a real
-`WiFi SSID`). The **YR API User-Agent** is still build-time only and must be
-set — api.met.no's
+`WiFi SSID`). The **YR API User-Agent** is the fallback used when no contact
+email is set on the setup page — api.met.no's
 [Terms of Service](https://developer.yr.no/doc/TermsOfService/) reject a
 missing/generic User-Agent with `403 Forbidden`; use something like
 `MyDevice/1.0 myname@example.com`.

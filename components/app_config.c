@@ -122,17 +122,21 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u16(h, "shipminlen", &out->ship_min_len_m);
     load_str(h, "aisid", out->ais_client_id, sizeof(out->ais_client_id));
     load_str(h, "aissec", out->ais_client_secret, sizeof(out->ais_client_secret));
+    load_str(h, "yremail", out->yr_email, sizeof(out->yr_email));
+    if (!app_config_email_valid(out->yr_email)) {
+        out->yr_email[0] = '\0';
+    }
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
     nvs_close(h);
     sanitize_view_settings(out);
 
     ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme, "
-             "BarentsWatch credentials %s, ships from %u m",
+             "BarentsWatch credentials %s, ships from %u m, yr contact '%s'",
              out->wifi_ssid, out->location_count, out->locations[0].name,
              out->locations[0].lat, out->locations[0].lon,
              out->theme == APP_THEME_DARK ? "dark" : "light",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
-             out->ship_min_len_m);
+             out->ship_min_len_m, out->yr_email);
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s, radar range %u km, ship range %u km",
                  i, out->locations[i].name,
@@ -169,6 +173,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u16(h, "shipminlen", cfg->ship_min_len_m);
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
+    if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
@@ -241,6 +246,23 @@ bool app_config_coord_valid(const char *text, bool is_latitude)
     }
     double limit = is_latitude ? 90.0 : 180.0;
     return v >= -limit && v <= limit;
+}
+
+bool app_config_email_valid(const char *text)
+{
+    if (text == NULL) {
+        return false;
+    }
+    const char *at = strchr(text, '@');
+    if (at == NULL || at == text || at[1] == '\0' || strchr(at + 1, '@') != NULL) {
+        return false;
+    }
+    for (const char *c = text; *c; c++) {
+        if ((unsigned char)*c <= ' ' || *c == 0x7f || *c == '(' || *c == ')') {
+            return false;
+        }
+    }
+    return true;
 }
 
 esp_err_t app_config_save_last_view(uint8_t view_index)
