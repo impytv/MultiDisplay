@@ -1279,6 +1279,19 @@ static void radar_draw_cb(lv_event_t *e)
     }
 }
 
+/* The ship count line, e.g. "2 skip lengre enn 100 meter innen 20 km, ...",
+ * mentioning the length filter only when one is configured. */
+static void ship_info_set(int total, unsigned age_s)
+{
+    if (s_cfg.ship_min_len_m > 0) {
+        lv_label_set_text_fmt(s_radar_info, "%d skip lengre enn %u meter innen %u km, oppdatert %u s siden",
+                              total, (unsigned)s_cfg.ship_min_len_m, (unsigned)s_radar_range_km, age_s);
+    } else {
+        lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km, oppdatert %u s siden",
+                              total, (unsigned)s_radar_range_km, age_s);
+    }
+}
+
 /* Positions are extrapolated from each aircraft's speed and track, so repaint
  * periodically while the radar is on screen. Runs in the LVGL task. */
 static void radar_redraw_timer_cb(lv_timer_t *t)
@@ -1287,9 +1300,7 @@ static void radar_redraw_timer_cb(lv_timer_t *t)
     if (s_radar_valid && s_radar_canvas != NULL && !lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_invalidate(s_radar_canvas);
         if (s_ship_mode) {
-            lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km, oppdatert %u s siden",
-                                  s_ship_data->total, (unsigned)s_radar_range_km,
-                                  (unsigned)((lv_tick_get() - s_radar_tick) / 1000));
+            ship_info_set(s_ship_data->total, (unsigned)((lv_tick_get() - s_radar_tick) / 1000));
         }
     }
 }
@@ -1300,8 +1311,7 @@ static void ships_apply(const ais_result_t *res)
     memcpy(s_ship_data, res, sizeof(*res));
     s_radar_valid = true;
     s_radar_tick = lv_tick_get();
-    lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km, oppdatert 0 s siden",
-                          res->total, (unsigned)s_radar_range_km);
+    ship_info_set(res->total, 0);
     lv_obj_invalidate(s_radar_canvas);
 }
 
