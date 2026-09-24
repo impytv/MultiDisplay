@@ -76,6 +76,7 @@ static const char *TAG = "lvgl9_demo";
  * occupy the bottom fraction of the shared chart, leaving the rest of the
  * height for the temperature line to read clearly. */
 #define PRECIP_AXIS_COMPRESSION 3
+#define TEMP_LINE_WIDTH 3
 
 /* Wind section stacked below the main chart: a row of direction arrows over a
  * short wind-speed bar chart, sharing the main chart's x-scale. */
@@ -313,6 +314,13 @@ static int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters *
 static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
+/* The temperature each s_temp_line_points entry was plotted from, and the
+ * chart y of 0 degrees C, so temp_line_draw_cb can colour the sub-zero parts
+ * of the line separately. */
+static float s_temp_line_values[YR_FORECAST_MAX_POINTS];
+static uint32_t s_temp_line_count;
+static lv_color_t s_temp_warm_color;
+static lv_color_t s_temp_cold_color;
 
 static int32_t round_to_int(float v)
 {
@@ -1380,6 +1388,63 @@ static void ships_set_location(int loc)
     coast_mark(loc, s_radar_range_km);
 }
 
+static void temp_segment(lv_layer_t *layer, float x1, float y1, float x2, float y2,
+                         lv_color_t color)
+{
+    int w = TEMP_LINE_WIDTH;
+    if (!radar_vis(layer, (int)(x1 < x2 ? x1 : x2) - w, (int)(y1 < y2 ? y1 : y2) - w,
+                   (int)(x1 < x2 ? x2 : x1) + w, (int)(y1 < y2 ? y2 : y1) + w)) {
+        return;
+    }
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.p1.x = (int32_t)x1;
+    d.p1.y = (int32_t)y1;
+    d.p2.x = (int32_t)x2;
+    d.p2.y = (int32_t)y2;
+    d.width = w;
+    d.color = color;
+    d.opa = LV_OPA_COVER;
+    d.round_start = 1;
+    d.round_end = 1;
+    lv_draw_line(layer, &d);
+}
+
+/* Draws the temperature line segment by segment: orange at or above 0 C and
+ * blue below. A segment that crosses zero is split at the (linearly
+ * interpolated) crossing point, so the colour changes exactly on 0 C. */
+static void temp_line_draw_cb(lv_event_t *e)
+{
+    lv_obj_t *obj = lv_event_get_current_target(e);
+    lv_layer_t *layer = lv_event_get_layer(e);
+    lv_area_t area;
+    lv_obj_get_coords(obj, &area);
+
+    for (uint32_t i = 0; i + 1 < s_temp_line_count; i++) {
+        float v1 = s_temp_line_values[i], v2 = s_temp_line_values[i + 1];
+        float x1 = area.x1 + s_temp_line_points[i].x, y1 = area.y1 + s_temp_line_points[i].y;
+        float x2 = area.x1 + s_temp_line_points[i + 1].x, y2 = area.y1 + s_temp_line_points[i + 1].y;
+        bool cold1 = v1 < 0.0f, cold2 = v2 < 0.0f;
+        if (cold1 == cold2) {
+            temp_segment(layer, x1, y1, x2, y2, cold1 ? s_temp_cold_color : s_temp_warm_color);
+            continue;
+        }
+        float t = v1 / (v1 - v2);
+        float xm = x1 + t * (x2 - x1), ym = y1 + t * (y2 - y1);
+        temp_segment(layer, x1, y1, xm, ym, cold1 ? s_temp_cold_color : s_temp_warm_color);
+        temp_segment(layer, xm, ym, x2, y2, cold2 ? s_temp_cold_color : s_temp_warm_color);
+    }
+}
+
+/* Rounded caps and the line width poke slightly outside the chart box. */
+static void temp_line_ext_size_cb(lv_event_t *e)
+{
+    int32_t *s = lv_event_get_param(e);
+    if (*s < TEMP_LINE_WIDTH) {
+        *s = TEMP_LINE_WIDTH;
+    }
+}
+
 static void build_ui(lv_obj_t *screen)
 {
     const bool dark = (s_cfg.theme == APP_THEME_DARK);
@@ -1501,18 +1566,20 @@ static void build_ui(lv_obj_t *screen)
     lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
     s_precip_series = lv_chart_add_series(s_precip_chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
 
-    s_temp_line = lv_line_create(s_detail_root);
+    /* A plain transparent object painted by temp_line_draw_cb rather than an
+     * lv_line, which can only draw in a single colour. The points are set each
+     * refresh in update_ui_with_forecast. */
+    s_temp_warm_color = lv_palette_main(LV_PALETTE_ORANGE);
+    s_temp_cold_color = dark ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
+                             : lv_palette_darken(LV_PALETTE_BLUE, 2);
+    s_temp_line = lv_obj_create(s_detail_root);
+    lv_obj_remove_style_all(s_temp_line);
     lv_obj_set_pos(s_temp_line, CHART_X, CHART_Y);
     lv_obj_set_size(s_temp_line, CHART_W, CHART_H);
-    lv_obj_set_style_bg_opa(s_temp_line, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_temp_line, 0, 0);
-    lv_obj_set_style_line_width(s_temp_line, 3, 0);
-    lv_obj_set_style_line_color(s_temp_line, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_line_rounded(s_temp_line, true, 0);
     lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_CLICKABLE);
-    /* Actual point count is set each refresh in update_ui_with_forecast. */
-    lv_line_set_points_mutable(s_temp_line, s_temp_line_points, 0);
+    lv_obj_add_event_cb(s_temp_line, temp_line_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+    lv_obj_add_event_cb(s_temp_line, temp_line_ext_size_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, NULL);
 
     /* Value markers for temperature and precipitation extrema, positioned
      * directly on the chart each refresh. Both are pools: how many are used
@@ -2036,12 +2103,12 @@ static void update_ui_with_forecast(const yr_forecast_t *fc)
         int32_t y = (int32_t)((temp_range_max - v) / (temp_range_max - temp_range_min) * (CHART_H - 1));
         s_temp_line_points[i].x = x;
         s_temp_line_points[i].y = y;
+        s_temp_line_values[i] = v;
     }
-    /* Re-point every refresh: the merged series length varies (nowcast steps
-     * + hourly points), and drawing the full YR_FORECAST_MAX_POINTS array
-     * would trail a line back through the stale/zero tail entries. */
-    lv_line_set_points_mutable(s_temp_line, s_temp_line_points,
-                               fc->point_count > 1 ? (uint32_t)fc->point_count : 0);
+    /* The merged series length varies (nowcast steps + hourly points), and
+     * drawing the full YR_FORECAST_MAX_POINTS array would trail a line back
+     * through the stale/zero tail entries. */
+    s_temp_line_count = fc->point_count > 1 ? (uint32_t)fc->point_count : 0;
     lv_obj_invalidate(s_temp_line);
 
     place_temp_markers(fc, temp_min_idx, temp_max_idx);
