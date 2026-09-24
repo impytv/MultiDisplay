@@ -37,9 +37,9 @@ static void sanitize_view_settings(app_config_t *c)
         if (c->ship_km[i] < APP_CONFIG_SHIP_KM_MIN || c->ship_km[i] > APP_CONFIG_SHIP_KM_MAX) {
             c->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
         }
-    }
-    if (c->ship_min_len_m > APP_CONFIG_SHIP_MIN_LEN_MAX) {
-        c->ship_min_len_m = 0;
+        if (c->ship_min_len_m[i] > APP_CONFIG_SHIP_MIN_LEN_MAX) {
+            c->ship_min_len_m[i] = 0;
+        }
     }
     if (c->theme != APP_THEME_DARK) {
         c->theme = APP_THEME_LIGHT;
@@ -119,7 +119,15 @@ esp_err_t app_config_load(app_config_t *out)
             out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
         }
     }
-    nvs_get_u16(h, "shipminlen", &out->ship_min_len_m);
+    len = sizeof(out->ship_min_len_m);
+    if (nvs_get_blob(h, "shipminlens", out->ship_min_len_m, &len) != ESP_OK ||
+        len != sizeof(out->ship_min_len_m)) {
+        uint16_t m = 0; /* the older single setting for every location */
+        nvs_get_u16(h, "shipminlen", &m);
+        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+            out->ship_min_len_m[i] = m;
+        }
+    }
     load_str(h, "aisid", out->ais_client_id, sizeof(out->ais_client_id));
     load_str(h, "aissec", out->ais_client_secret, sizeof(out->ais_client_secret));
     load_str(h, "yremail", out->yr_email, sizeof(out->yr_email));
@@ -131,19 +139,19 @@ esp_err_t app_config_load(app_config_t *out)
     sanitize_view_settings(out);
 
     ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme, "
-             "BarentsWatch credentials %s, ships from %u m, yr contact '%s'",
+             "BarentsWatch credentials %s, yr contact '%s'",
              out->wifi_ssid, out->location_count, out->locations[0].name,
              out->locations[0].lat, out->locations[0].lon,
              out->theme == APP_THEME_DARK ? "dark" : "light",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
-             out->ship_min_len_m, out->yr_email);
+             out->yr_email);
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s, radar range %u km, ship range %u km",
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s, radar range %u km, ship range %u km, ships from %u m",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
                  (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
                  (out->show[i] & APP_SHOW_SHIPS) ? " ships" : "",
-                 out->radar_km[i], out->ship_km[i]);
+                 out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i]);
     }
     return ESP_OK;
 }
@@ -170,7 +178,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_blob(h, "show", cfg->show, sizeof(cfg->show));
     if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipkms", cfg->ship_km, sizeof(cfg->ship_km));
-    if (err == ESP_OK) err = nvs_set_u16(h, "shipminlen", cfg->ship_min_len_m);
+    if (err == ESP_OK) err = nvs_set_blob(h, "shipminlens", cfg->ship_min_len_m, sizeof(cfg->ship_min_len_m));
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
@@ -178,6 +186,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
     nvs_erase_key(h, "radarkm");
+    nvs_erase_key(h, "shipminlen");
     if (err == ESP_OK) err = nvs_set_u8(h, "prov", 1);
     /* Retire the legacy single-location keys, if this NVS was written by an
      * older firmware. Missing keys just return NOT_FOUND - ignore. */

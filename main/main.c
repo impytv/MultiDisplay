@@ -1298,9 +1298,10 @@ static void radar_draw_cb(lv_event_t *e)
  * mentioning the length filter only when one is configured. */
 static void ship_info_set(int total)
 {
-    if (s_cfg.ship_min_len_m > 0) {
+    const unsigned min_len = (s_radar_loc >= 0) ? s_cfg.ship_min_len_m[s_radar_loc] : 0;
+    if (min_len > 0) {
         lv_label_set_text_fmt(s_radar_info, "%d skip lengre enn %u meter innen %u km",
-                              total, (unsigned)s_cfg.ship_min_len_m, (unsigned)s_radar_range_km);
+                              total, min_len, (unsigned)s_radar_range_km);
     } else {
         lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km", total, (unsigned)s_radar_range_km);
     }
@@ -2881,7 +2882,7 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
     double lat = atof(s_cfg.locations[loc].lat);
     double lon = atof(s_cfg.locations[loc].lon);
     esp_err_t err = ais_client_fetch(s_cfg.ais_client_id, s_cfg.ais_client_secret,
-                                     lat, lon, (float)s_cfg.ship_km[loc], s_cfg.ship_min_len_m,
+                                     lat, lon, (float)s_cfg.ship_km[loc], s_cfg.ship_min_len_m[loc],
                                      scratch);
 
     if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {

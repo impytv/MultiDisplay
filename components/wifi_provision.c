@@ -177,11 +177,7 @@ static char *build_page(const app_config_t *cfg)
     p += snprintf(p, end - p, "\"><label>Client secret</label>"
                   "<input name=aissec type=password autocomplete=off value=\"");
     p = html_escape_append(p, end, cfg->ais_client_secret);
-    p += snprintf(p, end - p, "\"><label>Minimum ship length (m)</label>"
-                  "<input name=shipminlen type=number inputmode=numeric min=0 max=%d value=%u>"
-                  "<small>Shorter ships, and ships that don't report a length, are "
-                  "hidden. 0 shows every ship.</small></fieldset>",
-                  APP_CONFIG_SHIP_MIN_LEN_MAX, cfg->ship_min_len_m);
+    p += snprintf(p, end - p, "\"></fieldset>");
 
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more "
@@ -189,8 +185,10 @@ static char *build_page(const app_config_t *cfg)
                   "half for the next, the left half for the previous. Leave a "
                   "block empty to skip it. For each location choose any of its "
                   "weather, a live aircraft radar and live ship traffic (shown "
-                  "in that order), and how far the radar and ship traffic "
-                  "look.</small>");
+                  "in that order), how far the radar and ship traffic "
+                  "look, and the shortest ship to show: shorter ships, and ships "
+                  "that don't report a length, are hidden (0 shows every "
+                  "ship).</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -213,6 +211,7 @@ static char *build_page(const app_config_t *cfg)
         int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
         int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
+        int min_len = filled ? cfg->ship_min_len_m[i] : 0;
         p += snprintf(p, end - p, "\"></div></div>"
                       "<label>Show</label><div class=chk>"
                       "<label><input type=checkbox name=wx%d value=1%s>Weather</label>"
@@ -222,12 +221,15 @@ static char *build_page(const app_config_t *cfg)
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Ship range (km)</label>"
                       "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
+                      "<label>Minimum ship length (m)</label>"
+                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d>"
                       "</fieldset>",
                       i, (show & APP_SHOW_WEATHER) ? " checked" : "",
                       i, (show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
-                      i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km);
+                      i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len);
     }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
@@ -343,11 +345,6 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         !app_config_email_valid(cfg.yr_email)) {
         cfg.yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
     }
-    char minlen[8];
-    if (form_field(body, "shipminlen", minlen, sizeof(minlen))) {
-        long v = strtol(minlen, NULL, 10);
-        cfg.ship_min_len_m = (v > 0 && v <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)v : 0;
-    }
 
     httpd_resp_set_type(req, "text/html");
     if (cfg.wifi_ssid[0] == '\0') {
@@ -364,6 +361,7 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     uint8_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t ship_min_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -415,6 +413,9 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         ship_km[n] = (km >= APP_CONFIG_SHIP_KM_MIN && km <= APP_CONFIG_SHIP_KM_MAX)
                          ? (uint16_t)km : APP_CONFIG_SHIP_KM_DEFAULT;
+        snprintf(key, sizeof(key), "shipminlen%d", i);
+        long len = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        ship_min_len[n] = (len > 0 && len <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)len : 0;
         n++;
     }
 
@@ -435,6 +436,7 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         cfg.show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
         cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         cfg.ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
+        cfg.ship_min_len_m[i] = ship_min_len[i];
     }
 
     if (app_config_save(&cfg) != ESP_OK) {
@@ -445,7 +447,9 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         "<!doctype html><meta charset=utf-8>"
         "<meta name=viewport content='width=device-width,initial-scale=1'>"
         "<p style='font-family:system-ui;max-width:24rem;margin:3rem auto;text-align:center'>"
-        "Saved. Restarting&hellip;</p>");
+        "Saved. Restarting&hellip;"
+        "<p style='font-family:system-ui;text-align:center'>"
+        "<a href=/>Back to the setup page</a></p>");
     xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
     return ESP_OK;
 }

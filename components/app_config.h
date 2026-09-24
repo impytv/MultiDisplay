@@ -60,11 +60,12 @@ typedef struct {
      * layout doesn't change. show[i] is any non-empty mix of APP_SHOW_WEATHER,
      * APP_SHOW_RADAR and APP_SHOW_SHIPS: which screens location i gets, in
      * that order. radar_km[i] / ship_km[i] are the ranges of its aircraft
-     * radar and ship traffic screens. */
+     * radar and ship traffic screens; ship_min_len_m[i] hides its shorter
+     * ships (0 shows every ship). */
     uint8_t show[APP_CONFIG_MAX_LOCATIONS];
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS]; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX] */
-    uint16_t ship_min_len_m; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX]; applies to every location */
+    uint16_t ship_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
