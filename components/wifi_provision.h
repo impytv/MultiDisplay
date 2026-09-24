@@ -2,6 +2,7 @@
 #define _WIFI_PROVISION_H_
 
 #include "esp_err.h"
+#include "esp_http_server.h"
 #include "app_config.h"
 
 /* Called with short human-readable status lines so the caller can show them
@@ -32,5 +33,11 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
  * WiFi event handler on IP_EVENT_STA_GOT_IP and never freed.
  */
 const char *wifi_provision_get_ip(void);
+
+/**
+ * Serve GET `uri` with `handler` on the config web server (which is running
+ * once wifi_provision_connect has returned), ahead of its catch-all page.
+ */
+esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
 #endif

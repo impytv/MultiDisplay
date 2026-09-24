@@ -480,6 +480,19 @@ static void start_web_server(void)
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
 }
 
+esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Wildcard URIs match in registration order: move the catch-all last. */
+    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
+    esp_err_t err = httpd_register_uri_handler(s_httpd,
+                                               &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = handler });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
+    return err;
+}
+
 /* --------------------------------------------------------------------------
  * Captive-portal DNS: answer every A query with the portal IP
  * ------------------------------------------------------------------------ */

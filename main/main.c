@@ -11,6 +11,7 @@
 #include "esp_mmap_assets.h"
 #include "esp_netif_sntp.h"
 #include "esp_partition.h"
+#include "esp_rom_crc.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -194,14 +195,14 @@ static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim
 /* Aircraft radar / ship traffic colours, one set per theme. ship[] is per
  * ais_category_t. */
 typedef struct {
-    uint32_t bg, disc, ring, txt, dim, plane, vec, apt, coast;
+    uint32_t bg, disc, ring, txt, dim, plane, vec, apt, coast, water;
     uint32_t ship[AIS_CAT_COUNT];
 } radar_palette_t;
 
 static const radar_palette_t RADAR_DARK = {
     .bg = 0x050B12, .disc = 0x0A1E30, .ring = 0x1F6E45, .txt = 0xDDE6EE,
     .dim = 0x8AA0B4, .plane = 0xFF5A4F, .vec = 0xE060E0, .apt = 0x3FBFB0,
-    .coast = 0x6F93AD,
+    .coast = 0x6F93AD, .water = 0x0F3A5F,
     .ship = {
         [AIS_CAT_OTHER] = 0xB0BEC5, [AIS_CAT_CARGO] = 0x66BB6A, [AIS_CAT_TANKER] = 0xFF7043,
         [AIS_CAT_PASSENGER] = 0x42A5F5, [AIS_CAT_FISHING] = 0xFFCA28, [AIS_CAT_LEISURE] = 0xE040FB,
@@ -211,7 +212,7 @@ static const radar_palette_t RADAR_DARK = {
 static const radar_palette_t RADAR_LIGHT = {
     .bg = 0xEEF2F6, .disc = 0xFFFFFF, .ring = 0x6BAF8A, .txt = 0x1B2631,
     .dim = 0x5D6D7E, .plane = 0xD62D20, .vec = 0xA83CA8, .apt = 0x1B8A7E,
-    .coast = 0x7F9AB0,
+    .coast = 0x7F9AB0, .water = 0xD4E8F7,
     .ship = {
         [AIS_CAT_OTHER] = 0x607D8B, [AIS_CAT_CARGO] = 0x2E7D32, [AIS_CAT_TANKER] = 0xD84315,
         [AIS_CAT_PASSENGER] = 0x1565C0, [AIS_CAT_FISHING] = 0xB28704, [AIS_CAT_LEISURE] = 0x9C27B0,
@@ -238,11 +239,22 @@ static ais_result_t *s_ship_data;   /* PSRAM; last ship fetch for the location o
 static bool s_ship_mode;
 
 /* Coastline under the aircraft or ships (see coast_render): an A8 coverage
- * image of the radar disc, drawn in s_rp->coast. It shows s_coast_loc at
- * s_coast_km; s_coast_valid gates drawing it. */
+ * image of the radar disc, drawn in s_rp->coast, over an A8 mask of the
+ * water, drawn in s_rp->water. They show s_coast_loc at
+ * s_coast_km; s_coast_valid gates drawing them. */
 #define COAST_D  (2 * RADAR_R + 1)
 static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
+static uint8_t *s_water_px;         /* PSRAM, COAST_D x COAST_D */
 static lv_image_dsc_t s_coast_img;
+static lv_image_dsc_t s_water_img;
+/* Coastline segment middles with the normal to their water side, noted by
+ * coast_seed for coast_fill_water. */
+typedef struct {
+    float x, y, nx, ny;
+} water_seed_t;
+#define WATER_SEEDS_MAX 32768
+static water_seed_t *s_water_seeds; /* PSRAM, WATER_SEEDS_MAX */
+static int s_water_n_seeds;
 static bool s_coast_valid;
 static int s_coast_loc = -1;
 static int s_coast_km;
@@ -1106,10 +1118,13 @@ static void radar_draw_cb(lv_event_t *e)
         radar_vis(layer, RADAR_CX - RADAR_R, RADAR_CY - RADAR_R, RADAR_CX + RADAR_R, RADAR_CY + RADAR_R)) {
         lv_draw_image_dsc_t d;
         lv_draw_image_dsc_init(&d);
-        d.src = &s_coast_img;
-        d.recolor = lv_color_hex(s_rp->coast); /* the colour of an A8 image */
         lv_area_t a = { RADAR_CX - RADAR_R, RADAR_CY - RADAR_R,
                         RADAR_CX - RADAR_R + COAST_D - 1, RADAR_CY - RADAR_R + COAST_D - 1 };
+        d.src = &s_water_img;
+        d.recolor = lv_color_hex(s_rp->water); /* the colour of an A8 image */
+        lv_draw_image(layer, &d, &a);
+        d.src = &s_coast_img;
+        d.recolor = lv_color_hex(s_rp->coast);
         lv_draw_image(layer, &d, &a);
     }
     for (int i = 1; i < 4; i++) {
@@ -1344,9 +1359,14 @@ static void build_radar(lv_obj_t *root)
         .data = s_coast_px,
         .data_size = COAST_D * COAST_D,
     };
+    s_water_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
+    s_water_img = s_coast_img;
+    s_water_seeds = heap_caps_malloc(WATER_SEEDS_MAX * sizeof(*s_water_seeds), MALLOC_CAP_SPIRAM);
+    s_water_img.data = s_water_px;
     s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
+    assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_water_px != NULL && s_water_seeds != NULL &&
+           s_radar_apt != NULL && s_radar_rwy != NULL);
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
@@ -2587,6 +2607,128 @@ static void coast_line(float x0, float y0, float x1, float y1)
     }
 }
 
+/* Water mask labels while coast_render works on s_water_px; afterwards it
+ * holds 255 for water and 0 for everything else. */
+enum { WATER_UNKNOWN, WATER_SEA, WATER_LAND, WATER_COAST, WATER_COAST_SEA_TMP, WATER_DONE = 0x80, WATER_DONE_SEA = 0xC0 };
+
+static bool coast_in_disc(int x, int y)
+{
+    int dx = x - RADAR_R, dy = y - RADAR_R;
+    return x >= 0 && y >= 0 && x < COAST_D && y < COAST_D && dx * dx + dy * dy <= RADAR_R * RADAR_R;
+}
+
+/* In coast.bin the coastlines run with the water on the left and the land on
+ * the right (the reverse of OpenStreetMap's own ways, as checked on screen
+ * against the map). coast_seed notes the middle of each coastline segment and the normal
+ * pointing to its water side; coast_fill_water uses them once the whole
+ * coastline is drawn. */
+static void coast_seed(float x0, float y0, float x1, float y1)
+{
+    float dx = x1 - x0, dy = y1 - y0;
+    float len = sqrtf(dx * dx + dy * dy);
+    float mx = (x0 + x1) / 2.0f, my = (y0 + y1) / 2.0f;
+    if (len < 1.0f || s_water_n_seeds >= WATER_SEEDS_MAX ||
+        !coast_in_disc((int)lroundf(mx), (int)lroundf(my))) {
+        return;
+    }
+    /* On screen (y down), the left of direction (dx, dy) is (dy, -dx). */
+    s_water_seeds[s_water_n_seeds++] = (water_seed_t){ mx, my, dy / len, -dx / len };
+}
+
+/* From a segment's middle, step along `dir` off the line and mark the first
+ * pixel clear of it as `v`, unless another line comes first. */
+static void water_mark_side(const water_seed_t *sd, float dir, uint8_t v)
+{
+    for (float t = 0.5f; t <= 4.0f; t += 0.5f) {
+        int x = (int)lroundf(sd->x + dir * sd->nx * t), y = (int)lroundf(sd->y + dir * sd->ny * t);
+        if (!coast_in_disc(x, y)) {
+            return;
+        }
+        uint8_t *w = &s_water_px[y * COAST_D + x];
+        if (*w != WATER_COAST) {
+            if (*w == WATER_UNKNOWN) {
+                *w = v;
+            }
+            return;
+        }
+    }
+}
+
+/* Split the disc into the areas the coastline in s_coast_px separates, and
+ * make each area sea or land by a vote of the seed pixels inside it (a few
+ * seeds land on the wrong side where the coast bends tightly). An area with no
+ * seeds (no coast in view) stays unfilled; coastline pixels take the side most
+ * of their neighbours are on. */
+static void coast_fill_water(void)
+{
+    const int n = COAST_D * COAST_D;
+    uint32_t *q = heap_caps_malloc(n * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
+    if (q == NULL) {
+        memset(s_water_px, 0, n);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        s_water_px[i] = s_coast_px[i] > 0 ? WATER_COAST : WATER_UNKNOWN;
+    }
+    for (int i = 0; i < s_water_n_seeds; i++) {
+        water_mark_side(&s_water_seeds[i], 1.0f, WATER_SEA);
+        water_mark_side(&s_water_seeds[i], -1.0f, WATER_LAND);
+    }
+    static const int8_t nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    for (int start = 0; start < n; start++) {
+        uint8_t v0 = s_water_px[start];
+        if (v0 == WATER_COAST || (v0 & WATER_DONE) || !coast_in_disc(start % COAST_D, start / COAST_D)) {
+            continue;
+        }
+        /* Flood the area, marking it done as it goes; q holds its pixels. */
+        int head = 0, tail = 0, sea = 0, land = 0;
+        q[tail++] = start;
+        s_water_px[start] |= WATER_DONE;
+        while (head < tail) {
+            int i = q[head++];
+            uint8_t v = s_water_px[i] & ~WATER_DONE;
+            sea += (v == WATER_SEA);
+            land += (v == WATER_LAND);
+            int x = i % COAST_D, y = i / COAST_D;
+            for (int k = 0; k < 4; k++) {
+                int nx = x + nb[k][0], ny = y + nb[k][1];
+                if (!coast_in_disc(nx, ny)) {
+                    continue;
+                }
+                uint8_t *w = &s_water_px[ny * COAST_D + nx];
+                if (*w != WATER_COAST && !(*w & WATER_DONE)) {
+                    *w |= WATER_DONE;
+                    q[tail++] = ny * COAST_D + nx;
+                }
+            }
+        }
+        const uint8_t fill = (sea > land) ? WATER_DONE_SEA : WATER_DONE;
+        for (int i = 0; i < tail; i++) {
+            s_water_px[q[i]] = fill;
+        }
+    }
+    free(q);
+    for (int i = 0; i < n; i++) {
+        if (s_water_px[i] != WATER_COAST) {
+            continue;
+        }
+        int x = i % COAST_D, y = i / COAST_D, sea = 0, land = 0;
+        for (int k = 0; k < 4; k++) {
+            int nx = x + nb[k][0], ny = y + nb[k][1];
+            if (coast_in_disc(nx, ny)) {
+                uint8_t w = s_water_px[ny * COAST_D + nx];
+                sea += (w == WATER_DONE_SEA);
+                land += (w == WATER_DONE);
+            }
+        }
+        s_water_px[i] = (sea > land) ? WATER_COAST_SEA_TMP : WATER_COAST;
+    }
+    for (int i = 0; i < n; i++) {
+        uint8_t v = s_water_px[i];
+        s_water_px[i] = (v == WATER_DONE_SEA || v == WATER_COAST_SEA_TMP) ? 255 : 0;
+    }
+}
+
 /* Draw location `loc`'s coastline at `range` km into s_coast_px, unless it's
  * already there. Runs in the weather task; flash reads, so not under the
  * adapter lock except to flip s_coast_valid. */
@@ -2612,6 +2754,7 @@ static void coast_render(int loc, int range)
         esp_lv_adapter_unlock();
     }
     memset(s_coast_px, 0, COAST_D * COAST_D);
+    s_water_n_seeds = 0;
 
     const double lat0 = atof(s_cfg.locations[loc].lat);
     const double lon0 = atof(s_cfg.locations[loc].lon);
@@ -2708,6 +2851,7 @@ static void coast_render(int loc, int range)
                     float y = RADAR_R - (tile_dlat + pts[2 * i + 1]) * km_lat * px_per_km;
                     if (i > 0) {
                         coast_line(px, py, x, y);
+                        coast_seed(px, py, x, y);
                     }
                     px = x;
                     py = y;
@@ -2718,6 +2862,7 @@ static void coast_render(int loc, int range)
     }
     free(buf);
     free(pts);
+    coast_fill_water();
     ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
              s_cfg.locations[loc].name, lines, r0, r1, c0, c1);
 
@@ -2772,11 +2917,133 @@ static time_t compute_next_nightly_reboot(time_t now)
     return target;
 }
 
+/* --------------------------------------------------------------------------
+ * Screenshot: GET /screen.png on the config web server returns the current
+ * screen as a PNG. The image data is stored uncompressed (deflate "stored"
+ * blocks, one per row), which needs no compressor and streams row by row;
+ * about 1.1 MB for 800 x 480.
+ * ------------------------------------------------------------------------ */
+
+typedef struct {
+    httpd_req_t *req;
+    uint8_t buf[2048];
+    size_t n;
+    uint32_t crc;   /* of the PNG chunk being written */
+    esp_err_t err;
+} png_out_t;
+
+static void png_put(png_out_t *o, const void *data, size_t len)
+{
+    const uint8_t *p = data;
+    o->crc = esp_rom_crc32_le(o->crc, p, len);
+    while (len > 0 && o->err == ESP_OK) {
+        size_t k = sizeof(o->buf) - o->n;
+        k = k < len ? k : len;
+        memcpy(o->buf + o->n, p, k);
+        o->n += k;
+        p += k;
+        len -= k;
+        if (o->n == sizeof(o->buf)) {
+            o->err = httpd_resp_send_chunk(o->req, (const char *)o->buf, o->n);
+            o->n = 0;
+        }
+    }
+}
+
+static void png_put_u32(png_out_t *o, uint32_t v)
+{
+    uint8_t b[4] = { v >> 24, v >> 16, v >> 8, v };
+    png_put(o, b, 4);
+}
+
+static void png_chunk_start(png_out_t *o, const char *type, uint32_t len)
+{
+    png_put_u32(o, len);
+    o->crc = 0;
+    png_put(o, type, 4);
+}
+
+static void png_chunk_end(png_out_t *o)
+{
+    png_put_u32(o, o->crc);
+}
+
+static esp_err_t h_screenshot(httpd_req_t *req)
+{
+    lv_draw_buf_t *snap = NULL;
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
+        esp_lv_adapter_unlock();
+    }
+    png_out_t *o = heap_caps_calloc(1, sizeof(*o), MALLOC_CAP_SPIRAM);
+    uint8_t *row = heap_caps_malloc(1 + 3 * (snap ? snap->header.w : 0), MALLOC_CAP_SPIRAM);
+    if (snap == NULL || o == NULL || row == NULL) {
+        if (snap != NULL) {
+            lv_draw_buf_destroy(snap);
+        }
+        free(o);
+        free(row);
+        return httpd_resp_send_500(req);
+    }
+    const uint32_t w = snap->header.w, h = snap->header.h;
+    const uint32_t row_len = 1 + 3 * w; /* filter byte + RGB */
+    o->req = req;
+    httpd_resp_set_type(req, "image/png");
+    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=\"screen.png\"");
+
+    static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
+    png_put(o, sig, sizeof(sig));
+    png_chunk_start(o, "IHDR", 13);
+    png_put_u32(o, w);
+    png_put_u32(o, h);
+    static const uint8_t ihdr[5] = { 8, 2, 0, 0, 0 }; /* 8-bit RGB, no interlace */
+    png_put(o, ihdr, sizeof(ihdr));
+    png_chunk_end(o);
+
+    png_chunk_start(o, "IDAT", 2 + h * (5 + row_len) + 4);
+    static const uint8_t zhdr[2] = { 0x78, 0x01 };
+    png_put(o, zhdr, sizeof(zhdr));
+    uint32_t a1 = 1, a2 = 0; /* Adler-32 of the raw rows */
+    for (uint32_t y = 0; y < h && o->err == ESP_OK; y++) {
+        const uint8_t *src = snap->data + y * snap->header.stride;
+        row[0] = 0; /* no filter */
+        for (uint32_t x = 0; x < w; x++) { /* LVGL's RGB888 is B, G, R in memory */
+            row[1 + 3 * x] = src[3 * x + 2];
+            row[2 + 3 * x] = src[3 * x + 1];
+            row[3 + 3 * x] = src[3 * x];
+        }
+        for (uint32_t i = 0; i < row_len; i++) {
+            a1 = (a1 + row[i]) % 65521;
+            a2 = (a2 + a1) % 65521;
+        }
+        uint8_t bh[5] = { y == h - 1, row_len & 0xFF, row_len >> 8, ~row_len & 0xFF, (~row_len >> 8) & 0xFF };
+        png_put(o, bh, sizeof(bh));
+        png_put(o, row, row_len);
+    }
+    png_put_u32(o, (a2 << 16) | a1);
+    png_chunk_end(o);
+    png_chunk_start(o, "IEND", 0);
+    png_chunk_end(o);
+
+    lv_draw_buf_destroy(snap);
+    free(row);
+    esp_err_t err = o->err;
+    if (err == ESP_OK && o->n > 0) {
+        err = httpd_resp_send_chunk(req, (const char *)o->buf, o->n);
+    }
+    if (err == ESP_OK) {
+        err = httpd_resp_send_chunk(req, NULL, 0);
+    }
+    free(o);
+    return err;
+}
+
 static void yr_weather_task(void *arg)
 {
     /* Connects in station mode, or blocks forever in the setup portal (and
      * reboots when the form is saved). */
     wifi_provision_connect(&s_cfg, provision_status_cb);
+    wifi_provision_add_get_handler("/screen.png", h_screenshot);
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
      * a large TLS handshake - the two compete hard for the same scarce

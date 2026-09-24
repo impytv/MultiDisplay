@@ -144,3 +144,5 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 # CONFIG_LV_USE_DEMO_STRESS is not set
 # CONFIG_LV_USE_DEMO_MUSIC is not set
 # CONFIG_LV_DEMO_MUSIC_AUTO_PLAY is not set
+# GET /screen.png on the config web server (h_screenshot in main.c).
+CONFIG_LV_USE_SNAPSHOT=y
