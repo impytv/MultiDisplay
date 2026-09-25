@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "rain_client.h"
+#include "civil_time.h"
 #include "yr_client.h"
 
 #include "esp_heap_caps.h"
@@ -30,6 +31,7 @@ static const rain_area_t AREAS[] = {
     { "southern_norway", 890, 919, 60.368f, 7.748f, 997.97f, -402.44f, 3181.65f },
     { "southwestern_norway", 696, 664, 59.686f, 6.021f, 997.75f, -300.07f, 3461.96f },
     { "western_norway", 579, 758, 60.965f, 5.116f, 998.10f, -249.36f, 3154.58f },
+    { "northwestern_norway", 834, 658, 62.637f, 7.772f, 997.13f, -385.31f, 2942.23f },
     { "central_norway", 911, 833, 62.675f, 7.773f, 997.26f, -385.37f, 2765.54f },
     { "southern_nordland", 663, 661, 64.516f, 11.226f, 997.12f, -298.50f, 2721.77f },
     { "nordland", 580, 756, 66.444f, 12.086f, 997.20f, -251.47f, 2411.29f },
@@ -125,17 +127,6 @@ typedef struct {
     size_t len, cap;
     time_t time;
 } rain_resp_t;
-
-/* Days since 1970-01-01 of a proleptic Gregorian date. */
-static int64_t days_from_civil(int y, int m, int d)
-{
-    y -= m <= 2;
-    const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const int64_t yoe = y - era * 400;
-    const int64_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    const int64_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + doe - 719468;
-}
 
 /* The image time is in the file name: Content-Disposition: inline;
  * filename="web5color-sorostnorge_20260924T203000Z.png". */

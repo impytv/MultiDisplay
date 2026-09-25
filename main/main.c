@@ -3218,10 +3218,15 @@ static void rain_store(time_t t, time_t latest, int range)
 
 /* Work out the part of `area` under location `loc`'s disc at `range` km and
  * where the disc lands on it (s_rain_crop, s_rain_gx/gy), and have frame
- * buffers for it. Frames held for another crop are dropped. False if out of
- * memory. */
+ * buffers for it. Frames held for another crop are dropped. Only redone when
+ * the location, range or area changes. False if out of memory. */
 static bool rain_prepare(int loc, int range, const rain_area_t *area)
 {
+    static int s_prep_loc = -1, s_prep_range;
+    if (loc == s_prep_loc && range == s_prep_range && area == s_rain_area) {
+        return true;
+    }
+
     const double lat0 = atof(s_cfg.locations[loc].lat);
     const double lon0 = atof(s_cfg.locations[loc].lon);
     const double km_per_px = (double)range / RADAR_R;
@@ -3251,15 +3256,17 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
             break;
         }
     }
-    if (area == s_rain_area && memcmp(&c, &s_rain_crop, sizeof(c)) == 0) {
-        return s_rain_spare != NULL;
-    }
 
-    bool ok = true;
+    /* Drop the frames held (nothing reads a buffer once its frame is gone)
+     * and, if they're too small, the buffers too - freed and reallocated
+     * outside the lock, so the screen and taps aren't held up. */
+    const size_t cells = (size_t)c.w * c.h;
+    const bool grow = cells > s_rain_cells;
+    uint8_t *old[RAIN_FRAMES + 1] = { 0 };
     if (esp_lv_adapter_lock(-1) != ESP_OK) {
         return false;
     }
-    s_rain_area = area;
+    s_rain_area = NULL; /* not ready until the end */
     s_rain_crop = c;
     for (int j = 0; j < RAIN_GRID_N; j++) {
         for (int i = 0; i < RAIN_GRID_N; i++) {
@@ -3273,24 +3280,49 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
     }
     s_rain_valid = false;
     s_rain_pos = -1;
-    const size_t cells = (size_t)c.w * c.h;
-    if (cells > s_rain_cells) {
-        for (int i = 0; i <= RAIN_FRAMES; i++) {
-            uint8_t **b = (i < RAIN_FRAMES) ? &s_rain_frame[i] : &s_rain_spare;
-            heap_caps_free(*b);
-            *b = heap_caps_malloc(cells, MALLOC_CAP_SPIRAM);
-            ok &= (*b != NULL);
+    if (grow) {
+        for (int i = 0; i < RAIN_FRAMES; i++) {
+            old[i] = s_rain_frame[i];
+            s_rain_frame[i] = NULL;
         }
-        s_rain_cells = ok ? cells : 0;
+        old[RAIN_FRAMES] = s_rain_spare;
+        s_rain_spare = NULL;
+        s_rain_cells = 0;
     }
     esp_lv_adapter_unlock();
+
+    bool ok = true;
+    if (grow) {
+        uint8_t *fresh[RAIN_FRAMES + 1];
+        for (int i = 0; i <= RAIN_FRAMES; i++) {
+            heap_caps_free(old[i]);
+        }
+        for (int i = 0; i <= RAIN_FRAMES; i++) {
+            fresh[i] = heap_caps_malloc(cells, MALLOC_CAP_SPIRAM);
+            ok &= (fresh[i] != NULL);
+        }
+        if (!ok) {
+            for (int i = 0; i <= RAIN_FRAMES; i++) {
+                heap_caps_free(fresh[i]);
+            }
+        } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            memcpy(s_rain_frame, fresh, sizeof(s_rain_frame));
+            s_rain_spare = fresh[RAIN_FRAMES];
+            s_rain_cells = cells;
+            esp_lv_adapter_unlock();
+        } else {
+            ok = false;
+        }
+    }
     ESP_LOGI(TAG, "Rain: %s, %ux%u cells of %u px from (%d, %d)%s; PSRAM free %u", area->name, c.w, c.h,
              c.step, c.x0, c.y0, ok ? "" : ", out of memory",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    if (!ok) {
-        s_rain_area = NULL; /* try again next time */
+    if (ok) {
+        s_rain_area = area;
+        s_prep_loc = loc;
+        s_prep_range = range;
     }
-    return ok;
+    return ok; /* else tried again on the next poll */
 }
 
 /* Fetch the rain radar for location `loc`: the latest image, then whatever

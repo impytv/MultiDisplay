@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "ais_client.h"
+#include "civil_time.h"
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
@@ -183,17 +184,6 @@ static double to_double(const char *p, const char *end)
 static bool is_number_start(char c)
 {
     return c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9');
-}
-
-/* Days since 1970-01-01 for a proleptic Gregorian date (H. Hinnant). */
-static int64_t days_from_civil(int y, int m, int d)
-{
-    y -= m <= 2;
-    int era = (y >= 0 ? y : y - 399) / 400;
-    int yoe = y - era * 400;
-    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return (int64_t)era * 146097 + doe - 719468;
 }
 
 /* "2024-05-01T12:34:56[.fff][Z|+hh:mm]" -> epoch seconds, or 0. */
