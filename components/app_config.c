@@ -37,6 +37,9 @@ static void sanitize_view_settings(app_config_t *c)
         if (c->ship_km[i] < APP_CONFIG_SHIP_KM_MIN || c->ship_km[i] > APP_CONFIG_SHIP_KM_MAX) {
             c->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
         }
+        if (c->rain_km[i] < APP_CONFIG_RAIN_KM_MIN || c->rain_km[i] > APP_CONFIG_RAIN_KM_MAX) {
+            c->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
+        }
         if (c->ship_min_len_m[i] > APP_CONFIG_SHIP_MIN_LEN_MAX) {
             c->ship_min_len_m[i] = 0;
         }
@@ -66,6 +69,7 @@ static void seed_defaults(app_config_t *out)
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
         out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
+        out->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
     }
 }
 
@@ -127,6 +131,12 @@ esp_err_t app_config_load(app_config_t *out)
             out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
         }
     }
+    len = sizeof(out->rain_km);
+    if (nvs_get_blob(h, "rainkms", out->rain_km, &len) != ESP_OK || len != sizeof(out->rain_km)) {
+        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+            out->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
+        }
+    }
     len = sizeof(out->ship_min_len_m);
     if (nvs_get_blob(h, "shipminlens", out->ship_min_len_m, &len) != ESP_OK ||
         len != sizeof(out->ship_min_len_m)) {
@@ -157,12 +167,14 @@ esp_err_t app_config_load(app_config_t *out)
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
              out->yr_email);
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s, radar range %u km, ship range %u km, ships from %u m",
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s, radar range %u km, ship range %u km, ships from %u m, "
+                 "rain range %u km",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
                  (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
                  (out->show[i] & APP_SHOW_SHIPS) ? " ships" : "",
-                 out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i]);
+                 (out->show[i] & APP_SHOW_RAIN) ? " rain" : "",
+                 out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i], out->rain_km[i]);
     }
     return ESP_OK;
 }
@@ -190,6 +202,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipkms", cfg->ship_km, sizeof(cfg->ship_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipminlens", cfg->ship_min_len_m, sizeof(cfg->ship_min_len_m));
+    if (err == ESP_OK) err = nvs_set_blob(h, "rainkms", cfg->rain_km, sizeof(cfg->rain_km));
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);

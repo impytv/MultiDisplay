@@ -8,6 +8,7 @@ idf_component_register(
         "../components/adsb_client.c"
         "../components/ais_client.c"
         "../components/met_alerts_client.c"
+        "../components/rain_client.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -26,7 +27,10 @@ idf_component_register(
         lwip
         esp-tls
         mbedtls
-        json)
+        json
+        # Decodes MET's rain radar images (components/rain_client.c); already
+        # in the build for esp_lv_decoder.
+        espressif__libpng)
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
 if("lvgl" IN_LIST build_components)

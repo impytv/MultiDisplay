@@ -195,9 +195,9 @@ static char *build_page(const app_config_t *cfg)
                   "locations. The screen shows one at a time; tap the right "
                   "half for the next, the left half for the previous. Leave a "
                   "block empty to skip it. For each location choose any of its "
-                  "weather, a live aircraft radar and live ship traffic (shown "
-                  "in that order), how far the radar and ship traffic "
-                  "look, and the shortest ship to show: shorter ships, and ships "
+                  "weather, a live aircraft radar, live ship traffic and a rain "
+                  "radar (shown in that order), how far the aircraft radar, "
+                  "ship traffic and rain radar look, and the shortest ship to show: shorter ships, and ships "
                   "that don't report a length, are hidden (0 shows every "
                   "ship).</small>");
 
@@ -223,24 +223,30 @@ static char *build_page(const app_config_t *cfg)
         int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         int min_len = filled ? cfg->ship_min_len_m[i] : 0;
+        int rain_km = filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
         p += snprintf(p, end - p, "\"></div></div>"
                       "<label>Show</label><div class=chk>"
                       "<label><input type=checkbox name=wx%d value=1%s>Weather</label>"
                       "<label><input type=checkbox name=ac%d value=1%s>Aircraft</label>"
-                      "<label><input type=checkbox name=sh%d value=1%s>Ships</label></div>"
+                      "<label><input type=checkbox name=sh%d value=1%s>Ships</label>"
+                      "<label><input type=checkbox name=rn%d value=1%s>Rain</label></div>"
                       "<div class=row><div><label>Aircraft range (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Ship range (km)</label>"
                       "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
-                      "<label>Minimum ship length (m)</label>"
-                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d>"
+                      "<div class=row><div><label>Minimum ship length (m)</label>"
+                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
+                      "<div><label>Rain range (km)</label>"
+                      "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
                       "</fieldset>",
                       i, (show & APP_SHOW_WEATHER) ? " checked" : "",
                       i, (show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
+                      i, (show & APP_SHOW_RAIN) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
-                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len);
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len,
+                      i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km);
     }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
@@ -399,6 +405,7 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_min_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -441,6 +448,8 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RADAR : 0;
         snprintf(key, sizeof(key), "sh%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_SHIPS : 0;
+        snprintf(key, sizeof(key), "rn%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RAIN : 0;
         show[n] = sh ? sh : APP_SHOW_WEATHER;
         snprintf(key, sizeof(key), "radarkm%d", i);
         long km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
@@ -453,6 +462,10 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         snprintf(key, sizeof(key), "shipminlen%d", i);
         long len = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         ship_min_len[n] = (len > 0 && len <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)len : 0;
+        snprintf(key, sizeof(key), "rainkm%d", i);
+        km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        rain_km[n] = (km >= APP_CONFIG_RAIN_KM_MIN && km <= APP_CONFIG_RAIN_KM_MAX)
+                         ? (uint16_t)km : APP_CONFIG_RAIN_KM_DEFAULT;
         n++;
     }
 
@@ -464,6 +477,7 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         show[0] = APP_SHOW_WEATHER;
         radar_km[0] = APP_CONFIG_RADAR_KM_DEFAULT;
         ship_km[0] = APP_CONFIG_SHIP_KM_DEFAULT;
+        rain_km[0] = APP_CONFIG_RAIN_KM_DEFAULT;
         n = 1;
     }
 
@@ -474,6 +488,7 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         cfg.ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         cfg.ship_min_len_m[i] = ship_min_len[i];
+        cfg.rain_km[i] = rain_km[i] ? rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
     }
 
     if (app_config_save(&cfg) != ESP_OK) {
