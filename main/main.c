@@ -158,9 +158,16 @@ static const char *TAG = "lvgl9_demo";
 #define SHIP_VEC_MIN        10    /* course vector: where it will be in this many minutes */
 #define SHIP_TAG_MAX_W      120   /* px; longer names are shortened on the plot */
 /* Rain radar (same screen again): MET makes a new image every 5 minutes.
- * Retried sooner while there is none yet. */
+ * Retried sooner while there is none yet. The screen loops through the last
+ * hour of them, a frame every RAIN_ANIM_MS, resting on the latest for
+ * RAIN_HOLD_TICKS more. */
 #define RAIN_POLL_MS        (5 * 60 * 1000)
 #define RAIN_RETRY_MS       30000
+#define RAIN_STEP_S         300
+#define RAIN_FRAMES         (60 * 60 / RAIN_STEP_S + 1)
+#define RAIN_ANIM_MS        500
+#define RAIN_HOLD_TICKS     4
+#define RAIN_ALPHA_STEPS    51    /* per level in s_rain_pal: 1 + 5 * 51 = 256 entries */
 
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
@@ -265,12 +272,25 @@ typedef struct {
 static water_seed_t *s_water_seeds; /* PSRAM, WATER_SEEDS_MAX */
 static int s_water_n_seeds;
 static bool s_coast_valid;
-/* Rain over the disc (see rain_render): an ARGB8888 image the size of the
- * coastline one, and when its radar image was taken. */
+/* Rain over the disc (see rain_render): the last hour of radar images, each
+ * as COAST_D x COAST_D indices into s_rain_pal, and the one on show expanded
+ * into an ARGB8888 image the size of the coastline one. Frame position p
+ * (0 = an hour back, RAIN_FRAMES - 1 = the latest) is the image taken at
+ * s_rain_latest - (RAIN_FRAMES - 1 - p) * RAIN_STEP_S; s_rain_ftime says which
+ * slot holds which (RAIN_EMPTY if none). Written by the weather task with the
+ * adapter lock held, played by rain_anim_timer_cb. */
+#define RAIN_EMPTY ((time_t)-1)
+static uint8_t *s_rain_frame[RAIN_FRAMES]; /* PSRAM */
+static time_t s_rain_ftime[RAIN_FRAMES];
+static uint8_t *s_rain_spare;       /* PSRAM; rain_poll renders here, then swaps it in */
+static time_t s_rain_latest;
+static uint32_t s_rain_pal[256];
 static uint32_t *s_rain_px;         /* PSRAM, COAST_D x COAST_D */
 static lv_image_dsc_t s_rain_img;
-static bool s_rain_valid;
-static time_t s_rain_time;
+static bool s_rain_valid;           /* s_rain_px holds a frame */
+static int s_rain_pos = -1;         /* frame position on show */
+static int s_rain_hold;             /* ticks left resting on the latest */
+static time_t s_rain_time;          /* when the frame on show was taken */
 static int s_coast_loc = -1;
 static int s_coast_km;
 static int s_radar_loc = -1;        /* location the radar screen is set to */
@@ -1117,6 +1137,65 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
     }
 }
 
+/* The slot holding the image taken at `t`, or -1. */
+static int rain_slot_for(time_t t)
+{
+    for (int i = 0; i < RAIN_FRAMES; i++) {
+        if (s_rain_ftime[i] != RAIN_EMPTY && s_rain_ftime[i] == t) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The slot holding frame position `p`, or -1. */
+static int rain_slot_at(int p)
+{
+    return rain_slot_for(s_rain_latest - (time_t)(RAIN_FRAMES - 1 - p) * RAIN_STEP_S);
+}
+
+/* Put frame position `p` (held in `slot`) on screen. Adapter lock held. */
+static void rain_show(int p, int slot)
+{
+    const uint8_t *src = s_rain_frame[slot];
+    for (int i = 0; i < COAST_D * COAST_D; i++) {
+        s_rain_px[i] = s_rain_pal[src[i]];
+    }
+    s_rain_pos = p;
+    s_rain_time = s_rain_ftime[slot];
+    s_rain_valid = true;
+    lv_obj_invalidate(s_radar_canvas);
+}
+
+/* Step the rain animation on to the next frame the hour has, back to the
+ * first after resting on the latest. Runs in the LVGL task. */
+static void rain_anim_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_rain_mode || !s_rain_valid || s_radar_canvas == NULL ||
+        lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    if (s_rain_hold > 0) {
+        s_rain_hold--;
+        return;
+    }
+    for (int k = 1; k <= RAIN_FRAMES; k++) {
+        int p = (s_rain_pos + k) % RAIN_FRAMES;
+        int slot = rain_slot_at(p);
+        if (slot < 0) {
+            continue;
+        }
+        if (p != s_rain_pos) {
+            rain_show(p, slot);
+        }
+        if (p == RAIN_FRAMES - 1) {
+            s_rain_hold = RAIN_HOLD_TICKS;
+        }
+        return;
+    }
+}
+
 /* The rain radar's table half: what the colours mean and where the data is from. */
 static void rain_draw_legend(lv_layer_t *layer, int lh)
 {
@@ -1154,6 +1233,22 @@ static void rain_draw_legend(lv_layer_t *layer, int lh)
         snprintf(when, sizeof(when), "Radarbilde kl. %02d:%02d", lt.tm_hour, lt.tm_min);
         radar_text(layer, when, RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_txt);
         y += lh + 4;
+
+        /* Where the animation is in the hour: a tick per frame, the one on
+         * show highlighted, faint where MET had no image. */
+        for (int p = 0; p < RAIN_FRAMES; p++) {
+            lv_area_t a = { RADAR_LIST_X + p * 21, y + 4, RADAR_LIST_X + p * 21 + 16, y + 12 };
+            if (!radar_area_hits_clip(layer, &a)) {
+                continue;
+            }
+            lv_draw_rect_dsc_t d;
+            lv_draw_rect_dsc_init(&d);
+            d.radius = 2;
+            d.bg_color = (p == s_rain_pos) ? c_txt : lv_color_hex(s_rp->ring);
+            d.bg_opa = (p == s_rain_pos || rain_slot_at(p) >= 0) ? LV_OPA_COVER : LV_OPA_20;
+            lv_draw_rect(layer, &d, &a);
+        }
+        y += 24;
     }
     radar_text(layer, "Radar: MET Norge", RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_dim);
 }
@@ -1440,6 +1535,19 @@ static void build_radar(lv_obj_t *root)
         .data = (const uint8_t *)s_rain_px,
         .data_size = COAST_D * COAST_D * 4,
     };
+    bool any_rain = false;
+    for (int i = 0; i < s_cfg.location_count; i++) {
+        any_rain |= (s_cfg.show[i] & APP_SHOW_RAIN) != 0;
+    }
+    for (int i = 0; any_rain && i < RAIN_FRAMES; i++) {
+        s_rain_frame[i] = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
+        assert(s_rain_frame[i] != NULL);
+        s_rain_ftime[i] = RAIN_EMPTY;
+    }
+    if (any_rain) {
+        s_rain_spare = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
+        assert(s_rain_spare != NULL);
+    }
     s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
     assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_water_px != NULL && s_water_seeds != NULL &&
@@ -1470,6 +1578,19 @@ static void build_radar(lv_obj_t *root)
     lv_label_set_text(s_radar_info, "");
 
     lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
+
+    /* Rain frames are palette indices (see rain_render): 0 is clear, then
+     * RAIN_ALPHA_STEPS alphas of each level's colour. */
+    s_rain_pal[0] = 0;
+    for (int l = 1; l <= RAIN_LEVELS; l++) {
+        for (int q = 1; q <= RAIN_ALPHA_STEPS; q++) {
+            s_rain_pal[(l - 1) * RAIN_ALPHA_STEPS + q] =
+                ((uint32_t)(q * 255 / RAIN_ALPHA_STEPS) << 24) | (s_rp->rain[l - 1] & 0xFFFFFF);
+        }
+    }
+    if (any_rain) {
+        lv_timer_create(rain_anim_timer_cb, RAIN_ANIM_MS, NULL);
+    }
 }
 
 /* Point the radar at location `loc` (adapter lock held): its title, and the
@@ -1501,6 +1622,12 @@ static void rain_set_location(int loc)
     s_ship_mode = false;
     s_rain_mode = true;
     s_rain_valid = false;
+    s_rain_pos = -1;
+    s_rain_hold = 0;
+    s_rain_latest = 0;
+    for (int i = 0; i < RAIN_FRAMES; i++) {
+        s_rain_ftime[i] = RAIN_EMPTY;
+    }
     lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", s_cfg.locations[loc].name);
     s_radar_range_km = s_cfg.rain_km[loc];
     coast_mark(loc, s_radar_range_km);
@@ -2997,19 +3124,15 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
  * (rain_client), redrawn over the radar disc in the theme's rain colours.
  * ------------------------------------------------------------------------ */
 
-/* ARGB8888 as LVGL stores it (0xAARRGGBB), from 0xRRGGBB and an alpha. */
-static uint32_t rain_argb(uint32_t rgb, uint32_t a)
-{
-    return (a << 24) | (rgb & 0xFFFFFF);
-}
-
-/* Draw `img` into `out` (COAST_D x COAST_D) for location `loc` at `range`
- * km: each disc pixel is placed on the radar image (the disc uses the same
- * flat local projection as the coastline) and blended from the four image
- * pixels around it, so the 1 km radar pixels don't show as blocks. The
- * projection is only worked out on a coarse grid and interpolated. */
+/* Draw `img` into `out` (COAST_D x COAST_D s_rain_pal indices) for location
+ * `loc` at `range` km: each disc pixel is placed on the radar image (the disc
+ * uses the same flat local projection as the coastline) and blended from the
+ * four image pixels around it, so the 1 km radar pixels don't show as
+ * blocks: the colour of the level that weighs most among them, faded by how
+ * much rain there is. The projection is only worked out on a coarse grid and
+ * interpolated. */
 #define RAIN_GRID 20
-static void rain_render(const rain_image_t *img, int loc, int range, uint32_t *out)
+static void rain_render(const rain_image_t *img, int loc, int range, uint8_t *out)
 {
     const rain_area_t *a = img->area;
     const double lat0 = atof(s_cfg.locations[loc].lat);
@@ -3026,23 +3149,15 @@ static void rain_render(const rain_image_t *img, int loc, int range, uint32_t *o
         }
     }
 
-    /* Premultiplied colours per level; 0 is transparent. */
-    float col[RAIN_LEVELS + 1][4] = { { 0 } };
-    for (int l = 1; l <= RAIN_LEVELS; l++) {
-        uint32_t c = s_rp->rain[l - 1];
-        float al = (l == 1) ? 0.6f : 0.85f;
-        col[l][0] = al * ((c >> 16) & 0xFF);
-        col[l][1] = al * ((c >> 8) & 0xFF);
-        col[l][2] = al * (c & 0xFF);
-        col[l][3] = al;
-    }
+    /* Opacity per level; 0 is clear. */
+    static const float ALPHA[RAIN_LEVELS + 1] = { 0, 0.6f, 0.85f, 0.85f, 0.85f, 0.85f };
 
     const int w = a->w, h = a->h;
     for (int y = 0; y < COAST_D; y++) {
         const int gj = y / RAIN_GRID;
         const float ty = (float)(y - gj * RAIN_GRID) / RAIN_GRID;
         const int dy = y - RADAR_R;
-        uint32_t *row = out + (size_t)y * COAST_D;
+        uint8_t *row = out + (size_t)y * COAST_D;
         for (int x = 0; x < COAST_D; x++) {
             const int dx = x - RADAR_R;
             row[x] = 0;
@@ -3066,59 +3181,110 @@ static void rain_render(const rain_image_t *img, int loc, int range, uint32_t *o
             const float ux = fx - x0, uy = fy - y0;
             const float wt[4] = { (1 - ux) * (1 - uy), ux * (1 - uy), (1 - ux) * uy, ux * uy };
             const uint8_t lv[4] = { p[0], p[1], p[w], p[w + 1] };
-            float acc[4] = { 0 };
+            float lw[RAIN_LEVELS + 1] = { 0 };
+            float alpha = 0;
             for (int k = 0; k < 4; k++) {
-                for (int c = 0; c < 4; c++) {
-                    acc[c] += wt[k] * col[lv[k]][c];
+                lw[lv[k]] += wt[k];
+                alpha += wt[k] * ALPHA[lv[k]];
+            }
+            int best = 1;
+            for (int l = 2; l <= RAIN_LEVELS; l++) {
+                if (lw[l] > lw[best]) {
+                    best = l;
                 }
             }
-            if (acc[3] < 0.02f) {
-                continue;
+            const int q = (int)lroundf(alpha * RAIN_ALPHA_STEPS);
+            if (q > 0) {
+                row[x] = (uint8_t)((best - 1) * RAIN_ALPHA_STEPS + (q < RAIN_ALPHA_STEPS ? q : RAIN_ALPHA_STEPS));
             }
-            row[x] = rain_argb(((uint32_t)(acc[0] / acc[3]) << 16) | ((uint32_t)(acc[1] / acc[3]) << 8) |
-                                   (uint32_t)(acc[2] / acc[3]),
-                               (uint32_t)(acc[3] * 255.0f));
         }
     }
 }
 
-/* One rain radar fetch for location `loc`, shown only if the screen is still
- * `for_view` when it lands. The previous picture stays up on a failed fetch.
- * True once there is something on screen. */
+/* Keep the frame just rendered into s_rain_spare, taken at `t`, with
+ * `latest` the newest image there is. Adapter lock held. */
+static void rain_store(time_t t, time_t latest, int range)
+{
+    s_rain_latest = latest;
+    int slot = rain_slot_for(t);
+    for (int i = 0; slot < 0 && i < RAIN_FRAMES; i++) {
+        /* Free, or fallen out of the hour: the hour has RAIN_FRAMES
+         * positions and `t` is one of them not yet held, so there is one. */
+        const time_t ft = s_rain_ftime[i];
+        if (ft == RAIN_EMPTY || ft > latest || ft < latest - (time_t)(RAIN_FRAMES - 1) * RAIN_STEP_S) {
+            slot = i;
+        }
+    }
+    if (slot < 0) {
+        return;
+    }
+    uint8_t *old = s_rain_frame[slot];
+    s_rain_frame[slot] = s_rain_spare;
+    s_rain_spare = old;
+    s_rain_ftime[slot] = t;
+
+    const int p = RAIN_FRAMES - 1 - (int)((latest - t) / RAIN_STEP_S);
+    if (!s_rain_valid) {
+        rain_show(p, slot); /* the first to land; the animation takes it from here */
+        s_rain_hold = RAIN_HOLD_TICKS;
+    } else if (p == s_rain_pos) {
+        rain_show(p, slot);
+    }
+    lv_label_set_text(s_status_label, "");
+    lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r siste time innen %d km", range);
+    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
+    lv_obj_invalidate(s_radar_canvas);
+}
+
+/* Fetch the rain radar for location `loc`: the latest image, then whatever
+ * of the hour before it isn't held yet, newest first. Each frame goes on
+ * screen as it lands, as long as the screen is still `for_view`; the
+ * previous ones stay up on a failed fetch. True once there is something on
+ * screen. */
 static bool rain_poll(int loc, rain_image_t *img, int for_view)
 {
     const double lat = atof(s_cfg.locations[loc].lat);
     const double lon = atof(s_cfg.locations[loc].lon);
     const int range = s_cfg.rain_km[loc];
     const rain_area_t *area = rain_client_pick_area(lat, lon, (float)range);
-    esp_err_t err = (area != NULL) ? rain_client_fetch(area, img) : ESP_ERR_NOT_SUPPORTED;
 
-    uint32_t *px = NULL;
-    if (err == ESP_OK) {
-        px = heap_caps_malloc((size_t)COAST_D * COAST_D * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
-        if (px != NULL) {
-            rain_render(img, loc, range, px);
+    time_t latest = 0;
+    for (int k = 0; area != NULL && k < RAIN_FRAMES && s_view_index == for_view; k++) {
+        time_t want = 0;
+        if (k > 0) {
+            if (latest <= PLAUSIBLE_EPOCH_S) {
+                break; /* no image time: nothing to count back from */
+            }
+            want = latest - (time_t)k * RAIN_STEP_S;
+            if (rain_slot_for(want) >= 0) {
+                continue;
+            }
+        }
+        esp_err_t err = rain_client_fetch(area, want, img);
+        if (err != ESP_OK) {
+            if (k == 0) {
+                break;
+            }
+            continue; /* a gap in the hour; the animation skips it */
+        }
+        if (k == 0) {
+            latest = img->time;
+            if (latest == s_rain_latest && rain_slot_for(latest) >= 0) {
+                continue; /* no new image since the last poll */
+            }
+        }
+        rain_render(img, loc, range, s_rain_spare);
+        if (s_view_index == for_view && esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (s_radar_loc == loc && s_radar_range_km == range) {
+                rain_store(img->time, latest, range);
+            }
+            esp_lv_adapter_unlock();
         }
     }
 
     bool shown = false;
     if (s_view_index == for_view && esp_lv_adapter_lock(-1) == ESP_OK) {
-        if (px != NULL && s_radar_loc == loc && s_radar_range_km == range) {
-            memcpy(s_rain_px, px, (size_t)COAST_D * COAST_D * sizeof(uint32_t));
-            s_rain_valid = true;
-            s_rain_time = img->time;
-            lv_label_set_text(s_status_label, "");
-            if (img->time > PLAUSIBLE_EPOCH_S) {
-                struct tm lt;
-                localtime_r(&img->time, &lt);
-                lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r innen %d km  kl. %02d:%02d",
-                                      range, lt.tm_hour, lt.tm_min);
-            } else {
-                lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r innen %d km", range);
-            }
-            lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
-            lv_obj_invalidate(s_radar_canvas);
-        } else if (area == NULL) {
+        if (area == NULL) {
             lv_label_set_text(s_status_label, "Ingen nedb\xC3\xB8rsradar her");
         } else if (!s_rain_valid) {
             lv_label_set_text(s_status_label, "Kunne ikke hente nedb\xC3\xB8r. Pr\xC3\xB8ver igjen...");
@@ -3126,7 +3292,6 @@ static bool rain_poll(int loc, rain_image_t *img, int for_view)
         shown = s_rain_valid;
         esp_lv_adapter_unlock();
     }
-    heap_caps_free(px);
     return shown;
 }
 
@@ -3410,6 +3575,11 @@ static void yr_weather_task(void *arg)
             }
             if (!ships) {
                 ais_client_close();
+            }
+            if (!rain) {
+                rain_client_close();
+                heap_caps_free(rain_img.level);
+                rain_img.level = NULL;
             }
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {

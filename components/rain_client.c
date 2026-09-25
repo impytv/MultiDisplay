@@ -253,32 +253,58 @@ static esp_err_t decode_levels(const rain_area_t *a, const uint8_t *data, size_t
     return ESP_OK;
 }
 
-esp_err_t rain_client_fetch(const rain_area_t *area, rain_image_t *img)
-{
-    char url[128];
-    snprintf(url, sizeof(url),
-             "https://api.met.no/weatherapi/radar/2.0/?area=%s&type=5level_reflectivity", area->name);
+static esp_http_client_handle_t s_client;
+static rain_resp_t s_resp;
 
-    rain_resp_t resp = { 0 };
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event_handler,
-        .user_data = &resp,
-        .timeout_ms = RAIN_HTTP_TIMEOUT_MS,
-        .buffer_size = 4096,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) {
-        return ESP_FAIL;
+void rain_client_close(void)
+{
+    if (s_client != NULL) {
+        esp_http_client_cleanup(s_client);
+        s_client = NULL;
     }
-    esp_http_client_set_header(client, "User-Agent", yr_client_user_agent());
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
+}
+
+esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, rain_image_t *img)
+{
+    char url[192];
+    int n = snprintf(url, sizeof(url),
+                     "https://api.met.no/weatherapi/radar/2.0/?area=%s&type=5level_reflectivity", area->name);
+    if (when > 0) {
+        struct tm t;
+        gmtime_r(&when, &t);
+        snprintf(url + n, sizeof(url) - n, "&time=%04d-%02d-%02dT%02d%%3A%02d%%3A00Z",
+                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
+    }
+
+    s_resp = (rain_resp_t){ 0 };
+    if (s_client == NULL) {
+        esp_http_client_config_t config = {
+            .url = url,
+            .event_handler = http_event_handler,
+            .user_data = &s_resp,
+            .timeout_ms = RAIN_HTTP_TIMEOUT_MS,
+            .buffer_size = 4096,
+            .keep_alive_enable = true,
+        };
+        s_client = esp_http_client_init(&config);
+        if (s_client == NULL) {
+            return ESP_FAIL;
+        }
+        esp_http_client_set_header(s_client, "User-Agent", yr_client_user_agent());
+    } else {
+        esp_http_client_set_url(s_client, url);
+    }
+    esp_err_t err = esp_http_client_perform(s_client);
+    int status = esp_http_client_get_status_code(s_client);
+    rain_resp_t resp = s_resp;
+    s_resp = (rain_resp_t){ 0 };
     if (err != ESP_OK || status != 200 || resp.buf == NULL) {
         ESP_LOGE(TAG, "%s: HTTP %s, status %d", area->name, esp_err_to_name(err), status);
         heap_caps_free(resp.buf);
-        return err != ESP_OK ? err : ESP_FAIL;
+        if (err != ESP_OK || status != 404) {
+            rain_client_close(); /* may be half-dead: start clean next time */
+        }
+        return err != ESP_OK ? err : (status == 404 ? ESP_ERR_NOT_FOUND : ESP_FAIL);
     }
 
     /* Decode into a fresh buffer so a bad image leaves the last good one. */
@@ -296,7 +322,7 @@ esp_err_t rain_client_fetch(const rain_area_t *area, rain_image_t *img)
     heap_caps_free(img->level);
     img->level = level;
     img->area = area;
-    img->time = resp.time;
+    img->time = resp.time ? resp.time : when;
     ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.len, (long long)resp.time);
     return ESP_OK;
 }
