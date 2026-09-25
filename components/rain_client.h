@@ -22,11 +22,14 @@ typedef struct {
     float ox, oy;      /* pixel = (x, -y) / m_per_px - (ox, oy), x/y from the cone apex */
 } rain_area_t;
 
+/* The part of an area's image wanted, as a grid of cells: cell (cx, cy)
+ * covers image pixels x0 + cx * step .. + step - 1 (and the same down), and
+ * holds the heaviest rain level among them. */
 typedef struct {
-    const rain_area_t *area;
-    uint8_t *level; /* area->w x area->h, one of 0..RAIN_LEVELS per pixel */
-    time_t time;    /* when the radar image was taken, 0 if unknown */
-} rain_image_t;
+    int x0, y0;
+    uint16_t w, h; /* cells */
+    uint8_t step;  /* image pixels per cell, each way */
+} rain_crop_t;
 
 /**
  * The radar area that best covers `range_km` around (lat, lon): the finest
@@ -42,13 +45,14 @@ void rain_client_project(const rain_area_t *area, double lat, double lon, float 
 
 /**
  * Fetch the radar image of `area` taken at `when` (a whole 5 minutes, UTC;
- * 0 for the latest) from api.met.no and turn it into rain levels in `img`
- * (img->level is allocated in PSRAM and reused across calls; the previous
- * content is kept on failure). ESP_ERR_NOT_FOUND if there is no image for
- * that time. The HTTPS connection is kept open between calls; call
- * rain_client_close() when done.
+ * 0 for the latest) from api.met.no and turn the `crop` of it into rain
+ * levels (0..RAIN_LEVELS) in `level`, crop->w x crop->h cells; its content
+ * is undefined on failure. `*taken` is when the image was taken (0 if
+ * unknown). ESP_ERR_NOT_FOUND if there is no image for that time. The HTTPS
+ * connection is kept open between calls; call rain_client_close() when done.
  */
-esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, rain_image_t *img);
+esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
+                            uint8_t *level, time_t *taken);
 
 /** Drop the kept-alive connection (frees its TLS buffers). Safe to call any time. */
 void rain_client_close(void);

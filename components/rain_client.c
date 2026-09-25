@@ -122,7 +122,7 @@ static uint8_t rain_level(int r, int g, int b)
 
 typedef struct {
     uint8_t *buf;
-    size_t len;
+    size_t len, cap;
     time_t time;
 } rain_resp_t;
 
@@ -165,12 +165,23 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
         ESP_LOGE(TAG, "Response too large, aborting");
         return ESP_FAIL;
     }
-    uint8_t *nb = heap_caps_realloc(resp->buf, resp->len + evt->data_len, MALLOC_CAP_SPIRAM);
-    if (nb == NULL) {
-        ESP_LOGE(TAG, "Out of memory growing response buffer");
-        return ESP_FAIL;
+    if (resp->len + evt->data_len > resp->cap) {
+        /* Doubling, not a chunk at a time: fewer copies, and PSRAM left in
+         * big pieces rather than chopped up. */
+        size_t cap = resp->cap ? resp->cap * 2 : 64 * 1024;
+        while (cap < resp->len + evt->data_len) {
+            cap *= 2;
+        }
+        uint8_t *nb = heap_caps_realloc(resp->buf, cap, MALLOC_CAP_SPIRAM);
+        if (nb == NULL) {
+            ESP_LOGE(TAG, "Out of memory growing response buffer to %u (PSRAM free %u, largest %u)",
+                     (unsigned)cap, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            return ESP_FAIL;
+        }
+        resp->buf = nb;
+        resp->cap = cap;
     }
-    resp->buf = nb;
     memcpy(resp->buf + resp->len, evt->data, evt->data_len);
     resp->len += evt->data_len;
     return ESP_OK;
@@ -203,9 +214,10 @@ static void png_fail(png_structp png, png_const_charp msg)
     png_longjmp(png, 1);
 }
 
-/* Decode the PNG row by row straight into rain levels, so the full RGB
- * image never has to be held. */
-static esp_err_t decode_levels(const rain_area_t *a, const uint8_t *data, size_t len, uint8_t *level)
+/* Decode the PNG row by row straight into the crop's rain levels, so
+ * neither the RGB image nor the whole area's levels ever have to be held. */
+static esp_err_t decode_levels(const rain_area_t *a, const rain_crop_t *c, const uint8_t *data, size_t len,
+                               uint8_t *level)
 {
     png_src_t src = { .p = data, .len = len };
     png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, png_fail, png_warn);
@@ -240,12 +252,24 @@ static esp_err_t decode_levels(const rain_area_t *a, const uint8_t *data, size_t
         png_destroy_read_struct(&png, &info, NULL);
         return ESP_ERR_NO_MEM;
     }
-    for (uint32_t y = 0; y < h; y++) {
-        png_read_row(png, row, NULL);
-        uint8_t *out = level + (size_t)y * w;
-        for (uint32_t x = 0; x < w; x++) {
+    memset(level, 0, (size_t)c->w * c->h);
+    const int map_w = (int)w - RAIN_LEGEND_W;
+    const int xa = c->x0 > 0 ? c->x0 : 0;
+    const int xb = c->x0 + c->w * c->step < map_w ? c->x0 + c->w * c->step : map_w;
+    for (int y = 0; y < (int)h; y++) {
+        png_read_row(png, row, NULL); /* every row: libpng can't skip */
+        const int cy = (y - c->y0) / c->step;
+        if (y < c->y0 || cy >= c->h) {
+            continue;
+        }
+        uint8_t *out = level + (size_t)cy * c->w;
+        for (int x = xa; x < xb; x++) {
             const uint8_t *px = row + 3 * x;
-            out[x] = (x < w - RAIN_LEGEND_W) ? rain_level(px[0], px[1], px[2]) : 0;
+            const uint8_t l = rain_level(px[0], px[1], px[2]);
+            uint8_t *o = &out[(x - c->x0) / c->step];
+            if (l > *o) {
+                *o = l;
+            }
         }
     }
     png_destroy_read_struct(&png, &info, NULL);
@@ -264,7 +288,8 @@ void rain_client_close(void)
     }
 }
 
-esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, rain_image_t *img)
+esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
+                            uint8_t *level, time_t *taken)
 {
     char url[192];
     int n = snprintf(url, sizeof(url),
@@ -307,22 +332,12 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, rain_image_t *
         return err != ESP_OK ? err : (status == 404 ? ESP_ERR_NOT_FOUND : ESP_FAIL);
     }
 
-    /* Decode into a fresh buffer so a bad image leaves the last good one. */
-    uint8_t *level = heap_caps_malloc((size_t)area->w * area->h, MALLOC_CAP_SPIRAM);
-    if (level == NULL) {
-        heap_caps_free(resp.buf);
-        return ESP_ERR_NO_MEM;
-    }
-    err = decode_levels(area, resp.buf, resp.len, level);
+    err = decode_levels(area, crop, resp.buf, resp.len, level);
     heap_caps_free(resp.buf);
     if (err != ESP_OK) {
-        heap_caps_free(level);
         return err;
     }
-    heap_caps_free(img->level);
-    img->level = level;
-    img->area = area;
-    img->time = resp.time ? resp.time : when;
-    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.len, (long long)resp.time);
+    *taken = resp.time ? resp.time : when;
+    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.len, (long long)*taken);
     return ESP_OK;
 }
