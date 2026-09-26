@@ -56,6 +56,16 @@
 #define APP_CONFIG_DIM_START_DEFAULT (22 * 60)
 #define APP_CONFIG_DIM_END_DEFAULT   (7 * 60)
 
+/* Fonts (app_config_t.title_* / text_*): pixel sizes of the two text
+ * classes. The screens are laid out at fixed positions, so the ranges stop
+ * where text would start to run into its neighbours. */
+#define APP_CONFIG_TITLE_PX_DEFAULT 25
+#define APP_CONFIG_TITLE_PX_MIN     18
+#define APP_CONFIG_TITLE_PX_MAX     36
+#define APP_CONFIG_TEXT_PX_DEFAULT  17
+#define APP_CONFIG_TEXT_PX_MIN      12
+#define APP_CONFIG_TEXT_PX_MAX      21
+
 typedef struct {
     char name[APP_CONFIG_NAME_MAX];
     char lat[APP_CONFIG_COORD_MAX]; /* decimal degrees, as text (atof-ready) */
@@ -86,6 +96,14 @@ typedef struct {
     uint8_t dim_enabled;
     uint16_t dim_start;
     uint16_t dim_end;
+    /* Two font classes: title_* for the heading of each screen (the location
+     * name, or the overview's title), text_* for everything else. *_px is the
+     * size in pixels, within the APP_CONFIG_*_PX_MIN..MAX range; *_bold is 0
+     * or 1. */
+    uint8_t title_px;
+    uint8_t title_bold;
+    uint8_t text_px;
+    uint8_t text_bold;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
     /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */

@@ -172,6 +172,21 @@ static char *build_page(const app_config_t *cfg)
                   cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60);
 
     p += snprintf(p, end - p,
+                  "<fieldset><legend>Fonts</legend>"
+                  "<div class=row><div><label>Location name (px)</label>"
+                  "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u></div>"
+                  "<div><label>Other text (px)</label>"
+                  "<input name=textpx type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
+                  "<div class=chk><label><input type=checkbox name=titlebold value=1%s>Bold</label>"
+                  "<label><input type=checkbox name=textbold value=1%s>Bold</label></div>"
+                  "<small>The location name heads each screen; other text is "
+                  "everything else. Defaults: %d and %d px, not bold.</small></fieldset>",
+                  APP_CONFIG_TITLE_PX_MIN, APP_CONFIG_TITLE_PX_MAX, cfg->title_px,
+                  APP_CONFIG_TEXT_PX_MIN, APP_CONFIG_TEXT_PX_MAX, cfg->text_px,
+                  cfg->title_bold ? " checked" : "", cfg->text_bold ? " checked" : "",
+                  APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
+
+    p += snprintf(p, end - p,
                   "<label>Contact email for yr</label>"
                   "<input name=yremail type=email autocomplete=email value=\"");
     p = html_escape_append(p, end, cfg->yr_email);
@@ -381,6 +396,22 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         if (form_field(body, "dimend", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
             cfg.dim_end = (uint16_t)m;
         }
+    }
+    /* Fonts: again the checkboxes are only sent when ticked, so go by the
+     * size fields; an out-of-range size keeps the current one. */
+    char px[8];
+    if (form_field(body, "titlepx", px, sizeof(px))) {
+        char val[4];
+        long v = strtol(px, NULL, 10);
+        if (v >= APP_CONFIG_TITLE_PX_MIN && v <= APP_CONFIG_TITLE_PX_MAX) {
+            cfg.title_px = (uint8_t)v;
+        }
+        if (form_field(body, "textpx", px, sizeof(px)) &&
+            (v = strtol(px, NULL, 10)) >= APP_CONFIG_TEXT_PX_MIN && v <= APP_CONFIG_TEXT_PX_MAX) {
+            cfg.text_px = (uint8_t)v;
+        }
+        cfg.title_bold = form_field(body, "titlebold", val, sizeof(val)) ? 1 : 0;
+        cfg.text_bold = form_field(body, "textbold", val, sizeof(val)) ? 1 : 0;
     }
     form_field(body, "aisid", cfg.ais_client_id, sizeof(cfg.ais_client_id));
     form_field(body, "aissec", cfg.ais_client_secret, sizeof(cfg.ais_client_secret));

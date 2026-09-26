@@ -52,6 +52,14 @@ static void sanitize_view_settings(app_config_t *c)
         c->dim_start = APP_CONFIG_DIM_START_DEFAULT;
         c->dim_end = APP_CONFIG_DIM_END_DEFAULT;
     }
+    if (c->title_px < APP_CONFIG_TITLE_PX_MIN || c->title_px > APP_CONFIG_TITLE_PX_MAX) {
+        c->title_px = APP_CONFIG_TITLE_PX_DEFAULT;
+    }
+    if (c->text_px < APP_CONFIG_TEXT_PX_MIN || c->text_px > APP_CONFIG_TEXT_PX_MAX) {
+        c->text_px = APP_CONFIG_TEXT_PX_DEFAULT;
+    }
+    c->title_bold = c->title_bold ? 1 : 0;
+    c->text_bold = c->text_bold ? 1 : 0;
 }
 
 static void seed_defaults(app_config_t *out)
@@ -65,6 +73,8 @@ static void seed_defaults(app_config_t *out)
     out->dim_enabled = 1;
     out->dim_start = APP_CONFIG_DIM_START_DEFAULT;
     out->dim_end = APP_CONFIG_DIM_END_DEFAULT;
+    out->title_px = APP_CONFIG_TITLE_PX_DEFAULT;
+    out->text_px = APP_CONFIG_TEXT_PX_DEFAULT;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
@@ -156,14 +166,19 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "dimon", &out->dim_enabled); /* these three keep the defaults if never saved */
     nvs_get_u16(h, "dimstart", &out->dim_start);
     nvs_get_u16(h, "dimend", &out->dim_end);
+    nvs_get_u8(h, "titlepx", &out->title_px); /* the font settings too */
+    nvs_get_u8(h, "titlebold", &out->title_bold);
+    nvs_get_u8(h, "textpx", &out->text_px);
+    nvs_get_u8(h, "textbold", &out->text_bold);
     nvs_close(h);
     sanitize_view_settings(out);
 
     ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme, "
-             "BarentsWatch credentials %s, yr contact '%s'",
+             "fonts %u px%s / %u px%s, BarentsWatch credentials %s, yr contact '%s'",
              out->wifi_ssid, out->location_count, out->locations[0].name,
              out->locations[0].lat, out->locations[0].lon,
              out->theme == APP_THEME_DARK ? "dark" : "light",
+             out->title_px, out->title_bold ? " bold" : "", out->text_px, out->text_bold ? " bold" : "",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
              out->yr_email);
     for (int i = 0; i < out->location_count; i++) {
@@ -210,6 +225,10 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimstart", cfg->dim_start);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimend", cfg->dim_end);
+    if (err == ESP_OK) err = nvs_set_u8(h, "titlepx", cfg->title_px);
+    if (err == ESP_OK) err = nvs_set_u8(h, "titlebold", cfg->title_bold ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "textpx", cfg->text_px);
+    if (err == ESP_OK) err = nvs_set_u8(h, "textbold", cfg->text_bold ? 1 : 0);
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
     nvs_erase_key(h, "radarkm");

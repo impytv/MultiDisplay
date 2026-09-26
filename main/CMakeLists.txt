@@ -43,9 +43,10 @@ if(lvgl_lib)
     target_compile_options(${lvgl_lib} PRIVATE -Wno-format)
 endif()
 
-# Package the FreeType font (see fonts/OFL.txt for its license) and the
-# MET Norway weather icons (fonts/*.png, from github.com/metno/weathericons,
-# resized to 64x64) into the "fonts" SPIFFS partition. Mounted at runtime as
+# Package the FreeType fonts (Montserrat Medium and Bold; see fonts/OFL.txt
+# for their license) and the MET Norway weather icons (fonts/*.png, from
+# github.com/metno/weathericons, resized to 64x64) into the "fonts" SPIFFS
+# partition (512 KB, about 20 KB of it free). Mounted at runtime as
 # an esp_lv_fs drive ("F:") rather than linked into the app image: LVGL v9's
 # FreeType binding only accepts a file path, and the icons are then loaded
 # the same way (F:<symbol_code>.png) via esp_lv_decoder.

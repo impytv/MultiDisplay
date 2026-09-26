@@ -399,6 +399,17 @@ static void set_weather_icon(lv_obj_t *img, const char *symbol_code)
     lv_obj_clear_flag(img, LV_OBJ_FLAG_HIDDEN);
 }
 
+static const lv_font_t *load_font(uint8_t px, bool bold)
+{
+    esp_lv_adapter_ft_font_handle_t handle = NULL;
+    const esp_lv_adapter_ft_font_config_t cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
+        bold ? "F:MontserratBold.ttf" : "F:MontserratMedium.ttf", px, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
+    ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&cfg, &handle));
+    const lv_font_t *font = esp_lv_adapter_ft_font_get(handle);
+    assert(font != NULL);
+    return font;
+}
+
 static void init_fonts(void)
 {
     /* Mount the "fonts" SPIFFS partition (built by spiffs_create_partition_assets
@@ -425,21 +436,11 @@ static void init_fonts(void)
     esp_lv_fs_handle_t fs_handle = NULL;
     ESP_ERROR_CHECK(esp_lv_adapter_fs_mount(&fs_cfg, &fs_handle));
 
-    const char *font_path = "F:MontserratMedium.ttf";
-
-    esp_lv_adapter_ft_font_handle_t body_handle = NULL;
-    const esp_lv_adapter_ft_font_config_t body_cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
-        font_path, 17, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
-    ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&body_cfg, &body_handle));
-    s_font_body = esp_lv_adapter_ft_font_get(body_handle);
-    assert(s_font_body != NULL);
-
-    esp_lv_adapter_ft_font_handle_t large_handle = NULL;
-    const esp_lv_adapter_ft_font_config_t large_cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
-        font_path, 25, ESP_LV_ADAPTER_FT_FONT_STYLE_NORMAL);
-    ESP_ERROR_CHECK(esp_lv_adapter_ft_font_init(&large_cfg, &large_handle));
-    s_font_large = esp_lv_adapter_ft_font_get(large_handle);
-    assert(s_font_large != NULL);
+    /* Sizes and weights from the setup page (s_cfg.title_* / text_*). Bold
+     * is a font file of its own: LVGL's FreeType binding renders bitmaps, and
+     * only its outline mode honours the BOLD style flag. */
+    s_font_body = load_font(s_cfg.text_px, s_cfg.text_bold);
+    s_font_large = load_font(s_cfg.title_px, s_cfg.title_bold);
 }
 
 /* Tap the right half of the screen: next stop (overview -> location 1 ->

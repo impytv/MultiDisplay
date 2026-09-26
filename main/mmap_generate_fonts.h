@@ -13,8 +13,8 @@
 
 #include "esp_mmap_assets.h"
 
-#define MMAP_FONTS_FILES           85
-#define MMAP_FONTS_CHECKSUM        0x2624
+#define MMAP_FONTS_FILES           86
+#define MMAP_FONTS_CHECKSUM        0x03FC
 
 enum MMAP_FONTS_LISTS {
     MMAP_FONTS_ARROW_PNG = 0,        /*!< arrow.png */
@@ -101,5 +101,6 @@ enum MMAP_FONTS_LISTS {
     MMAP_FONTS_SNOWSHOWERSANDTHUNDER_DAY_PNG = 81,        /*!< snowshowersandthunder_day.png */
     MMAP_FONTS_SNOWSHOWERSANDTHUNDER_NIGHT_PNG = 82,        /*!< snowshowersandthunder_night.png */
     MMAP_FONTS_SNOWSHOWERSANDTHUNDER_POLARTWILIGHT_PNG = 83,        /*!< snowshowersandthunder_polartwilight.png */
-    MMAP_FONTS_MONTSERRATMEDIUM_TTF = 84,        /*!< MontserratMedium.ttf */
+    MMAP_FONTS_MONTSERRATBOLD_TTF = 84,        /*!< MontserratBold.ttf */
+    MMAP_FONTS_MONTSERRATMEDIUM_TTF = 85,        /*!< MontserratMedium.ttf */
 };
