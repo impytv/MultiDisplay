@@ -201,6 +201,22 @@ static char *build_page(const app_config_t *cfg)
                   APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
 
     p += snprintf(p, end - p,
+                  "<fieldset><legend>Automatic rotation</legend>"
+                  "<div class=row><div><label>After idle (min)</label>"
+                  "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
+                  "<div><label>Per screen (s)</label>"
+                  "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
+                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Include the overview</label></div>"
+                  "<small>After this many minutes without a touch the display moves on "
+                  "to the next screen ticked under <i>Rotate</i> below (and the overview, "
+                  "if included), staying on each for the time given. A touch stops it "
+                  "until the display has been left alone that long again. 0 minutes "
+                  "turns it off.</small></fieldset>",
+                  APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
+                  APP_CONFIG_AUTO_DWELL_S_MIN, APP_CONFIG_AUTO_DWELL_S_MAX, cfg->auto_dwell_s,
+                  cfg->auto_overview ? " checked" : "");
+
+    p += snprintf(p, end - p,
                   "<label>Contact email for yr</label>"
                   "<input name=yremail type=email autocomplete=email value=\"");
     p = html_escape_append(p, end, cfg->yr_email);
@@ -261,6 +277,7 @@ static char *build_page(const app_config_t *cfg)
             p = html_escape_append(p, end, cfg->locations[i].lon);
         }
         int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
+        int auto_show = filled ? cfg->auto_show[i] : 0;
         int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         int min_len = filled ? cfg->ship_min_len_m[i] : 0;
@@ -274,6 +291,12 @@ static char *build_page(const app_config_t *cfg)
                       "<label><input type=checkbox name=sh%d value=1%s>Ships</label>"
                       "<label><input type=checkbox name=rn%d value=1%s>Rain</label>"
                       "<label><input type=checkbox name=dp%d value=1%s>Departures</label></div>"
+                      "<label>Rotate</label><div class=chk>"
+                      "<label><input type=checkbox name=aw%d value=1%s>Weather</label>"
+                      "<label><input type=checkbox name=aa%d value=1%s>Aircraft</label>"
+                      "<label><input type=checkbox name=as%d value=1%s>Ships</label>"
+                      "<label><input type=checkbox name=ar%d value=1%s>Rain</label>"
+                      "<label><input type=checkbox name=ad%d value=1%s>Departures</label></div>"
                       "<div class=row><div><label>Aircraft range (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Rain range (km)</label>"
@@ -293,6 +316,11 @@ static char *build_page(const app_config_t *cfg)
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (show & APP_SHOW_RAIN) ? " checked" : "",
                       i, (show & APP_SHOW_DEPARTURES) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_WEATHER) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_RADAR) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_SHIPS) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_RAIN) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_DEPARTURES) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
                       i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km,
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
@@ -457,6 +485,18 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->title_bold = form_field(body, "titlebold", val, sizeof(val)) ? 1 : 0;
         cfg->text_bold = form_field(body, "textbold", val, sizeof(val)) ? 1 : 0;
     }
+    /* Rotation: again go by the number fields, which are always sent. */
+    char num[8];
+    if (form_field(body, "autoidle", num, sizeof(num))) {
+        char val[4];
+        long v = strtol(num, NULL, 10);
+        cfg->auto_idle_min = (v > 0 && v <= APP_CONFIG_AUTO_IDLE_MIN_MAX) ? (uint16_t)v : 0;
+        if (form_field(body, "autodwell", num, sizeof(num)) &&
+            (v = strtol(num, NULL, 10)) >= APP_CONFIG_AUTO_DWELL_S_MIN && v <= APP_CONFIG_AUTO_DWELL_S_MAX) {
+            cfg->auto_dwell_s = (uint16_t)v;
+        }
+        cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
+    }
     form_field(body, "aisid", cfg->ais_client_id, sizeof(cfg->ais_client_id));
     form_field(body, "aissec", cfg->ais_client_secret, sizeof(cfg->ais_client_secret));
     if (form_field(body, "yremail", cfg->yr_email, sizeof(cfg->yr_email)) &&
@@ -477,6 +517,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
      * stored list has no gaps. */
     app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint8_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
+    uint8_t auto_show[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_min_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
@@ -544,6 +585,14 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         form_field(body, key, dep_raw, 3 * APP_CONFIG_DEPARTURES_MAX);
         snprintf(deps[n], APP_CONFIG_DEPARTURES_MAX, "%s", dep_raw);
         show[n] = sh ? sh : APP_SHOW_WEATHER;
+        static const struct { const char *key; uint8_t bit; } rot[] = {
+            { "aw%d", APP_SHOW_WEATHER }, { "aa%d", APP_SHOW_RADAR }, { "as%d", APP_SHOW_SHIPS },
+            { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES },
+        };
+        for (int r = 0; r < (int)(sizeof(rot) / sizeof(rot[0])); r++) {
+            snprintf(key, sizeof(key), rot[r].key, i);
+            auto_show[n] |= form_field(body, key, val, sizeof(val)) ? rot[r].bit : 0;
+        }
         snprintf(key, sizeof(key), "radarkm%d", i);
         long km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         radar_km[n] = (km >= APP_CONFIG_RADAR_KM_MIN && km <= APP_CONFIG_RADAR_KM_MAX)
@@ -584,6 +633,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     cfg->location_count = (uint8_t)n;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cfg->show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
+        cfg->auto_show[i] = auto_show[i];
         cfg->radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         cfg->ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         cfg->ship_min_len_m[i] = ship_min_len[i];

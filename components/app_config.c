@@ -64,6 +64,16 @@ static void sanitize_view_settings(app_config_t *c)
     if (c->text_px < APP_CONFIG_TEXT_PX_MIN || c->text_px > APP_CONFIG_TEXT_PX_MAX) {
         c->text_px = APP_CONFIG_TEXT_PX_DEFAULT;
     }
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        c->auto_show[i] &= APP_SHOW_ALL;
+    }
+    if (c->auto_idle_min > APP_CONFIG_AUTO_IDLE_MIN_MAX) {
+        c->auto_idle_min = 0;
+    }
+    if (c->auto_dwell_s < APP_CONFIG_AUTO_DWELL_S_MIN || c->auto_dwell_s > APP_CONFIG_AUTO_DWELL_S_MAX) {
+        c->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
+    }
+    c->auto_overview = c->auto_overview ? 1 : 0;
     c->title_bold = c->title_bold ? 1 : 0;
     c->text_bold = c->text_bold ? 1 : 0;
 }
@@ -81,6 +91,7 @@ static void seed_defaults(app_config_t *out)
     out->dim_end = APP_CONFIG_DIM_END_DEFAULT;
     out->title_px = APP_CONFIG_TITLE_PX_DEFAULT;
     out->text_px = APP_CONFIG_TEXT_PX_DEFAULT;
+    out->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
@@ -171,6 +182,13 @@ esp_err_t app_config_load(app_config_t *out)
         len != sizeof(out->ship_near_min_len_m)) {
         memset(out->ship_near_min_len_m, 0, sizeof(out->ship_near_min_len_m));
     }
+    len = sizeof(out->auto_show); /* nothing in the rotation if never saved */
+    if (nvs_get_blob(h, "autoshow", out->auto_show, &len) != ESP_OK || len != sizeof(out->auto_show)) {
+        memset(out->auto_show, 0, sizeof(out->auto_show));
+    }
+    nvs_get_u16(h, "autoidle", &out->auto_idle_min); /* off if never saved */
+    nvs_get_u16(h, "autodwell", &out->auto_dwell_s);
+    nvs_get_u8(h, "autoov", &out->auto_overview);
     len = sizeof(out->departures); /* no departure boards if never saved */
     if (nvs_get_blob(h, "deps", out->departures, &len) != ESP_OK || len != sizeof(out->departures)) {
         memset(out->departures, 0, sizeof(out->departures));
@@ -203,9 +221,11 @@ esp_err_t app_config_load(app_config_t *out)
              out->title_px, out->title_bold ? " bold" : "", out->text_px, out->text_bold ? " bold" : "",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
              out->yr_email);
+    ESP_LOGI(TAG, "auto rotation: after %u min idle, %u s per screen, overview %s",
+             out->auto_idle_min, out->auto_dwell_s, out->auto_overview ? "included" : "not included");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
-                 "(%u m within %u km), rain range %u km, departures '%s'",
+                 "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%02x",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
                  (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
@@ -214,7 +234,7 @@ esp_err_t app_config_load(app_config_t *out)
                  (out->show[i] & APP_SHOW_DEPARTURES) ? " departures" : "",
                  out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i],
                  out->ship_near_min_len_m[i], out->ship_near_km[i], out->rain_km[i],
-                 out->departures[i]);
+                 out->departures[i], out->auto_show[i]);
     }
     return ESP_OK;
 }
@@ -246,6 +266,10 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_blob(h, "shipnearlens", cfg->ship_near_min_len_m, sizeof(cfg->ship_near_min_len_m));
     if (err == ESP_OK) err = nvs_set_blob(h, "rainkms", cfg->rain_km, sizeof(cfg->rain_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "deps", cfg->departures, sizeof(cfg->departures));
+    if (err == ESP_OK) err = nvs_set_blob(h, "autoshow", cfg->auto_show, sizeof(cfg->auto_show));
+    if (err == ESP_OK) err = nvs_set_u16(h, "autoidle", cfg->auto_idle_min);
+    if (err == ESP_OK) err = nvs_set_u16(h, "autodwell", cfg->auto_dwell_s);
+    if (err == ESP_OK) err = nvs_set_u8(h, "autoov", cfg->auto_overview ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);

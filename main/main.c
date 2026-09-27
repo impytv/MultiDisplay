@@ -213,9 +213,17 @@ static int8_t s_wx_pos[APP_CONFIG_MAX_LOCATIONS];  /* location -> weather index,
 static bool s_any_radar; /* some location shows aircraft, ships or rain (they share the radar screen) */
 static bool s_any_departures; /* some location shows a departure board */
 
-/* Index into s_stops of the screen on show. Advanced by a tap; the weather
- * task watches it and re-renders. */
+/* Index into s_stops of the screen on show. Advanced by a tap or the
+ * automatic rotation; the weather task watches it and re-renders.
+ * s_view_auto says the rotation made the last switch. */
 static volatile int s_view_index;
+static volatile bool s_view_auto;
+
+/* Automatic rotation (see auto_rotate_timer_cb): when the screen was last
+ * touched, and whether the rotation has moved it since. */
+static uint32_t s_last_touch_ms;
+static bool s_auto_running;
+static uint32_t s_auto_switch_ms;
 static TaskHandle_t s_yr_task;
 
 static lv_obj_t *s_status_label;
@@ -480,6 +488,10 @@ static void init_fonts(void)
  * adapter lock), so it only pokes volatiles + a notify. */
 static void screen_touch_cb(lv_event_t *e)
 {
+    /* Any touch holds off the automatic rotation for another idle period. */
+    s_last_touch_ms = lv_tick_get();
+    s_auto_running = false;
+
     if (s_stop_count <= 1) {
         return; /* nothing to cycle through */
     }
@@ -506,10 +518,56 @@ static void screen_touch_cb(lv_event_t *e)
     } else if (next < 0) {
         next = s_stop_count - 1;
     }
+    s_view_auto = false;
     s_view_index = next;
     ESP_LOGI(TAG, "Tap: view %d/%d", next, s_stop_count);
     if (s_yr_task != NULL) {
         xTaskNotifyGive(s_yr_task);
+    }
+}
+
+/* Whether stop `i` is one the automatic rotation visits. */
+static bool stop_in_rotation(int i)
+{
+    static const uint8_t bit[] = {
+        [STOP_WEATHER] = APP_SHOW_WEATHER, [STOP_RADAR] = APP_SHOW_RADAR, [STOP_SHIPS] = APP_SHOW_SHIPS,
+        [STOP_RAIN] = APP_SHOW_RAIN, [STOP_DEPARTURES] = APP_SHOW_DEPARTURES,
+    };
+    const view_stop_t *st = &s_stops[i];
+    if (st->kind == STOP_OVERVIEW) {
+        return s_cfg->auto_overview;
+    }
+    return (s_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
+}
+
+/* Once a second: after auto_idle_min minutes without a touch, move on to the
+ * next screen in the rotation, then again every auto_dwell_s seconds until
+ * the next touch. Runs in the LVGL context, like screen_touch_cb. */
+static void auto_rotate_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    const uint32_t now = lv_tick_get();
+    if (now - s_last_touch_ms < (uint32_t)s_cfg->auto_idle_min * 60000u) {
+        return;
+    }
+    if (s_auto_running && now - s_auto_switch_ms < (uint32_t)s_cfg->auto_dwell_s * 1000u) {
+        return;
+    }
+    s_auto_running = true;
+    s_auto_switch_ms = now;
+    for (int k = 1; k <= s_stop_count; k++) {
+        int next = (s_view_index + k) % s_stop_count;
+        if (stop_in_rotation(next)) {
+            if (next != s_view_index) {
+                s_view_auto = true;
+                s_view_index = next;
+                ESP_LOGI(TAG, "Auto: view %d/%d", next, s_stop_count);
+                if (s_yr_task != NULL) {
+                    xTaskNotifyGive(s_yr_task);
+                }
+            }
+            return;
+        }
     }
 }
 
@@ -2393,6 +2451,12 @@ static void build_ui(lv_obj_t *screen)
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
+    /* Automatic rotation, counting the idle time from boot. */
+    s_last_touch_ms = lv_tick_get();
+    if (s_cfg->auto_idle_min > 0) {
+        lv_timer_create(auto_rotate_timer_cb, 1000, NULL);
+    }
+
     /* Start on whichever screen s_view_index was restored to (the first stop
      * unless another was showing before the previous reboot). */
     show_view((stop_kind_t)initial_stop->kind);
@@ -4009,11 +4073,18 @@ static void yr_weather_task(void *arg)
             departures = (stop->kind == STOP_DEPARTURES);
             dep_shown = false;
             sel = overview ? 0 : stop->loc;
-            force_sel_refetch = (stop->kind == STOP_WEATHER);
+            /* The rotation passes by every few seconds: it shows the cached
+             * forecast (kept fresh by the 10-minute refresh) rather than
+             * refetching it each time round. */
+            force_sel_refetch = (stop->kind == STOP_WEATHER) && !s_view_auto;
 
             /* So a reboot of any kind - nightly, power cycle, crash - comes
-             * back showing this same screen instead of the overview. */
-            app_config_save_last_view((uint8_t)want_view);
+             * back showing this same screen instead of the overview. Not
+             * for the rotation's switches, which would rewrite flash every
+             * few seconds. */
+            if (!s_view_auto) {
+                app_config_save_last_view((uint8_t)want_view);
+            }
 
             /* The radar keeps its HTTPS connection open between polls; drop it
              * (and its TLS buffers) as soon as the radar isn't on screen. */

@@ -155,6 +155,18 @@ Nothing is shown for a location with no active alert. The API itself filters
 to alerts covering the location's exact coordinates and currently active, so
 the device does no date or geometry filtering of its own.
 
+### Automatic rotation
+
+The setup page's **Automatic rotation** section makes the display page
+through screens on its own when nobody is using it. After **After idle
+(min)** minutes without a touch it moves to the next screen ticked in a
+location's **Rotate** row (plus the overview, if **Include the overview**
+is ticked), in the normal screen order, and moves on every **Per screen
+(s)** seconds. A touch stops it until the display has been left alone that
+long again. 0 minutes (the default) turns it off, and nothing is ticked by
+default. Screens the rotation shows aren't remembered across a restart
+(only tapped-to ones are), to spare the flash.
+
 ### Public transport departures
 
 Tick **Departures** for a location to give it a departure board: realtime

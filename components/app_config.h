@@ -55,6 +55,14 @@
 /* BarentsWatch API client credentials (https://www.barentswatch.no/minside/). */
 #define APP_CONFIG_AIS_CRED_MAX 128
 
+/* Automatic rotation: after auto_idle_min minutes without a touch (0 = never)
+ * the display moves on to the next screen picked for it every auto_dwell_s
+ * seconds, until the next touch. */
+#define APP_CONFIG_AUTO_IDLE_MIN_MAX   240
+#define APP_CONFIG_AUTO_DWELL_S_DEFAULT 30
+#define APP_CONFIG_AUTO_DWELL_S_MIN    5
+#define APP_CONFIG_AUTO_DWELL_S_MAX    3600
+
 /* Contact email put in the User-Agent sent to api.met.no (yr). */
 #define APP_CONFIG_EMAIL_MAX 64
 
@@ -103,6 +111,9 @@ typedef struct {
     uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS];   /* in [0, APP_CONFIG_SHIP_NEAR_KM_MAX] */
     uint16_t ship_near_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX] */
+    /* Which of location i's screens the automatic rotation visits: APP_SHOW_*
+     * bits, like show[i] (only screens that are shown count). */
+    uint8_t auto_show[APP_CONFIG_MAX_LOCATIONS];
     /* The stops and lines of location i's departure board ("" = none). */
     char departures[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX];
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
@@ -120,6 +131,12 @@ typedef struct {
     uint8_t title_bold;
     uint8_t text_px;
     uint8_t text_bold;
+    /* Automatic rotation (see APP_CONFIG_AUTO_*): minutes without a touch
+     * before it starts (0 = off), seconds per screen, and whether the
+     * overview is one of its screens. */
+    uint16_t auto_idle_min;
+    uint16_t auto_dwell_s;
+    uint8_t auto_overview;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
     /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */
