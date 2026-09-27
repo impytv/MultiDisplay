@@ -21,7 +21,13 @@
 #define APP_SHOW_RADAR   0x02
 #define APP_SHOW_SHIPS   0x04
 #define APP_SHOW_RAIN    0x08
-#define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN)
+#define APP_SHOW_DEPARTURES 0x10
+#define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN | \
+                          APP_SHOW_DEPARTURES)
+
+/* Public transport departures: which stops and lines a location shows, as
+ * the text entur_parse_selection() reads (see entur_client.h). */
+#define APP_CONFIG_DEPARTURES_MAX 200
 
 /* Aircraft radar: how far out (kilometres) it looks around a location. */
 #define APP_CONFIG_RADAR_KM_DEFAULT 40
@@ -84,8 +90,8 @@ typedef struct {
     uint8_t location_count; /* always in [1, APP_CONFIG_MAX_LOCATIONS] */
     /* Per location, kept out of app_location_t so the stored "locs" blob
      * layout doesn't change. show[i] is any non-empty mix of APP_SHOW_WEATHER,
-     * APP_SHOW_RADAR, APP_SHOW_SHIPS and APP_SHOW_RAIN: which screens
-     * location i gets, in that order. radar_km[i] / ship_km[i] / rain_km[i]
+     * APP_SHOW_RADAR, APP_SHOW_SHIPS, APP_SHOW_RAIN and APP_SHOW_DEPARTURES:
+     * which screens location i gets, in that order. radar_km[i] / ship_km[i] / rain_km[i]
      * are the ranges of its aircraft radar, ship traffic and rain radar
      * screens; ship_min_len_m[i] hides its shorter ships (0 shows every
      * ship), except within ship_near_km[i] (0 = no inner circle), where
@@ -97,6 +103,8 @@ typedef struct {
     uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS];   /* in [0, APP_CONFIG_SHIP_NEAR_KM_MAX] */
     uint16_t ship_near_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX] */
+    /* The stops and lines of location i's departure board ("" = none). */
+    char departures[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX];
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
     /* Dim the screen from dim_start to dim_end local time (minutes after
      * midnight, each < 24 * 60; the window may wrap past midnight) when

@@ -9,12 +9,16 @@ idf_component_register(
         "../components/ais_client.c"
         "../components/met_alerts_client.c"
         "../components/rain_client.c"
+        "../components/entur_client.c"
     INCLUDE_DIRS
         "."
         "../components"
     # Airport + runway table for the radar (see scripts/build_airports.py).
     EMBED_FILES
         "../components/airports.bin"
+    # The setup page's departure picker, served as /dep.js (wifi_provision.c).
+    EMBED_TXTFILES
+        "../components/setup_departures.js"
     PRIV_REQUIRES
         esp_wifi
         esp_netif

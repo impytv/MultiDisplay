@@ -21,6 +21,7 @@
 #include "adsb_client.h"
 #include "ais_client.h"
 #include "app_config.h"
+#include "entur_client.h"
 #include "met_alerts_client.h"
 #include "rain_client.h"
 #include "wifi_provision.h"
@@ -60,7 +61,7 @@ static const char *TAG = "lvgl9_demo";
 
 /* Night dimming: the backlight itself can't be dimmed (see s_tap_layer), so
  * a translucent black layer over the whole screen stands in for it during
- * the local hours set on the setup page (s_cfg.dim_*). LV_OPA_70 cuts the
+ * the local hours set on the setup page (s_cfg->dim_*). LV_OPA_70 cuts the
  * effective brightness a lot while keeping high-contrast text/lines legible
  * in a dark room. */
 #define NIGHT_DIM_OPA         LV_OPA_70
@@ -169,25 +170,39 @@ static const char *TAG = "lvgl9_demo";
 #define RAIN_HOLD_TICKS     4
 #define RAIN_BUDGET         (1024 * 1024) /* bytes for all the frames at most */
 
+/* Departure board (entur_client): polled like RealtimeDisplay's board, and
+ * repainted between polls so the "N min" countdowns stay current. */
+#define DEP_POLL_MS         30000
+#define DEP_RETRY_MS        15000
+#define DEP_REDRAW_S        15
+#define DEP_CLOCK_PX        48
+#define DEP_BODY_Y          64
+#define DEP_X               12
+#define DEP_BADGE_W         64
+#define DEP_TIME_W          112
+
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
 
 /* Runtime settings (WiFi + forecast locations), from NVS via the setup portal
- * or the compiled-in defaults. Loaded once in app_main. */
-static app_config_t s_cfg;
+ * or the compiled-in defaults. Loaded once in app_main, into PSRAM: with the
+ * departure selections it's a couple of KB of otherwise internal DRAM. */
+static app_config_t *s_cfg;
 
 /* The screens a tap cycles through, in order (see build_stops): the overview
  * table (always present, even with zero or one weather location - it's the
  * only place the device's IP address is shown, needed to reach the setup
  * portal for further configuration), then for each location whichever of its
- * weather screen, aircraft radar, ship traffic and rain radar are enabled, in
- * that order. */
-typedef enum { STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4 } stop_kind_t;
+ * weather screen, aircraft radar, ship traffic, rain radar and departure board
+ * are enabled, in that order. */
+typedef enum {
+    STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4, STOP_DEPARTURES = 5
+} stop_kind_t;
 typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
-static view_stop_t s_stops[1 + 4 * APP_CONFIG_MAX_LOCATIONS];
+static view_stop_t s_stops[1 + 5 * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
 
 /* Locations that show weather, in order: the rows of the overview and the
@@ -196,6 +211,7 @@ static int s_weather_count;
 static uint8_t s_wx_loc[APP_CONFIG_MAX_LOCATIONS]; /* weather index -> location */
 static int8_t s_wx_pos[APP_CONFIG_MAX_LOCATIONS];  /* location -> weather index, -1 if none */
 static bool s_any_radar; /* some location shows aircraft, ships or rain (they share the radar screen) */
+static bool s_any_departures; /* some location shows a departure board */
 
 /* Index into s_stops of the screen on show. Advanced by a tap; the weather
  * task watches it and re-renders. */
@@ -240,6 +256,21 @@ static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
 static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
+
+/* Departure board (built only if some location has one): the location's
+ * name, a large 24-hour clock, and the rows painted by dep_draw_cb from
+ * s_dep_data. s_dep_sel is the parsed selection of the location on show. */
+static lv_obj_t *s_dep_root;
+static lv_obj_t *s_dep_title;
+/* The clock, one label per character ("HH:MM:SS") in cells of a fixed
+ * width, so the proportional digits don't shift it as the time ticks. */
+#define DEP_CLOCK_CHARS 8
+static lv_obj_t *s_dep_clock[DEP_CLOCK_CHARS];
+static lv_obj_t *s_dep_updated;
+static lv_obj_t *s_dep_canvas;
+static entur_departures_t *s_dep_data; /* PSRAM */
+static entur_selection_t *s_dep_sel;   /* PSRAM */
+static bool s_dep_valid;
 
 /* Aircraft radar, also used for ship traffic (built only if some location has
  * either enabled). s_ship_mode picks which the screen is showing. */
@@ -436,11 +467,11 @@ static void init_fonts(void)
     esp_lv_fs_handle_t fs_handle = NULL;
     ESP_ERROR_CHECK(esp_lv_adapter_fs_mount(&fs_cfg, &fs_handle));
 
-    /* Sizes and weights from the setup page (s_cfg.title_* / text_*). Bold
+    /* Sizes and weights from the setup page (s_cfg->title_* / text_*). Bold
      * is a font file of its own: LVGL's FreeType binding renders bitmaps, and
      * only its outline mode honours the BOLD style flag. */
-    s_font_body = load_font(s_cfg.text_px, s_cfg.text_bold);
-    s_font_large = load_font(s_cfg.title_px, s_cfg.title_bold);
+    s_font_body = load_font(s_cfg->text_px, s_cfg->text_bold);
+    s_font_large = load_font(s_cfg->title_px, s_cfg->title_bold);
 }
 
 /* Tap the right half of the screen: next stop (overview -> location 1 ->
@@ -487,14 +518,17 @@ static void build_stops(void)
 {
     s_weather_count = 0;
     s_any_radar = false;
-    for (int i = 0; i < s_cfg.location_count; i++) {
+    for (int i = 0; i < s_cfg->location_count; i++) {
         s_wx_pos[i] = -1;
-        if (s_cfg.show[i] & APP_SHOW_WEATHER) {
+        if (s_cfg->show[i] & APP_SHOW_WEATHER) {
             s_wx_pos[i] = (int8_t)s_weather_count;
             s_wx_loc[s_weather_count++] = (uint8_t)i;
         }
-        if (s_cfg.show[i] & (APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN)) {
+        if (s_cfg->show[i] & (APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN)) {
             s_any_radar = true;
+        }
+        if (s_cfg->show[i] & APP_SHOW_DEPARTURES) {
+            s_any_departures = true;
         }
     }
 
@@ -502,18 +536,21 @@ static void build_stops(void)
     /* Always a stop, regardless of location_count: it's the only screen that
      * shows the device's IP address, so it must always be reachable by tap. */
     s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
-    for (int i = 0; i < s_cfg.location_count; i++) {
-        if (s_cfg.show[i] & APP_SHOW_WEATHER) {
+    for (int i = 0; i < s_cfg->location_count; i++) {
+        if (s_cfg->show[i] & APP_SHOW_WEATHER) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
         }
-        if (s_cfg.show[i] & APP_SHOW_RADAR) {
+        if (s_cfg->show[i] & APP_SHOW_RADAR) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_RADAR, (uint8_t)i };
         }
-        if (s_cfg.show[i] & APP_SHOW_SHIPS) {
+        if (s_cfg->show[i] & APP_SHOW_SHIPS) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_SHIPS, (uint8_t)i };
         }
-        if (s_cfg.show[i] & APP_SHOW_RAIN) {
+        if (s_cfg->show[i] & APP_SHOW_RAIN) {
             s_stops[s_stop_count++] = (view_stop_t){ STOP_RAIN, (uint8_t)i };
+        }
+        if (s_cfg->show[i] & APP_SHOW_DEPARTURES) {
+            s_stops[s_stop_count++] = (view_stop_t){ STOP_DEPARTURES, (uint8_t)i };
         }
     }
 }
@@ -522,12 +559,14 @@ static void build_stops(void)
  * status label and tap layer sit above all of them and are left alone. */
 static void show_view(stop_kind_t kind)
 {
-    lv_obj_t *roots[3];
+    lv_obj_t *roots[4];
     roots[STOP_OVERVIEW] = s_overview_root;
     roots[STOP_WEATHER] = s_detail_root;
     roots[STOP_RADAR] = s_radar_root;
-    int shown = (kind == STOP_SHIPS || kind == STOP_RAIN) ? STOP_RADAR : (int)kind;
-    for (int k = 0; k < 3; k++) {
+    roots[3] = s_dep_root;
+    int shown = (kind == STOP_SHIPS || kind == STOP_RAIN) ? STOP_RADAR
+              : (kind == STOP_DEPARTURES) ? 3 : (int)kind;
+    for (int k = 0; k < 4; k++) {
         if (roots[k] == NULL) {
             continue;
         }
@@ -557,7 +596,7 @@ static void show_view(stop_kind_t kind)
  * and free-heap footnotes are the only content in that case. */
 static void build_overview(lv_obj_t *root)
 {
-    const lv_color_t footnote = (s_cfg.theme == APP_THEME_DARK)
+    const lv_color_t footnote = (s_cfg->theme == APP_THEME_DARK)
         ? lv_palette_main(LV_PALETTE_GREY) : lv_palette_darken(LV_PALETTE_GREY, 2);
     s_ov_title = lv_label_create(root);
     lv_obj_set_style_text_font(s_ov_title, s_font_large, 0);
@@ -591,7 +630,7 @@ static void build_overview(lv_obj_t *root)
         lv_obj_set_height(s_ov_name[i], lv_font_get_line_height(lv_obj_get_style_text_font(s_ov_name[i], 0)));
         lv_obj_set_style_text_align(s_ov_name[i], LV_TEXT_ALIGN_LEFT, 0);
         lv_label_set_long_mode(s_ov_name[i], LV_LABEL_LONG_MODE_DOTS);
-        lv_label_set_text(s_ov_name[i], s_cfg.locations[s_wx_loc[i]].name);
+        lv_label_set_text(s_ov_name[i], s_cfg->locations[s_wx_loc[i]].name);
 
         /* Worst active alert's colour, or hidden. Vertically centred on the
          * name text regardless of font metrics, via align-to. */
@@ -977,7 +1016,7 @@ static void radar_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int
     if (!radar_vis(layer, x, y, x + w - 1, y + lv_font_get_line_height(s_font_body) - 1)) {
         return;
     }
-    char buf[sizeof(((ais_ship_t *)0)->name) + 2];
+    char buf[sizeof(((entur_group_t *)0)->dest) + 2]; /* the longest: a departure's destination */
     size_t len = strlen(txt);
     if (len > sizeof(buf) - 3) {
         len = sizeof(buf) - 3;
@@ -1536,9 +1575,9 @@ static void radar_draw_cb(lv_event_t *e)
 static void ship_info_set(int total)
 {
     const int loc = s_radar_loc;
-    const unsigned min_len = (loc >= 0) ? s_cfg.ship_min_len_m[loc] : 0;
-    const unsigned near_km = (loc >= 0) ? s_cfg.ship_near_km[loc] : 0;
-    const unsigned near_len = (loc >= 0) ? s_cfg.ship_near_min_len_m[loc] : 0;
+    const unsigned min_len = (loc >= 0) ? s_cfg->ship_min_len_m[loc] : 0;
+    const unsigned near_km = (loc >= 0) ? s_cfg->ship_near_km[loc] : 0;
+    const unsigned near_len = (loc >= 0) ? s_cfg->ship_near_min_len_m[loc] : 0;
     if (near_km > 0 && near_km < (unsigned)s_radar_range_km && near_len != min_len) {
         char near[40];
         if (near_len > 0) {
@@ -1623,8 +1662,8 @@ static void build_radar(lv_obj_t *root)
     s_water_seeds = heap_caps_malloc(WATER_SEEDS_MAX * sizeof(*s_water_seeds), MALLOC_CAP_SPIRAM);
     s_water_img.data = s_water_px;
     bool any_rain = false;
-    for (int i = 0; i < s_cfg.location_count; i++) {
-        any_rain |= (s_cfg.show[i] & APP_SHOW_RAIN) != 0;
+    for (int i = 0; i < s_cfg->location_count; i++) {
+        any_rain |= (s_cfg->show[i] & APP_SHOW_RAIN) != 0;
     }
     for (int i = 0; i < RAIN_FRAMES; i++) {
         s_rain_ftime[i] = RAIN_EMPTY;
@@ -1645,7 +1684,7 @@ static void build_radar(lv_obj_t *root)
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
-    s_rp = (s_cfg.theme == APP_THEME_DARK) ? &RADAR_DARK : &RADAR_LIGHT;
+    s_rp = (s_cfg->theme == APP_THEME_DARK) ? &RADAR_DARK : &RADAR_LIGHT;
     lv_obj_set_style_bg_color(root, lv_color_hex(s_rp->bg), 0);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(root, lv_color_hex(s_rp->txt), 0);
@@ -1687,10 +1726,10 @@ static void radar_set_location(int loc)
 {
     s_ship_mode = false;
     s_rain_mode = false;
-    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg.locations[loc].name);
-    s_radar_range_km = s_cfg.radar_km[loc];
+    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg->locations[loc].name);
+    s_radar_range_km = s_cfg->radar_km[loc];
     coast_mark(loc, s_radar_range_km);
-    radar_load_airports(atof(s_cfg.locations[loc].lat), atof(s_cfg.locations[loc].lon));
+    radar_load_airports(atof(s_cfg->locations[loc].lat), atof(s_cfg->locations[loc].lon));
 }
 
 /* Point the radar screen at location `loc`'s ship traffic (adapter lock held). */
@@ -1698,8 +1737,8 @@ static void ships_set_location(int loc)
 {
     s_ship_mode = true;
     s_rain_mode = false;
-    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", s_cfg.locations[loc].name);
-    s_radar_range_km = s_cfg.ship_km[loc];
+    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", s_cfg->locations[loc].name);
+    s_radar_range_km = s_cfg->ship_km[loc];
     coast_mark(loc, s_radar_range_km);
 }
 
@@ -1716,9 +1755,279 @@ static void rain_set_location(int loc)
     for (int i = 0; i < RAIN_FRAMES; i++) {
         s_rain_ftime[i] = RAIN_EMPTY;
     }
-    lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", s_cfg.locations[loc].name);
-    s_radar_range_km = s_cfg.rain_km[loc];
+    lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", s_cfg->locations[loc].name);
+    s_radar_range_km = s_cfg->rain_km[loc];
     coast_mark(loc, s_radar_range_km);
+}
+
+/* --------------------------------------------------------------------------
+ * Departure board: the next departures per line and direction from the
+ * location's stops (entur_client), like RealtimeDisplay's board, under a
+ * large clock. Painted from one draw handler like the radar, which keeps the
+ * row count free of widgets.
+ * ------------------------------------------------------------------------ */
+
+static lv_color_t dep_text_color(void)
+{
+    return lv_color_hex(s_cfg->theme == APP_THEME_DARK ? 0xDDE6EE : 0x1B2631);
+}
+
+static lv_color_t dep_dim_color(void)
+{
+    return lv_color_hex(s_cfg->theme == APP_THEME_DARK ? 0x8AA0B4 : 0x5D6D7E);
+}
+
+/* Badge colour for lines without one of their own (Ruter's mode colours). */
+static uint32_t dep_mode_colour(const char *mode)
+{
+    if (strcmp(mode, "bus") == 0 || strcmp(mode, "coach") == 0) return 0xE60000;
+    if (strcmp(mode, "tram") == 0) return 0x0B91EF;
+    if (strcmp(mode, "metro") == 0) return 0xEC700C;
+    if (strcmp(mode, "rail") == 0) return 0x003087;
+    if (strcmp(mode, "water") == 0) return 0x682C88;
+    return 0x607D8B;
+}
+
+/* "Nå" (under a minute), "N min" (under 15), otherwise HH:MM - as the web page. */
+static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now)
+{
+    const int64_t mins = (t - (int64_t)now) / 60;
+    if (mins < 1) {
+        snprintf(buf, n, "N\xC3\xA5");
+    } else if (mins < 15) {
+        snprintf(buf, n, "%d min", (int)mins);
+    } else {
+        time_t tt = (time_t)t;
+        struct tm lt;
+        localtime_r(&tt, &lt);
+        snprintf(buf, n, "%02d:%02d", lt.tm_hour, lt.tm_min);
+    }
+}
+
+/* One departure in the time column ending at x_right: red "Innstilt" if
+ * cancelled, dimmed if it's only the timetable (no realtime data). */
+static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right, int y, time_t now)
+{
+    char buf[16];
+    lv_color_t color = dep_text_color();
+    if (c->cancelled) {
+        snprintf(buf, sizeof(buf), "Innstilt");
+        color = lv_palette_main(LV_PALETTE_RED);
+    } else {
+        dep_fmt_time(buf, sizeof(buf), c->expected, now);
+        if (!c->realtime) {
+            color = dep_dim_color();
+        }
+    }
+    radar_text(layer, buf, x_right - DEP_TIME_W, y, DEP_TIME_W, LV_TEXT_ALIGN_RIGHT, color);
+}
+
+static void dep_draw_cb(lv_event_t *e)
+{
+    if (!s_dep_valid) {
+        return;
+    }
+    lv_layer_t *layer = lv_event_get_layer(e);
+    const int lh = lv_font_get_line_height(s_font_body);
+    const int row_h = lh + 12;
+    const int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
+    const int x_t2 = EXAMPLE_LCD_H_RES - DEP_X;
+    const int x_t1 = x_t2 - DEP_TIME_W - 12;
+    const int x_dest = DEP_X + DEP_BADGE_W + 14;
+    const time_t now = time(NULL);
+    const lv_color_t c_txt = dep_text_color();
+    const lv_color_t c_dim = dep_dim_color();
+
+    int y = DEP_BODY_Y;
+    for (int si = 0; si < s_dep_data->stop_count && y + row_h <= bottom; si++) {
+        /* The stop's name as a heading - only needed to tell several apart. */
+        if (s_dep_data->stop_count > 1) {
+            radar_text_fit(layer, s_dep_data->stop_name[si], DEP_X, y + 4, x_t1 - DEP_X, c_dim);
+            y += lh + 6;
+        }
+        bool any = false;
+        for (int g = 0; g < s_dep_data->group_count && y + row_h <= bottom; g++) {
+            const entur_group_t *grp = &s_dep_data->groups[g];
+            if (grp->stop != si) {
+                continue;
+            }
+            any = true;
+
+            /* The line number on the line's own colour, as on the web page. */
+            lv_area_t badge = { DEP_X, y + 2, DEP_X + DEP_BADGE_W - 1, y + row_h - 3 };
+            if (radar_area_hits_clip(layer, &badge)) {
+                lv_draw_rect_dsc_t d;
+                lv_draw_rect_dsc_init(&d);
+                d.radius = 6;
+                d.bg_opa = LV_OPA_COVER;
+                d.bg_color = lv_color_hex(grp->has_colour ? grp->colour : dep_mode_colour(grp->mode));
+                lv_draw_rect(layer, &d, &badge);
+            }
+            radar_text(layer, grp->code, DEP_X, y + (row_h - lh) / 2, DEP_BADGE_W, LV_TEXT_ALIGN_CENTER,
+                       lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
+
+            char dest[sizeof(grp->dest) + sizeof(grp->quay) + 8];
+            if (grp->quay[0]) {
+                snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
+            } else {
+                snprintf(dest, sizeof(dest), "%s", grp->dest);
+            }
+            radar_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, x_t1 - DEP_TIME_W - x_dest - 8, c_txt);
+
+            if (grp->call_count > 0) {
+                dep_draw_call(layer, &grp->calls[0], x_t1, y + (row_h - lh) / 2, now);
+            }
+            if (grp->call_count > 1) {
+                dep_draw_call(layer, &grp->calls[1], x_t2, y + (row_h - lh) / 2, now);
+            }
+            y += row_h;
+        }
+        if (!any && y + row_h <= bottom) {
+            radar_text(layer, "Ingen avganger de neste 24 timene.", x_dest, y + (row_h - lh) / 2,
+                       x_t2 - x_dest, LV_TEXT_ALIGN_LEFT, c_dim);
+            y += row_h;
+        }
+        y += 6;
+    }
+}
+
+/* Every second while the board is on show: the clock, and every
+ * DEP_REDRAW_S a repaint so "N min" counts down between polls. */
+static void dep_clock_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    static time_t last_redraw;
+    if (lv_obj_has_flag(s_dep_root, LV_OBJ_FLAG_HIDDEN)) {
+        return;
+    }
+    time_t now = time(NULL);
+    char txt[DEP_CLOCK_CHARS + 1] = "--:--:--";
+    struct tm lt = { 0 };
+    if (now > PLAUSIBLE_EPOCH_S) {
+        localtime_r(&now, &lt);
+        snprintf(txt, sizeof(txt), "%02u:%02u:%02u", (unsigned)lt.tm_hour % 100u, (unsigned)lt.tm_min % 100u,
+                 (unsigned)lt.tm_sec % 100u);
+    }
+    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
+        const char *cur = lv_label_get_text(s_dep_clock[i]);
+        if (cur[0] != txt[i]) {
+            char ch[2] = { txt[i], '\0' };
+            lv_label_set_text(s_dep_clock[i], ch);
+        }
+    }
+    if (now <= PLAUSIBLE_EPOCH_S) {
+        return;
+    }
+    if (s_dep_valid && (now - last_redraw >= DEP_REDRAW_S || lt.tm_sec == 0)) {
+        last_redraw = now;
+        lv_obj_invalidate(s_dep_canvas);
+    }
+}
+
+static void build_departures(lv_obj_t *root)
+{
+    s_dep_data = heap_caps_calloc(1, sizeof(*s_dep_data), MALLOC_CAP_SPIRAM);
+    s_dep_sel = heap_caps_calloc(1, sizeof(*s_dep_sel), MALLOC_CAP_SPIRAM);
+    assert(s_dep_data != NULL && s_dep_sel != NULL);
+
+    s_dep_canvas = lv_obj_create(root);
+    lv_obj_remove_style_all(s_dep_canvas);
+    lv_obj_set_pos(s_dep_canvas, 0, 0);
+    lv_obj_set_size(s_dep_canvas, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(s_dep_canvas, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_dep_canvas, dep_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
+
+    s_dep_title = lv_label_create(root);
+    lv_obj_set_style_text_font(s_dep_title, s_font_large, 0);
+    lv_obj_set_pos(s_dep_title, DEP_X, 4);
+    lv_obj_set_width(s_dep_title, 480);
+    lv_label_set_long_mode(s_dep_title, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_text(s_dep_title, "");
+
+    /* The clock gets a font of its own, big enough to read across a room. */
+    /* Each digit gets a cell as wide as the widest digit, each colon one as
+     * wide as a colon; the characters are centred in their cells. */
+    const lv_font_t *clock_font = load_font(DEP_CLOCK_PX, true);
+    int digit_w = 0;
+    for (uint32_t c = '0'; c <= '9'; c++) {
+        int w = lv_font_get_glyph_width(clock_font, c, 0);
+        digit_w = w > digit_w ? w : digit_w;
+    }
+    const int colon_w = lv_font_get_glyph_width(clock_font, ':', 0) + 4;
+    lv_obj_t *clock = lv_obj_create(root);
+    lv_obj_remove_style_all(clock);
+    lv_obj_clear_flag(clock, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_font(clock, clock_font, 0);
+    lv_obj_set_style_text_align(clock, LV_TEXT_ALIGN_CENTER, 0);
+    int x = 0;
+    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
+        const int w = (i == 2 || i == 5) ? colon_w : digit_w;
+        s_dep_clock[i] = lv_label_create(clock);
+        lv_obj_set_pos(s_dep_clock[i], x, 0);
+        lv_obj_set_width(s_dep_clock[i], w);
+        lv_label_set_text(s_dep_clock[i], (i == 2 || i == 5) ? ":" : "-");
+        x += w;
+    }
+    lv_obj_set_size(clock, x, lv_font_get_line_height(clock_font));
+    lv_obj_align(clock, LV_ALIGN_TOP_RIGHT, -DEP_X, 0);
+
+    s_dep_updated = lv_label_create(root);
+    lv_obj_set_style_text_color(s_dep_updated, dep_dim_color(), 0);
+    lv_obj_align(s_dep_updated, LV_ALIGN_BOTTOM_RIGHT, -DEP_X, -4);
+    lv_label_set_text(s_dep_updated, "");
+
+    lv_timer_create(dep_clock_timer_cb, 1000, NULL);
+}
+
+/* Point the board at location `loc` (adapter lock held): its title and its
+ * selection, blank until the first fetch for it lands. */
+static void dep_set_location(int loc)
+{
+    s_dep_valid = false;
+    if (!entur_parse_selection(s_cfg->departures[loc], s_dep_sel)) {
+        s_dep_sel->stop_count = 0;
+    }
+    lv_label_set_text_fmt(s_dep_title, "Avganger %s", s_cfg->locations[loc].name);
+    lv_label_set_text(s_dep_updated, "");
+    lv_obj_invalidate(s_dep_canvas);
+}
+
+/* Fetch `loc`'s departures into `scratch` and show them if the view is still
+ * on it. Returns whether the board has data up. */
+static bool departures_poll(int loc, entur_departures_t *scratch, int for_view)
+{
+    (void)loc; /* s_dep_sel was parsed for it by dep_set_location */
+    if (s_dep_sel->stop_count == 0) {
+        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            lv_label_set_text(s_status_label, "Ingen holdeplasser valgt.\nLegg dem inn p\xC3\xA5 oppsettsiden.");
+            esp_lv_adapter_unlock();
+        }
+        return false;
+    }
+    esp_err_t err = entur_client_fetch(s_dep_sel, scratch);
+
+    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return s_dep_valid;
+    }
+    if (err == ESP_OK) {
+        memcpy(s_dep_data, scratch, sizeof(*scratch));
+        s_dep_valid = true;
+        lv_label_set_text(s_status_label, "");
+        time_t now = time(NULL);
+        if (now > PLAUSIBLE_EPOCH_S) {
+            struct tm lt;
+            localtime_r(&now, &lt);
+            lv_label_set_text_fmt(s_dep_updated, "Oppdatert %02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+        }
+        lv_obj_invalidate(s_dep_canvas);
+    } else if (!s_dep_valid) {
+        lv_label_set_text(s_status_label, "Kunne ikke hente avganger. Pr\xC3\xB8ver igjen...");
+    } else {
+        lv_label_set_text(s_dep_updated, "Kunne ikke oppdatere - viser siste data");
+    }
+    const bool shown = s_dep_valid;
+    esp_lv_adapter_unlock();
+    return shown;
 }
 
 static void temp_segment(lv_layer_t *layer, float x1, float y1, float x2, float y2,
@@ -1780,7 +2089,7 @@ static void temp_line_ext_size_cb(lv_event_t *e)
 
 static void build_ui(lv_obj_t *screen)
 {
-    const bool dark = (s_cfg.theme == APP_THEME_DARK);
+    const bool dark = (s_cfg->theme == APP_THEME_DARK);
     lv_display_t *disp = lv_obj_get_display(screen);
     lv_display_set_theme(disp, lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
                                                      lv_palette_main(LV_PALETTE_RED), dark, s_font_body));
@@ -1817,7 +2126,7 @@ static void build_ui(lv_obj_t *screen)
     s_location_label = lv_label_create(s_detail_root);
     lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
     lv_obj_set_pos(s_location_label, 12, 4);
-    lv_label_set_text(s_location_label, s_cfg.locations[initial_loc].name);
+    lv_label_set_text(s_location_label, s_cfg->locations[initial_loc].name);
 
     s_updated_label = lv_label_create(s_detail_root);
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
@@ -2044,6 +2353,19 @@ static void build_ui(lv_obj_t *screen)
             radar_set_location(initial_loc);
         } else if (initial_stop->kind == STOP_SHIPS) {
             ships_set_location(initial_loc);
+        }
+    }
+
+    /* Likewise the departure board. */
+    if (s_any_departures) {
+        s_dep_root = lv_obj_create(screen);
+        lv_obj_remove_style_all(s_dep_root);
+        lv_obj_set_pos(s_dep_root, 0, 0);
+        lv_obj_set_size(s_dep_root, LV_PCT(100), LV_PCT(100));
+        lv_obj_clear_flag(s_dep_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+        build_departures(s_dep_root);
+        if (initial_stop->kind == STOP_DEPARTURES) {
+            dep_set_location(initial_loc);
         }
     }
 
@@ -2542,7 +2864,7 @@ static const yr_forecast_point_t *nearest_base_point(const yr_forecast_t *base, 
 
 static bool any_cache_valid(void)
 {
-    for (int i = 0; i < s_cfg.location_count; i++) {
+    for (int i = 0; i < s_cfg->location_count; i++) {
         if (s_fc_valid[i]) {
             return true;
         }
@@ -2637,7 +2959,7 @@ static void update_overview(void)
     lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4); /* re-anchor: text width changed */
 
     int64_t now_epoch = 0;
-    for (int i = 0; i < s_cfg.location_count; i++) {
+    for (int i = 0; i < s_cfg->location_count; i++) {
         if (s_fc_valid[i] && s_fc_cache[i]->point_count > 0) {
             int64_t e = s_fc_cache[i]->points[0].epoch_utc;
             if (e > now_epoch) {
@@ -2659,7 +2981,7 @@ static void update_overview(void)
 
     for (int row = 0; row < s_weather_count; row++) {
         const int i = s_wx_loc[row]; /* location shown on this row */
-        lv_label_set_text(s_ov_name[row], s_cfg.locations[i].name);
+        lv_label_set_text(s_ov_name[row], s_cfg->locations[i].name);
 
         const bool ok = s_fc_valid[i] && s_fc_cache[i]->point_count > 0;
         const yr_forecast_t *fc = ok ? s_fc_cache[i] : NULL;
@@ -2820,9 +3142,9 @@ static void provision_status_cb(const char *msg)
  * poll (it just keeps dead-reckoning) unless there is none yet. */
 static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
 {
-    double lat = atof(s_cfg.locations[loc].lat);
-    double lon = atof(s_cfg.locations[loc].lon);
-    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg.radar_km[loc], scratch) == ESP_OK);
+    double lat = atof(s_cfg->locations[loc].lat);
+    double lon = atof(s_cfg->locations[loc].lon);
+    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg->radar_km[loc], scratch) == ESP_OK);
 
     if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
         return;
@@ -3063,8 +3385,8 @@ static void coast_render(int loc, int range)
     memset(s_coast_px, 0, COAST_D * COAST_D);
     s_water_n_seeds = 0;
 
-    const double lat0 = atof(s_cfg.locations[loc].lat);
-    const double lon0 = atof(s_cfg.locations[loc].lon);
+    const double lat0 = atof(s_cfg->locations[loc].lat);
+    const double lon0 = atof(s_cfg->locations[loc].lon);
     const float km_lat = 110.574f / 1e5f;                                   /* km per 1e-5 deg */
     const float km_lon = 111.320f * cosf((float)(lat0 * M_PI / 180.0)) / 1e5f;
     const float px_per_km = (float)RADAR_R / (float)range;
@@ -3171,7 +3493,7 @@ static void coast_render(int loc, int range)
     free(pts);
     coast_fill_water();
     ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
-             s_cfg.locations[loc].name, lines, r0, r1, c0, c1);
+             s_cfg->locations[loc].name, lines, r0, r1, c0, c1);
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         s_coast_loc = loc;
@@ -3185,11 +3507,11 @@ static void coast_render(int loc, int range)
 
 static void ships_poll(int loc, ais_result_t *scratch, int for_view)
 {
-    double lat = atof(s_cfg.locations[loc].lat);
-    double lon = atof(s_cfg.locations[loc].lon);
-    esp_err_t err = ais_client_fetch(s_cfg.ais_client_id, s_cfg.ais_client_secret,
-                                     lat, lon, (float)s_cfg.ship_km[loc], s_cfg.ship_min_len_m[loc],
-                                     (float)s_cfg.ship_near_km[loc], s_cfg.ship_near_min_len_m[loc],
+    double lat = atof(s_cfg->locations[loc].lat);
+    double lon = atof(s_cfg->locations[loc].lon);
+    esp_err_t err = ais_client_fetch(s_cfg->ais_client_id, s_cfg->ais_client_secret,
+                                     lat, lon, (float)s_cfg->ship_km[loc], s_cfg->ship_min_len_m[loc],
+                                     (float)s_cfg->ship_near_km[loc], s_cfg->ship_near_min_len_m[loc],
                                      scratch);
 
     if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
@@ -3259,8 +3581,8 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
         return true;
     }
 
-    const double lat0 = atof(s_cfg.locations[loc].lat);
-    const double lon0 = atof(s_cfg.locations[loc].lon);
+    const double lat0 = atof(s_cfg->locations[loc].lat);
+    const double lon0 = atof(s_cfg->locations[loc].lon);
     const double km_per_px = (double)range / RADAR_R;
     const double km_lon = 111.320 * cos(lat0 * M_PI / 180.0);
     static float gx[RAIN_GRID_N][RAIN_GRID_N], gy[RAIN_GRID_N][RAIN_GRID_N];
@@ -3364,9 +3686,9 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
  * screen. */
 static bool rain_poll(int loc, int for_view)
 {
-    const double lat = atof(s_cfg.locations[loc].lat);
-    const double lon = atof(s_cfg.locations[loc].lon);
-    const int range = s_cfg.rain_km[loc];
+    const double lat = atof(s_cfg->locations[loc].lat);
+    const double lon = atof(s_cfg->locations[loc].lon);
+    const int range = s_cfg->rain_km[loc];
     const rain_area_t *area = rain_client_pick_area(lat, lon, (float)range);
     const bool ready = (area != NULL) && rain_prepare(loc, range, area);
 
@@ -3559,7 +3881,7 @@ static void yr_weather_task(void *arg)
 {
     /* Connects in station mode, or blocks forever in the setup portal (and
      * reboots when the form is saved). */
-    wifi_provision_connect(&s_cfg, provision_status_cb);
+    wifi_provision_connect(s_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", h_screenshot);
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
@@ -3596,10 +3918,11 @@ static void yr_weather_task(void *arg)
     adsb_result_t *adsb_scratch = heap_caps_malloc(sizeof(*adsb_scratch), MALLOC_CAP_SPIRAM);
     ais_result_t *ais_scratch = heap_caps_malloc(sizeof(*ais_scratch), MALLOC_CAP_SPIRAM);
     met_alerts_t *alert_scratch = heap_caps_malloc(sizeof(*alert_scratch), MALLOC_CAP_SPIRAM);
+    entur_departures_t *dep_scratch = heap_caps_malloc(sizeof(*dep_scratch), MALLOC_CAP_SPIRAM);
     bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL &&
                       nowcast != NULL && adsb_scratch != NULL && ais_scratch != NULL &&
-                      alert_scratch != NULL);
-    for (int i = 0; i < s_cfg.location_count; i++) {
+                      alert_scratch != NULL && dep_scratch != NULL);
+    for (int i = 0; i < s_cfg->location_count; i++) {
         s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
         s_alert_cache[i] = heap_caps_malloc(sizeof(met_alerts_t), MALLOC_CAP_SPIRAM);
         if (s_fc_cache[i] == NULL || s_alert_cache[i] == NULL) {
@@ -3618,6 +3941,8 @@ static void yr_weather_task(void *arg)
     bool ships = false;
     bool rain = false;
     bool rain_shown = false; /* the rain radar has a picture up */
+    bool departures = false;
+    bool dep_shown = false;  /* the departure board has data up */
     int sel = 0;            /* selected location index when not on the overview */
     time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
     bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
@@ -3647,8 +3972,8 @@ static void yr_weather_task(void *arg)
             struct tm now_lt;
             localtime_r(&now_wall, &now_lt);
             const int now_min = now_lt.tm_hour * 60 + now_lt.tm_min;
-            const int from = s_cfg.dim_start, to = s_cfg.dim_end;
-            bool want_dim = s_cfg.dim_enabled &&
+            const int from = s_cfg->dim_start, to = s_cfg->dim_end;
+            bool want_dim = s_cfg->dim_enabled &&
                             (from <= to ? (now_min >= from && now_min < to)
                                         : (now_min >= from || now_min < to));
             if (want_dim != night_dim_active) {
@@ -3682,6 +4007,8 @@ static void yr_weather_task(void *arg)
             ships = (stop->kind == STOP_SHIPS);
             rain = (stop->kind == STOP_RAIN);
             rain_shown = false;
+            departures = (stop->kind == STOP_DEPARTURES);
+            dep_shown = false;
             sel = overview ? 0 : stop->loc;
             force_sel_refetch = (stop->kind == STOP_WEATHER);
 
@@ -3699,6 +4026,9 @@ static void yr_weather_task(void *arg)
             }
             if (!rain) {
                 rain_client_close();
+            }
+            if (!departures) {
+                entur_client_close();
             }
 
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -3729,8 +4059,11 @@ static void yr_weather_task(void *arg)
                     lv_label_set_text(s_radar_info, "");
                     lv_obj_invalidate(s_radar_canvas);
                     lv_label_set_text(s_status_label, "Henter nedb\xC3\xB8r...");
+                } else if (departures) {
+                    dep_set_location(sel);
+                    lv_label_set_text(s_status_label, "Henter avganger...");
                 } else {
-                    const app_location_t *loc = &s_cfg.locations[sel];
+                    const app_location_t *loc = &s_cfg->locations[sel];
                     lv_label_set_text(s_location_label, loc->name);
                     /* Unlike the forecast, the alert cache carries over as-is
                      * from whatever this location's last fetch found. */
@@ -3745,14 +4078,16 @@ static void yr_weather_task(void *arg)
         }
 
         if (radar) {
-            coast_render(sel, s_cfg.radar_km[sel]);
+            coast_render(sel, s_cfg->radar_km[sel]);
             radar_poll(sel, adsb_scratch, active_view);
         } else if (ships) {
-            coast_render(sel, s_cfg.ship_km[sel]);
+            coast_render(sel, s_cfg->ship_km[sel]);
             ships_poll(sel, ais_scratch, active_view);
         } else if (rain) {
-            coast_render(sel, s_cfg.rain_km[sel]);
+            coast_render(sel, s_cfg->rain_km[sel]);
             rain_shown = rain_poll(sel, active_view);
+        } else if (departures) {
+            dep_shown = departures_poll(sel, dep_scratch, active_view);
         }
 
         TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
@@ -3764,12 +4099,12 @@ static void yr_weather_task(void *arg)
          * every few seconds and is the only thing that should use the network
          * there. Whatever went stale is refreshed when a weather screen or the
          * overview is next shown. */
-        for (int k = 0; !radar && !ships && !rain && k < s_cfg.location_count; k++) {
+        for (int k = 0; !radar && !ships && !rain && !departures && k < s_cfg->location_count; k++) {
             if (s_view_index != active_view) {
                 break; /* view changed mid-scan - restart the loop */
             }
-            int i = (sel + k) % s_cfg.location_count;
-            if (!(s_cfg.show[i] & APP_SHOW_WEATHER)) {
+            int i = (sel + k) % s_cfg->location_count;
+            if (!(s_cfg->show[i] & APP_SHOW_WEATHER)) {
                 continue; /* radar-only location: no forecast needed */
             }
             bool stale = !s_fc_valid[i] || (i == sel && force_sel_refetch) ||
@@ -3780,8 +4115,8 @@ static void yr_weather_task(void *arg)
                 continue;
             }
 
-            double lat = atof(s_cfg.locations[i].lat);
-            double lon = atof(s_cfg.locations[i].lon);
+            double lat = atof(s_cfg->locations[i].lat);
+            double lon = atof(s_cfg->locations[i].lon);
 
             if (stale) {
                 if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
@@ -3790,12 +4125,12 @@ static void yr_weather_task(void *arg)
                     s_fc_valid[i] = true;
                     s_fc_tk[i] = now_tk;
                     ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
-                             i, s_cfg.locations[i].name, s_fc_cache[i]->point_count,
+                             i, s_cfg->locations[i].name, s_fc_cache[i]->point_count,
                              s_fc_cache[i]->updated_hour_minute,
                              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
                 } else {
                     ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous",
-                             i, s_cfg.locations[i].name);
+                             i, s_cfg->locations[i].name);
                 }
             }
 
@@ -3805,12 +4140,12 @@ static void yr_weather_task(void *arg)
                     s_alert_valid[i] = true;
                     s_alert_tk[i] = now_tk;
                     if (alert_scratch->count > 0) {
-                        ESP_LOGI(TAG, "Alerts[%d] %s: %d active", i, s_cfg.locations[i].name,
+                        ESP_LOGI(TAG, "Alerts[%d] %s: %d active", i, s_cfg->locations[i].name,
                                  alert_scratch->count);
                     }
                 } else {
                     ESP_LOGW(TAG, "Alerts[%d] %s failed; keeping previous",
-                             i, s_cfg.locations[i].name);
+                             i, s_cfg->locations[i].name);
                 }
             }
 
@@ -3838,7 +4173,7 @@ static void yr_weather_task(void *arg)
                 lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
                 esp_lv_adapter_unlock();
             }
-        } else if (radar || ships || rain) {
+        } else if (radar || ships || rain || departures) {
             /* Already handled above; nothing weather-related to draw here. */
         } else {
             /* Keeps the banner in sync with whatever the fetch loop below
@@ -3850,8 +4185,8 @@ static void yr_weather_task(void *arg)
             }
 
             /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
-            double lat = atof(s_cfg.locations[sel].lat);
-            double lon = atof(s_cfg.locations[sel].lon);
+            double lat = atof(s_cfg->locations[sel].lat);
+            double lon = atof(s_cfg->locations[sel].lon);
             bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
                           nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
 
@@ -3865,7 +4200,7 @@ static void yr_weather_task(void *arg)
                     merge_nowcast(merged, s_fc_cache[sel], nowcast);
                     to_render = merged;
                     ESP_LOGI(TAG, "Nowcast merged for %s: %d steps -> %d points",
-                             s_cfg.locations[sel].name, nowcast->point_count,
+                             s_cfg->locations[sel].name, nowcast->point_count,
                              merged->point_count);
                 }
                 if (to_render->point_count > 0) {
@@ -3895,6 +4230,7 @@ static void yr_weather_task(void *arg)
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
                                                : ships ? SHIP_POLL_MS
                                                : rain ? (rain_shown ? RAIN_POLL_MS : RAIN_RETRY_MS)
+                                               : departures ? (dep_shown ? DEP_POLL_MS : DEP_RETRY_MS)
                                                : (ready ? NOWCAST_REFRESH_INTERVAL_MS
                                                         : WEATHER_RETRY_INTERVAL_MS)));
     }
@@ -3921,8 +4257,10 @@ void app_main(void)
         nvs_err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_err);
-    app_config_load(&s_cfg);
-    yr_client_set_contact_email(s_cfg.yr_email);
+    s_cfg = heap_caps_calloc(1, sizeof(*s_cfg), MALLOC_CAP_SPIRAM);
+    assert(s_cfg != NULL);
+    app_config_load(s_cfg);
+    yr_client_set_contact_email(s_cfg->yr_email);
 
     /* Resume on whatever screen was showing before this boot (see
      * app_config_save_last_view) rather than always starting at the

@@ -63,7 +63,7 @@ around):
    radar-only setup - it's the only screen showing the IP address, so it must
    always stay reachable by tap.
 2. For each location in order, whichever of its weather screen (chart + wind),
-   aircraft radar and ship traffic are enabled.
+   aircraft radar, ship traffic, rain radar and departure board are enabled.
 
 The setup page also has a **Theme** choice (light or dark) that applies to
 every screen.
@@ -154,6 +154,35 @@ When a location has one or more currently active alerts:
 Nothing is shown for a location with no active alert. The API itself filters
 to alerts covering the location's exact coordinates and currently active, so
 the device does no date or geometry filtering of its own.
+
+### Public transport departures
+
+Tick **Departures** for a location to give it a departure board: realtime
+departures from [Entur's Journey Planner](https://developer.entur.no/pages-journeyplanner-journeyplanner)
+(the same data as `RealtimeDisplay/`), the next two per line and direction,
+under a large 24-hour clock. Refreshed every 30 seconds while on screen; the
+"N min" countdowns tick between refreshes. Times without realtime data are
+dimmed, cancelled departures say *Innstilt*.
+
+The stops and lines go in the location's **Departures (stops and lines)**
+field as one line of text:
+
+```
+58366=RUT:Line:31/out,RUT:Line:25;6505
+```
+
+Stops are separated by `;`. Each is a stop place ID (a bare number means
+`NSR:StopPlace:<number>`), optionally followed by `=` and the line IDs to
+show, comma-separated; a line ID ending in `/in` or `/out` shows only that
+direction, and a stop without lines shows all of them. At most 4 stops and 8
+lines per stop.
+
+You rarely need to write it by hand: below the field the setup page has a
+picker like the `RealtimeDisplay` site's (`components/setup_departures.js`,
+served as `/dep.js`). Search for a stop (nearest the location's coordinates
+first), tick lines (none = all) and, for a line, a direction (none = both);
+the field fills in as you go. The picker calls Entur from the browser, so it
+needs internet and doesn't work on the device's own setup WiFi.
 
 ### Setup portal (WiFi + locations)
 

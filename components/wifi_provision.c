@@ -128,12 +128,13 @@ static const char PAGE_HEAD[] =
 static const char PAGE_TAIL[] =
     "<button type=submit>Save &amp; restart</button></form>"
     "<script>fetch('/scan').then(r=>r.json()).then(l=>{let d=document.getElementById('nets');"
-    "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>";
+    "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>"
+    "<script src=/dep.js></script>";
 
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 16384;
+    const size_t cap = 24576;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -217,7 +218,13 @@ static char *build_page(const app_config_t *cfg)
                   "that don't report a length, are hidden (0 shows every "
                   "ship). Within the optional inner zone (0 km = none) a "
                   "separate shortest length applies, e.g. every boat close "
-                  "by but only big ships further out.</small>");
+                  "by but only big ships further out. Departures shows live "
+                  "public transport (Entur): search for stops below the field "
+                  "and tick lines (none = all) and directions (none = both). "
+                  "The search needs internet, so it doesn't work on the "
+                  "device's own setup WiFi. The field holds the result as "
+                  "<code>stop=line,line/out;stop</code> and can be edited by "
+                  "hand.</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -249,7 +256,8 @@ static char *build_page(const app_config_t *cfg)
                       "<label><input type=checkbox name=wx%d value=1%s>Weather</label>"
                       "<label><input type=checkbox name=ac%d value=1%s>Aircraft</label>"
                       "<label><input type=checkbox name=sh%d value=1%s>Ships</label>"
-                      "<label><input type=checkbox name=rn%d value=1%s>Rain</label></div>"
+                      "<label><input type=checkbox name=rn%d value=1%s>Rain</label>"
+                      "<label><input type=checkbox name=dp%d value=1%s>Departures</label></div>"
                       "<div class=row><div><label>Aircraft range (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Rain range (km)</label>"
@@ -262,17 +270,24 @@ static char *build_page(const app_config_t *cfg)
                       "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
                       "<div><label>Shortest inside (m)</label>"
                       "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
-                      "</fieldset>",
+                      "<label>Departures (stops and lines)</label>"
+                      "<input name=dep%d autocomplete=off spellcheck=false maxlength=%d value=\"",
                       i, (show & APP_SHOW_WEATHER) ? " checked" : "",
                       i, (show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (show & APP_SHOW_RAIN) ? " checked" : "",
+                      i, (show & APP_SHOW_DEPARTURES) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
                       i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km,
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
                       i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len,
                       i, APP_CONFIG_SHIP_NEAR_KM_MAX, near_km,
-                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, near_len);
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, near_len,
+                      i, APP_CONFIG_DEPARTURES_MAX - 1);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->departures[i]);
+        }
+        p += snprintf(p, end - p, "\"></fieldset>");
     }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
@@ -285,9 +300,13 @@ static char *build_page(const app_config_t *cfg)
 
 static esp_err_t h_root(httpd_req_t *req)
 {
-    app_config_t cfg;
-    app_config_load(&cfg);
-    char *page = build_page(&cfg);
+    app_config_t *cfg = malloc(sizeof(*cfg));
+    if (cfg == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    app_config_load(cfg);
+    char *page = build_page(cfg);
+    free(cfg);
     if (!page) {
         return httpd_resp_send_500(req);
     }
@@ -346,7 +365,7 @@ static void reboot_task(void *arg)
     esp_restart();
 }
 
-#define SAVE_BODY_MAX 4096
+#define SAVE_BODY_MAX 8192
 
 static esp_err_t save_form(httpd_req_t *req, const char *body);
 
@@ -383,16 +402,14 @@ static int parse_hhmm(const char *s)
     return h * 60 + m;
 }
 
-static esp_err_t save_form(httpd_req_t *req, const char *body)
+static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t *cfg)
 {
-
-    app_config_t cfg;
-    app_config_load(&cfg); /* keep the WiFi fields at their current value if omitted */
-    form_field(body, "ssid", cfg.wifi_ssid, sizeof(cfg.wifi_ssid));
-    form_field(body, "pass", cfg.wifi_pass, sizeof(cfg.wifi_pass));
+    app_config_load(cfg); /* keep the WiFi fields at their current value if omitted */
+    form_field(body, "ssid", cfg->wifi_ssid, sizeof(cfg->wifi_ssid));
+    form_field(body, "pass", cfg->wifi_pass, sizeof(cfg->wifi_pass));
     char theme[4];
     if (form_field(body, "theme", theme, sizeof(theme))) {
-        cfg.theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
+        cfg->theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
     }
     /* The checkbox is only sent when ticked, so go by the time fields, which
      * the page always sends. */
@@ -400,12 +417,12 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     if (form_field(body, "dimstart", hhmm, sizeof(hhmm))) {
         char val[4];
         int m;
-        cfg.dim_enabled = form_field(body, "dimon", val, sizeof(val)) ? 1 : 0;
+        cfg->dim_enabled = form_field(body, "dimon", val, sizeof(val)) ? 1 : 0;
         if ((m = parse_hhmm(hhmm)) >= 0) {
-            cfg.dim_start = (uint16_t)m;
+            cfg->dim_start = (uint16_t)m;
         }
         if (form_field(body, "dimend", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
-            cfg.dim_end = (uint16_t)m;
+            cfg->dim_end = (uint16_t)m;
         }
     }
     /* Fonts: again the checkboxes are only sent when ticked, so go by the
@@ -415,24 +432,24 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         char val[4];
         long v = strtol(px, NULL, 10);
         if (v >= APP_CONFIG_TITLE_PX_MIN && v <= APP_CONFIG_TITLE_PX_MAX) {
-            cfg.title_px = (uint8_t)v;
+            cfg->title_px = (uint8_t)v;
         }
         if (form_field(body, "textpx", px, sizeof(px)) &&
             (v = strtol(px, NULL, 10)) >= APP_CONFIG_TEXT_PX_MIN && v <= APP_CONFIG_TEXT_PX_MAX) {
-            cfg.text_px = (uint8_t)v;
+            cfg->text_px = (uint8_t)v;
         }
-        cfg.title_bold = form_field(body, "titlebold", val, sizeof(val)) ? 1 : 0;
-        cfg.text_bold = form_field(body, "textbold", val, sizeof(val)) ? 1 : 0;
+        cfg->title_bold = form_field(body, "titlebold", val, sizeof(val)) ? 1 : 0;
+        cfg->text_bold = form_field(body, "textbold", val, sizeof(val)) ? 1 : 0;
     }
-    form_field(body, "aisid", cfg.ais_client_id, sizeof(cfg.ais_client_id));
-    form_field(body, "aissec", cfg.ais_client_secret, sizeof(cfg.ais_client_secret));
-    if (form_field(body, "yremail", cfg.yr_email, sizeof(cfg.yr_email)) &&
-        !app_config_email_valid(cfg.yr_email)) {
-        cfg.yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
+    form_field(body, "aisid", cfg->ais_client_id, sizeof(cfg->ais_client_id));
+    form_field(body, "aissec", cfg->ais_client_secret, sizeof(cfg->ais_client_secret));
+    if (form_field(body, "yremail", cfg->yr_email, sizeof(cfg->yr_email)) &&
+        !app_config_email_valid(cfg->yr_email)) {
+        cfg->yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
     }
 
     httpd_resp_set_type(req, "text/html");
-    if (cfg.wifi_ssid[0] == '\0') {
+    if (cfg->wifi_ssid[0] == '\0') {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req,
             "<meta charset=utf-8><p>Invalid entry: a WiFi network is required."
@@ -450,6 +467,13 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_near_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    char (*deps)[APP_CONFIG_DEPARTURES_MAX] = calloc(APP_CONFIG_MAX_LOCATIONS, APP_CONFIG_DEPARTURES_MAX);
+    char *dep_raw = malloc(3 * APP_CONFIG_DEPARTURES_MAX);
+    if (deps == NULL || dep_raw == NULL) {
+        free(deps);
+        free(dep_raw);
+        return httpd_resp_send_500(req);
+    }
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -468,6 +492,8 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
             continue;
         }
         if (!app_config_coord_valid(lat, true) || !app_config_coord_valid(lon, false)) {
+            free(deps);
+            free(dep_raw);
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req,
                 "<meta charset=utf-8><p>Invalid entry: every location needs a "
@@ -494,6 +520,13 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_SHIPS : 0;
         snprintf(key, sizeof(key), "rn%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RAIN : 0;
+        snprintf(key, sizeof(key), "dp%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_DEPARTURES : 0;
+        /* form_field() truncates before URL-decoding, and the IDs' ':' come
+         * in as "%3A": read the raw field into a buffer three times the size. */
+        snprintf(key, sizeof(key), "dep%d", i);
+        form_field(body, key, dep_raw, 3 * APP_CONFIG_DEPARTURES_MAX);
+        snprintf(deps[n], APP_CONFIG_DEPARTURES_MAX, "%s", dep_raw);
         show[n] = sh ? sh : APP_SHOW_WEATHER;
         snprintf(key, sizeof(key), "radarkm%d", i);
         long km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
@@ -531,19 +564,22 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         n = 1;
     }
 
-    memcpy(cfg.locations, locs, sizeof(cfg.locations));
-    cfg.location_count = (uint8_t)n;
+    memcpy(cfg->locations, locs, sizeof(cfg->locations));
+    cfg->location_count = (uint8_t)n;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-        cfg.show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
-        cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
-        cfg.ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
-        cfg.ship_min_len_m[i] = ship_min_len[i];
-        cfg.ship_near_km[i] = ship_near_km[i];
-        cfg.ship_near_min_len_m[i] = ship_near_len[i];
-        cfg.rain_km[i] = rain_km[i] ? rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
+        cfg->show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
+        cfg->radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
+        cfg->ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
+        cfg->ship_min_len_m[i] = ship_min_len[i];
+        cfg->ship_near_km[i] = ship_near_km[i];
+        cfg->ship_near_min_len_m[i] = ship_near_len[i];
+        cfg->rain_km[i] = rain_km[i] ? rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
     }
+    memcpy(cfg->departures, deps, sizeof(cfg->departures));
+    free(deps);
+    free(dep_raw);
 
-    if (app_config_save(&cfg) != ESP_OK) {
+    if (app_config_save(cfg) != ESP_OK) {
         return httpd_resp_send_500(req);
     }
 
@@ -556,6 +592,28 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         "<a href=/>Back to the setup page</a></p>");
     xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
     return ESP_OK;
+}
+
+/* The app_config_t goes on the heap: it's a couple of KB with the departure
+ * selections, too much for the httpd task's stack next to everything else. */
+static esp_err_t save_form(httpd_req_t *req, const char *body)
+{
+    app_config_t *cfg = malloc(sizeof(*cfg));
+    if (cfg == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    esp_err_t err = save_form_into(req, body, cfg);
+    free(cfg);
+    return err;
+}
+
+/* The departure picker script (components/setup_departures.js, embedded). */
+static esp_err_t h_dep_js(httpd_req_t *req)
+{
+    extern const char dep_js_start[] asm("_binary_setup_departures_js_start");
+    httpd_resp_set_type(req, "text/javascript");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    return httpd_resp_sendstr(req, dep_js_start);
 }
 
 /* Any other GET (captive-portal probes: /generate_204, /hotspot-detect.html,
@@ -571,7 +629,7 @@ static void start_web_server(void)
         return;
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    /* h_save keeps the POST body (~1.6 KB) plus an app_config_t on its stack. */
+    /* The POST body and the app_config_t are on the heap (see h_save). */
     config.stack_size = 6144;
     config.max_uri_handlers = 8;
     config.lru_purge_enable = true;
@@ -584,6 +642,7 @@ static void start_web_server(void)
     }
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/save", .method = HTTP_POST, .handler = h_save });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/scan", .method = HTTP_GET, .handler = h_scan });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/", .method = HTTP_GET, .handler = h_root });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
 }
@@ -788,7 +847,6 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
 {
     s_status = status_fn;
 
-    app_config_t local = *cfg;
     net_common_init();
 
     bool force_portal = boot_button_held();
@@ -798,9 +856,9 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
 
     if (!force_portal && app_config_is_provisioned()) {
         char msg[64];
-        snprintf(msg, sizeof(msg), "Kobler til %s...", local.wifi_ssid);
+        snprintf(msg, sizeof(msg), "Kobler til %s...", cfg->wifi_ssid);
         status(msg);
-        if (sta_try_connect(&local)) {
+        if (sta_try_connect(cfg)) {
             status("");
             start_web_server(); /* reachable on the station IP for later edits */
             return ESP_OK;
