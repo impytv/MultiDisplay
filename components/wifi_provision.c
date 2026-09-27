@@ -120,6 +120,8 @@ static const char PAGE_HEAD[] =
     ".row{display:flex;gap:.6rem}.row>div{flex:1}small{color:#666}"
     "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
     "legend{padding:0 .4rem;color:#555;font-weight:600}"
+    ".mv{width:auto;margin:0 0 0 .4rem;padding:.05rem .5rem;font-size:.85rem;background:#e4e8ee;color:#2d5a86}"
+    ".mv:disabled{opacity:.35}"
     "select{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem;background:#fff}"
     ".chk{display:flex;gap:1.2rem;flex-wrap:wrap}.chk label{display:flex;align-items:center;gap:.35rem;margin:.2rem 0;font-weight:400}"
     ".chk input{width:auto;margin:0}"
@@ -129,6 +131,16 @@ static const char PAGE_TAIL[] =
     "<button type=submit>Save &amp; restart</button></form>"
     "<script>fetch('/scan').then(r=>r.json()).then(l=>{let d=document.getElementById('nets');"
     "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>"
+    /* Move a location up or down: swap every field with the neighbour's
+     * (same name, other index), then let the departure pickers re-read theirs. */
+    "<script>let L=[...document.querySelectorAll('fieldset[data-loc]')];"
+    "document.querySelectorAll('.mv').forEach(b=>b.onclick=()=>{let a=b.closest('fieldset'),"
+    "j=+a.dataset.loc+ +b.dataset.d,o=L[j];if(!o)return;"
+    "a.querySelectorAll('input[name]').forEach(x=>{let y=o.querySelector('[name='+x.name.replace(/\\d+$/,j)+']');"
+    "if(!y)return;if(x.type=='checkbox'){let c=x.checked;x.checked=y.checked;y.checked=c}"
+    "else{let v=x.value;x.value=y.value;y.value=v}});"
+    "[a,o].forEach(f=>f.querySelectorAll('input[name^=dep]').forEach(x=>x.dispatchEvent(new Event('change'))));"
+    "o.scrollIntoView({block:'nearest',behavior:'smooth'})});</script>"
     "<script src=/dep.js></script>";
 
 /* Build the full page into a heap buffer (caller frees). */
@@ -210,7 +222,8 @@ static char *build_page(const app_config_t *cfg)
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more "
                   "locations. The screen shows one at a time; tap the right "
-                  "half for the next, the left half for the previous. Leave a "
+                  "half for the next, the left half for the previous, in the "
+                  "order below (&#9650;/&#9660; move a location). Leave a "
                   "block empty to skip it. For each location choose any of its "
                   "weather, a live aircraft radar, live ship traffic and a rain "
                   "radar (shown in that order), how far the aircraft radar, "
@@ -229,8 +242,11 @@ static char *build_page(const app_config_t *cfg)
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
         p += snprintf(p, end - p,
-                      "<fieldset><legend>Location %d</legend>"
-                      "<label>Name</label><input name=name%d value=\"", i + 1, i);
+                      "<fieldset data-loc=%d><legend>Location %d"
+                      "<button type=button class=mv data-d=-1 aria-label='Move up'%s>&#9650;</button>"
+                      "<button type=button class=mv data-d=1 aria-label='Move down'%s>&#9660;</button></legend>"
+                      "<label>Name</label><input name=name%d value=\"",
+                      i, i + 1, i == 0 ? " disabled" : "", i == APP_CONFIG_MAX_LOCATIONS - 1 ? " disabled" : "", i);
         if (filled) {
             p = html_escape_append(p, end, cfg->locations[i].name);
         }
