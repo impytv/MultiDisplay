@@ -5,9 +5,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-/* Public transport departures from Entur's Journey Planner v3 (the same API
- * as RealtimeDisplay/js/entur.js); its estimatedCalls already carry the SIRI
- * realtime data.
+/* Public transport departures from Entur's Journey Planner v3; its
+ * estimatedCalls already carry the SIRI realtime data.
  *
  * Which stops and lines to show is one line of text (app_config_t.departures):
  * stops separated by ';', each a stop place ID, optionally followed by '='
@@ -17,8 +16,7 @@
  *
  *     58366=RUT:Line:31/out,RUT:Line:25;6505
  *
- * RealtimeDisplay's "Kode for MultiDisplay" prints the text for a selection
- * made there. */
+ * The setup page's departure picker (setup_departures.js) writes it. */
 
 #define ENTUR_MAX_STOPS      4
 #define ENTUR_MAX_LINES      8   /* per stop */
@@ -81,7 +79,7 @@ bool entur_parse_selection(const char *text, entur_selection_t *out);
 
 /**
  * Fetch the next departures for every stop in `sel`, grouped per line and
- * direction like RealtimeDisplay's board, into `out`.
+ * direction, into `out`.
  */
 esp_err_t entur_client_fetch(const entur_selection_t *sel, entur_departures_t *out);
 

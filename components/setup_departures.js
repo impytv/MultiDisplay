@@ -1,7 +1,7 @@
 // Departure picker for the setup page (served as /dep.js, see wifi_provision.c).
-// A port of RealtimeDisplay's edit view: search for a stop, tick its lines
-// and directions, and the location's "dep<N>" field gets the selection as
-// the text entur_client.h reads, e.g. "58366=RUT:Line:31/out,RUT:Line:25;6505".
+// Search for a stop, tick its lines and directions, and the location's
+// "dep<N>" field gets the selection as the text entur_client.h reads,
+// e.g. "58366=RUT:Line:31/out,RUT:Line:25;6505".
 // Runs in the browser, which calls Entur's open APIs directly, so it needs
 // internet access (not there on the device's own setup WiFi).
 (function () {
@@ -59,7 +59,7 @@
       line.publicCode || '?');
   }
 
-  // ---- Entur API (as RealtimeDisplay/js/entur.js) ----
+  // ---- Entur API ----
 
   function searchStops(text, near, signal) {
     var q = { text: text, layers: 'venue', size: '10', lang: 'no' };

@@ -158,8 +158,8 @@ the device does no date or geometry filtering of its own.
 ### Public transport departures
 
 Tick **Departures** for a location to give it a departure board: realtime
-departures from [Entur's Journey Planner](https://developer.entur.no/pages-journeyplanner-journeyplanner)
-(the same data as `RealtimeDisplay/`), the next two per line and direction,
+departures from [Entur's Journey Planner](https://developer.entur.no/pages-journeyplanner-journeyplanner),
+the next two per line and direction,
 under a large 24-hour clock. Refreshed every 30 seconds while on screen; the
 "N min" countdowns tick between refreshes. Times without realtime data are
 dimmed, cancelled departures say *Innstilt*.
@@ -178,8 +178,7 @@ direction, and a stop without lines shows all of them. At most 4 stops and 8
 lines per stop.
 
 You rarely need to write it by hand: below the field the setup page has a
-picker like the `RealtimeDisplay` site's (`components/setup_departures.js`,
-served as `/dep.js`). Search for a stop (nearest the location's coordinates
+departure picker (`components/setup_departures.js`, served as `/dep.js`). Search for a stop (nearest the location's coordinates
 first), tick lines (none = all) and, for a line, a direction (none = both);
 the field fills in as you go. The picker calls Entur from the browser, so it
 needs internet and doesn't work on the device's own setup WiFi.

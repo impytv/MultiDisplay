@@ -170,7 +170,7 @@ static const char *TAG = "lvgl9_demo";
 #define RAIN_HOLD_TICKS     4
 #define RAIN_BUDGET         (1024 * 1024) /* bytes for all the frames at most */
 
-/* Departure board (entur_client): polled like RealtimeDisplay's board, and
+/* Departure board (entur_client): polled every 30 s, and
  * repainted between polls so the "N min" countdowns stay current. */
 #define DEP_POLL_MS         30000
 #define DEP_RETRY_MS        15000
@@ -1762,8 +1762,7 @@ static void rain_set_location(int loc)
 
 /* --------------------------------------------------------------------------
  * Departure board: the next departures per line and direction from the
- * location's stops (entur_client), like RealtimeDisplay's board, under a
- * large clock. Painted from one draw handler like the radar, which keeps the
+ * location's stops (entur_client), under a large clock. Painted from one draw handler like the radar, which keeps the
  * row count free of widgets.
  * ------------------------------------------------------------------------ */
 
