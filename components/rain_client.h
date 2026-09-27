@@ -9,6 +9,10 @@
  * "5level_reflectivity" radar images: roughly 0.03, 0.1, 1, 2.5 and 5 mm/h
  * and up. 0 is dry (or not covered). */
 #define RAIN_LEVELS 5
+/* The lowest level shown: level 1 (under 0.1 mm/h) is mostly radar clutter
+ * and rain that evaporates on the way down, speckling the map with rain yr
+ * doesn't show, so rain_client_fetch() reports it as dry. */
+#define RAIN_LEVEL_MIN 2
 
 /* One of MET's radar image areas and where its pixels lie: a spherical
  * Lambert conformal conic projection (standard parallel lat1, central

@@ -1284,7 +1284,7 @@ static void rain_draw_legend(lv_layer_t *layer, int lh)
     radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, lv_color_hex(s_rp->ring));
     radar_text(layer, "Nedb\xC3\xB8r", RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_dim);
     y += lh + 12;
-    for (int lvl = RAIN_LEVELS; lvl >= 1; lvl--, y += row_h) {
+    for (int lvl = RAIN_LEVELS; lvl >= RAIN_LEVEL_MIN; lvl--, y += row_h) {
         lv_area_t a = { RADAR_LIST_X, y + 2, RADAR_LIST_X + 40, y + lh - 2 };
         if (radar_area_hits_clip(layer, &a)) {
             lv_draw_rect_dsc_t d;

@@ -117,7 +117,7 @@ static uint8_t rain_level(int r, int g, int b)
         return 2;
     }
     if (e < -20 && d >= 40 && d < 68) {
-        return 1;
+        return RAIN_LEVEL_MIN > 1 ? 0 : 1; /* see RAIN_LEVEL_MIN */
     }
     return 0;
 }
