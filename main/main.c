@@ -1019,7 +1019,8 @@ static bool ship_plot_pos(const ais_ship_t *s, int range, float since_fetch_s, f
 
 /* Ship traffic on the radar grid (already drawn): a hull-shaped marker along
  * each ship's heading with a SHIP_VEC_MIN-minute course vector, a dot for
- * moored / anchored ones, name tags for the nearest, and the table. */
+ * moored / anchored ones, name tags for the nearest (those underway first),
+ * and the table. */
 static void ships_draw(lv_layer_t *layer, int range, int lh)
 {
     const lv_color_t c_ring = lv_color_hex(s_rp->ring);
@@ -1084,33 +1085,40 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
         }
     }
 
-    /* Name tags for the nearest few, on the side facing the centre, skipped
-     * where they'd overlap an earlier one. Computed in the same order on every
-     * strip so the choice is consistent across the whole frame. */
-    for (int i = 0; i < res->count && i < RADAR_TAGS; i++) {
-        const ais_ship_t *s = &res->ship[i];
-        float sx, sy;
-        if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
-            continue;
-        }
-        int px = RADAR_CX + (int)lroundf(sx);
-        int py = RADAR_CY - (int)lroundf(sy);
-        lv_point_t sz;
-        lv_text_get_size(&sz, s->name, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        int w = sz.x + 2 < SHIP_TAG_MAX_W ? sz.x + 2 : SHIP_TAG_MAX_W;
-        lv_area_t tag = { (px < RADAR_CX) ? px + 10 : px - 10 - w, py - lh / 2, 0, py + lh / 2 };
-        tag.x2 = tag.x1 + w;
-        bool clash = false;
-        for (int k = 0; k < n_tags; k++) {
-            const lv_area_t *o = &tags[k];
-            if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
-                clash = true;
-                break;
+    /* Name tags for up to RADAR_TAGS ships, on the side facing the centre,
+     * skipped where they'd overlap an earlier one: first the ships underway,
+     * nearest first, then the moored / anchored ones in what room is left.
+     * Computed in the same order on every strip so the choice is consistent
+     * across the whole frame. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < res->count && n_tags < RADAR_TAGS; i++) {
+            const ais_ship_t *s = &res->ship[i];
+            if (s->moored != (pass == 1)) {
+                continue;
             }
-        }
-        if (!clash) {
-            tags[n_tags++] = tag;
-            radar_text_fit(layer, s->name, tag.x1, tag.y1, w, c_txt);
+            float sx, sy;
+            if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
+                continue;
+            }
+            int px = RADAR_CX + (int)lroundf(sx);
+            int py = RADAR_CY - (int)lroundf(sy);
+            lv_point_t sz;
+            lv_text_get_size(&sz, s->name, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+            int w = sz.x + 2 < SHIP_TAG_MAX_W ? sz.x + 2 : SHIP_TAG_MAX_W;
+            lv_area_t tag = { (px < RADAR_CX) ? px + 10 : px - 10 - w, py - lh / 2, 0, py + lh / 2 };
+            tag.x2 = tag.x1 + w;
+            bool clash = false;
+            for (int k = 0; k < n_tags; k++) {
+                const lv_area_t *o = &tags[k];
+                if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
+                    clash = true;
+                    break;
+                }
+            }
+            if (!clash) {
+                tags[n_tags++] = tag;
+                radar_text_fit(layer, s->name, tag.x1, tag.y1, w, c_txt);
+            }
         }
     }
 
@@ -1523,13 +1531,35 @@ static void radar_draw_cb(lv_event_t *e)
 }
 
 /* The ship count line, e.g. "2 skip lengre enn 100 meter innen 20 km",
- * mentioning the length filter only when one is configured. */
+ * mentioning the length filter only when one is configured, and the inner
+ * zone's own filter when it differs. */
 static void ship_info_set(int total)
 {
-    const unsigned min_len = (s_radar_loc >= 0) ? s_cfg.ship_min_len_m[s_radar_loc] : 0;
-    if (min_len > 0) {
+    const int loc = s_radar_loc;
+    const unsigned min_len = (loc >= 0) ? s_cfg.ship_min_len_m[loc] : 0;
+    const unsigned near_km = (loc >= 0) ? s_cfg.ship_near_km[loc] : 0;
+    const unsigned near_len = (loc >= 0) ? s_cfg.ship_near_min_len_m[loc] : 0;
+    if (near_km > 0 && near_km < (unsigned)s_radar_range_km && near_len != min_len) {
+        char near[40];
+        if (near_len > 0) {
+            snprintf(near, sizeof(near), "over %u m innen %u km", near_len, near_km);
+        } else {
+            snprintf(near, sizeof(near), "alle innen %u km", near_km);
+        }
+        if (min_len > 0) {
+            lv_label_set_text_fmt(s_radar_info, "%d skip: %s, over %u m innen %u km",
+                                  total, near, min_len, (unsigned)s_radar_range_km);
+        } else {
+            lv_label_set_text_fmt(s_radar_info, "%d skip: %s, alle innen %u km",
+                                  total, near, (unsigned)s_radar_range_km);
+        }
+        return;
+    }
+    /* One filter over the whole range: the inner zone's if it covers it. */
+    const unsigned len = (near_km >= (unsigned)s_radar_range_km) ? near_len : min_len;
+    if (len > 0) {
         lv_label_set_text_fmt(s_radar_info, "%d skip lengre enn %u meter innen %u km",
-                              total, min_len, (unsigned)s_radar_range_km);
+                              total, len, (unsigned)s_radar_range_km);
     } else {
         lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km", total, (unsigned)s_radar_range_km);
     }
@@ -3159,6 +3189,7 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
     double lon = atof(s_cfg.locations[loc].lon);
     esp_err_t err = ais_client_fetch(s_cfg.ais_client_id, s_cfg.ais_client_secret,
                                      lat, lon, (float)s_cfg.ship_km[loc], s_cfg.ship_min_len_m[loc],
+                                     (float)s_cfg.ship_near_km[loc], s_cfg.ship_near_min_len_m[loc],
                                      scratch);
 
     if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {

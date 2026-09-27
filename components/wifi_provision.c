@@ -174,16 +174,17 @@ static char *build_page(const app_config_t *cfg)
     p += snprintf(p, end - p,
                   "<fieldset><legend>Fonts</legend>"
                   "<div class=row><div><label>Location name (px)</label>"
-                  "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u></div>"
+                  "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u>"
+                  "<div class=chk><label><input type=checkbox name=titlebold value=1%s>Bold</label></div></div>"
                   "<div><label>Other text (px)</label>"
-                  "<input name=textpx type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
-                  "<div class=chk><label><input type=checkbox name=titlebold value=1%s>Bold</label>"
-                  "<label><input type=checkbox name=textbold value=1%s>Bold</label></div>"
+                  "<input name=textpx type=number inputmode=numeric min=%d max=%d value=%u>"
+                  "<div class=chk><label><input type=checkbox name=textbold value=1%s>Bold</label></div></div></div>"
                   "<small>The location name heads each screen; other text is "
                   "everything else. Defaults: %d and %d px, not bold.</small></fieldset>",
                   APP_CONFIG_TITLE_PX_MIN, APP_CONFIG_TITLE_PX_MAX, cfg->title_px,
+                  cfg->title_bold ? " checked" : "",
                   APP_CONFIG_TEXT_PX_MIN, APP_CONFIG_TEXT_PX_MAX, cfg->text_px,
-                  cfg->title_bold ? " checked" : "", cfg->text_bold ? " checked" : "",
+                  cfg->text_bold ? " checked" : "",
                   APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
 
     p += snprintf(p, end - p,
@@ -214,7 +215,9 @@ static char *build_page(const app_config_t *cfg)
                   "radar (shown in that order), how far the aircraft radar, "
                   "ship traffic and rain radar look, and the shortest ship to show: shorter ships, and ships "
                   "that don't report a length, are hidden (0 shows every "
-                  "ship).</small>");
+                  "ship). Within the optional inner zone (0 km = none) a "
+                  "separate shortest length applies, e.g. every boat close "
+                  "by but only big ships further out.</small>");
 
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         bool filled = (i < cfg->location_count);
@@ -238,6 +241,8 @@ static char *build_page(const app_config_t *cfg)
         int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         int min_len = filled ? cfg->ship_min_len_m[i] : 0;
+        int near_km = filled ? cfg->ship_near_km[i] : 0;
+        int near_len = filled ? cfg->ship_near_min_len_m[i] : 0;
         int rain_km = filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
         p += snprintf(p, end - p, "\"></div></div>"
                       "<label>Show</label><div class=chk>"
@@ -247,21 +252,27 @@ static char *build_page(const app_config_t *cfg)
                       "<label><input type=checkbox name=rn%d value=1%s>Rain</label></div>"
                       "<div class=row><div><label>Aircraft range (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                      "<div><label>Ship range (km)</label>"
-                      "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
-                      "<div class=row><div><label>Minimum ship length (m)</label>"
-                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
                       "<div><label>Rain range (km)</label>"
                       "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
+                      "<div class=row><div><label>Ship range (km)</label>"
+                      "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                      "<div><label>Shortest ship (m)</label>"
+                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
+                      "<div class=row><div><label>Inner zone (km)</label>"
+                      "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
+                      "<div><label>Shortest inside (m)</label>"
+                      "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
                       "</fieldset>",
                       i, (show & APP_SHOW_WEATHER) ? " checked" : "",
                       i, (show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (show & APP_SHOW_RAIN) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
+                      i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km,
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
                       i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len,
-                      i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km);
+                      i, APP_CONFIG_SHIP_NEAR_KM_MAX, near_km,
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, near_len);
     }
 
     p += snprintf(p, end - p, "%s", PAGE_TAIL);
@@ -436,6 +447,8 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_min_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t ship_near_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
@@ -493,6 +506,12 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         snprintf(key, sizeof(key), "shipminlen%d", i);
         long len = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         ship_min_len[n] = (len > 0 && len <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)len : 0;
+        snprintf(key, sizeof(key), "shipnearkm%d", i);
+        km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        ship_near_km[n] = (km > 0 && km <= APP_CONFIG_SHIP_NEAR_KM_MAX) ? (uint16_t)km : 0;
+        snprintf(key, sizeof(key), "shipnearlen%d", i);
+        len = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
+        ship_near_len[n] = (len > 0 && len <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)len : 0;
         snprintf(key, sizeof(key), "rainkm%d", i);
         km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         rain_km[n] = (km >= APP_CONFIG_RAIN_KM_MIN && km <= APP_CONFIG_RAIN_KM_MAX)
@@ -519,6 +538,8 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
         cfg.radar_km[i] = radar_km[i] ? radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
         cfg.ship_km[i] = ship_km[i] ? ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
         cfg.ship_min_len_m[i] = ship_min_len[i];
+        cfg.ship_near_km[i] = ship_near_km[i];
+        cfg.ship_near_min_len_m[i] = ship_near_len[i];
         cfg.rain_km[i] = rain_km[i] ? rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
     }
 

@@ -41,6 +41,11 @@
 /* Ships shorter than this (metres) are not shown; 0 shows every ship. */
 #define APP_CONFIG_SHIP_MIN_LEN_MAX 400
 
+/* Ship traffic: an optional inner circle (kilometres, 0 = none) with its own
+ * minimum ship length, e.g. small boats close by but only big ships further
+ * out. */
+#define APP_CONFIG_SHIP_NEAR_KM_MAX APP_CONFIG_SHIP_KM_MAX
+
 /* BarentsWatch API client credentials (https://www.barentswatch.no/minside/). */
 #define APP_CONFIG_AIS_CRED_MAX 128
 
@@ -83,11 +88,14 @@ typedef struct {
      * location i gets, in that order. radar_km[i] / ship_km[i] / rain_km[i]
      * are the ranges of its aircraft radar, ship traffic and rain radar
      * screens; ship_min_len_m[i] hides its shorter ships (0 shows every
-     * ship). */
+     * ship), except within ship_near_km[i] (0 = no inner circle), where
+     * ship_near_min_len_m[i] applies instead. */
     uint8_t show[APP_CONFIG_MAX_LOCATIONS];
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS]; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX] */
     uint16_t ship_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
+    uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS];   /* in [0, APP_CONFIG_SHIP_NEAR_KM_MAX] */
+    uint16_t ship_near_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX] */
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
     /* Dim the screen from dim_start to dim_end local time (minutes after

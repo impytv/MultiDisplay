@@ -42,7 +42,9 @@ typedef struct {
  * Fetch the ships within `radius_km` of (lat, lon) from the BarentsWatch
  * Live AIS API, authenticating with the OAuth client credentials. Ships
  * shorter than `min_len_m` metres are left out - and, when it is above 0, so
- * are ships that don't report a length. The access token is cached and
+ * are ships that don't report a length. Within `near_km` of the centre
+ * `near_min_len_m` applies instead (near_km 0: no inner circle). The access
+ * token is cached and
  * renewed shortly before it expires. On success `out`
  * holds the nearest AIS_MAX_SHIPS, nearest first.
  *
@@ -51,7 +53,7 @@ typedef struct {
  */
 esp_err_t ais_client_fetch(const char *client_id, const char *client_secret,
                            double lat, double lon, float radius_km, uint16_t min_len_m,
-                           ais_result_t *out);
+                           float near_km, uint16_t near_min_len_m, ais_result_t *out);
 
 /** Drop the kept-alive connection (frees its TLS buffers). Safe to call any time. */
 void ais_client_close(void);

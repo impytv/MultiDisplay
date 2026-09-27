@@ -297,7 +297,8 @@ static void parse_ship(const char *p, const char *end, raw_ship_t *r)
 }
 
 static bool parse_response(const char *json, size_t len, double lat0, double lon0,
-                           float radius_km, uint16_t min_len_m, ais_result_t *out)
+                           float radius_km, uint16_t min_len_m, float near_km,
+                           uint16_t near_min_len_m, ais_result_t *out)
 {
     const char *end = json + len;
     const char *p = skip_ws(json, end);
@@ -330,14 +331,15 @@ static bool parse_response(const char *json, size_t len, double lat0, double lon
         if (!r.has_lat || !r.has_lon) {
             continue;
         }
-        if (min_len_m > 0 && r.length < (float)min_len_m) {
-            continue; /* too short, or length not reported */
-        }
         float x_km = (float)((r.lon - lon0) * km_per_deg_lon);
         float y_km = (float)((r.lat - lat0) * km_per_deg_lat);
         float dist = sqrtf(x_km * x_km + y_km * y_km);
         if (dist > radius_km) {
             continue; /* in the query square's corners */
+        }
+        const uint16_t shortest = (dist <= near_km) ? near_min_len_m : min_len_m;
+        if (shortest > 0 && r.length < (float)shortest) {
+            continue; /* too short, or length not reported */
         }
         out->total++;
 
@@ -568,7 +570,7 @@ static int post_latest(const char *body, int body_len)
 
 esp_err_t ais_client_fetch(const char *client_id, const char *client_secret,
                            double lat, double lon, float radius_km, uint16_t min_len_m,
-                           ais_result_t *out)
+                           float near_km, uint16_t near_min_len_m, ais_result_t *out)
 {
     memset(out, 0, sizeof(*out));
     if (client_id == NULL || client_id[0] == '\0' || client_secret == NULL || client_secret[0] == '\0') {
@@ -592,7 +594,7 @@ esp_err_t ais_client_fetch(const char *client_id, const char *client_secret,
         "\"geometry\":{\"type\":\"Polygon\",\"coordinates\":[["
         "[%.5f,%.5f],[%.5f,%.5f],[%.5f,%.5f],[%.5f,%.5f],[%.5f,%.5f]]]}}",
         /* Only the Full model carries shipLength (at a few times the size). */
-        min_len_m > 0 ? "Full" : "Simple", since,
+        (min_len_m > 0 || (near_km > 0 && near_min_len_m > 0)) ? "Full" : "Simple", since,
         lon - dlon, lat - dlat, lon + dlon, lat - dlat, lon + dlon, lat + dlat,
         lon - dlon, lat + dlat, lon - dlon, lat - dlat);
 
@@ -623,7 +625,8 @@ esp_err_t ais_client_fetch(const char *client_id, const char *client_secret,
         return ESP_FAIL;
     }
 
-    if (!parse_response(s_resp.buf, s_resp.len, lat, lon, radius_km, min_len_m, out)) {
+    if (!parse_response(s_resp.buf, s_resp.len, lat, lon, radius_km, min_len_m, near_km,
+                        near_min_len_m, out)) {
         ESP_LOGW(TAG, "unparseable response (%u bytes)", (unsigned)s_resp.len);
         return ESP_FAIL;
     }
