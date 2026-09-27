@@ -145,6 +145,8 @@ static const char *TAG = "lvgl9_demo";
 #define RADAR_LIST_Y        78
 #define RADAR_LIST_ROW_H    26
 #define RADAR_LIST_ROWS     14
+#define RADAR_LIST_R        (RADAR_LIST_X + 294) /* right edge of the table */
+#define RADAR_COL_GAP       8
 #define RADAR_TAGS          10    /* aircraft that also get a callsign tag on the plot */
 #define KM_PER_NM           1.852f
 /* One request per poll; adsb.fi allows at most 1/s. */
@@ -1114,6 +1116,101 @@ static bool ship_plot_pos(const ais_ship_t *s, int range, float since_fetch_s, f
     return *sx * *sx + *sy * *sy <= (float)(RADAR_R * RADAR_R);
 }
 
+/* Table columns beside the radar (x and width in px), measured from the
+ * body font at start-up (radar_layout_tables): the text size is a setting,
+ * so fixed widths would let a larger font wrap or run cells together. */
+typedef struct {
+    int x, w; /* w == 0: column left out */
+} radar_col_t;
+enum { AC_CALL, AC_TYPE, AC_ALT, AC_GS, AC_DIST, AC_COLS };
+enum { SH_NAME, SH_TYPE, SH_KN, SH_DIST, SH_COLS };
+static radar_col_t s_ac_col[AC_COLS];
+static radar_col_t s_sh_col[SH_COLS];
+
+static int radar_text_w(const char *txt)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, txt, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    return sz.x;
+}
+
+/* Place columns 1..n-1 right to left from the table's right edge, each
+ * w[i] wide (0 = left out); column 0 gets whatever is left. Returns its
+ * width. */
+static int radar_layout_cols(radar_col_t *c, const int *w, int n)
+{
+    int right = RADAR_LIST_R;
+    for (int i = n - 1; i >= 1; i--) {
+        c[i].w = w[i];
+        if (w[i] > 0) {
+            c[i].x = right - w[i];
+            right = c[i].x - RADAR_COL_GAP;
+        }
+    }
+    c[0].x = RADAR_LIST_X;
+    c[0].w = right - RADAR_LIST_X;
+    return c[0].w;
+}
+
+static int radar_max_w(const char *const *txt, int n)
+{
+    int w = 0;
+    for (int i = 0; i < n; i++) {
+        int t = radar_text_w(txt[i]);
+        w = t > w ? t : w;
+    }
+    return w;
+}
+
+/* Each column as wide as its header or its widest likely value. The aircraft
+ * type is left out if the callsign would otherwise get too narrow for a
+ * typical one; names, callsigns and types that still don't fit are shortened
+ * with "..". */
+static void radar_layout_tables(void)
+{
+    int ac[AC_COLS] = {
+        [AC_TYPE] = radar_max_w((const char *[]){ "Type", "B77W" }, 2),
+        [AC_ALT] = radar_max_w((const char *[]){ "H\xC3\xB8yde", "00.0 km", "88.8 km", "000 m", "888 m" }, 5),
+        [AC_GS] = radar_max_w((const char *[]){ "kt", "000", "888" }, 3),
+        [AC_DIST] = radar_max_w((const char *[]){ "km", "000", "888" }, 3),
+    };
+    if (radar_layout_cols(s_ac_col, ac, AC_COLS) < radar_text_w("SAS1234")) {
+        ac[AC_TYPE] = 0;
+        radar_layout_cols(s_ac_col, ac, AC_COLS);
+    }
+
+    const char *cats[AIS_CAT_COUNT + 1];
+    for (int i = 0; i < AIS_CAT_COUNT; i++) {
+        cats[i] = ais_category_label(i);
+    }
+    cats[AIS_CAT_COUNT] = "Type";
+    int sh[SH_COLS] = {
+        [SH_TYPE] = radar_max_w(cats, AIS_CAT_COUNT + 1),
+        [SH_KN] = radar_max_w((const char *[]){ "kn", "00", "88" }, 3),
+        [SH_DIST] = radar_max_w((const char *[]){ "km", "000", "888", "8.8" }, 4),
+    };
+    radar_layout_cols(s_sh_col, sh, SH_COLS);
+}
+
+/* One table cell: left-aligned text is shortened to fit; right-aligned
+ * (numbers) is drawn in an area exactly its own width against the column's
+ * right edge, so it can't wrap onto the next row. Nothing for a left-out
+ * column. */
+static void radar_cell(lv_layer_t *layer, const radar_col_t *c, const char *txt, int y,
+                       lv_text_align_t align, lv_color_t color)
+{
+    if (c->w <= 0) {
+        return;
+    }
+    if (align == LV_TEXT_ALIGN_LEFT) {
+        radar_text_fit(layer, txt, c->x, y, c->w, color);
+    } else if (radar_vis(layer, c->x - RADAR_COL_GAP, y, c->x + c->w, y + lv_font_get_line_height(s_font_body))) {
+        /* Measured only in the strips it's drawn in - this runs per strip. */
+        const int w = radar_text_w(txt) + 1;
+        radar_text(layer, txt, c->x + c->w - w, y, w, LV_TEXT_ALIGN_RIGHT, color);
+    }
+}
+
 /* Ship traffic on the radar grid (already drawn): a hull-shaped marker along
  * each ship's heading with a SHIP_VEC_MIN-minute course vector, a dot for
  * moored / anchored ones, name tags for the nearest (those underway first),
@@ -1125,10 +1222,10 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
     const lv_color_t c_dim = lv_color_hex(s_rp->dim);
 
     radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
-    radar_text(layer, "Navn", RADAR_LIST_X, 50, 136, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_text(layer, "Type", RADAR_LIST_X + 136, 50, 58, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_text(layer, "kn", RADAR_LIST_X + 194, 50, 44, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_text(layer, "km", RADAR_LIST_X + 238, 50, 56, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_cell(layer, &s_sh_col[SH_NAME], "Navn", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_sh_col[SH_TYPE], "Type", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_sh_col[SH_KN], "kn", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_cell(layer, &s_sh_col[SH_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
 
     const ais_result_t *res = (s_radar_valid && s_ship_data != NULL) ? s_ship_data : NULL;
     if (res == NULL) {
@@ -1237,11 +1334,10 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
             snprintf(kn, sizeof(kn), "%.0f", (double)s->sog_kn);
         }
         snprintf(dist, sizeof(dist), s->dist_km < 10.0f ? "%.1f" : "%.0f", (double)s->dist_km);
-        radar_text_fit(layer, s->name, RADAR_LIST_X, y, 132, c_txt);
-        radar_text(layer, ais_category_label(s->category), RADAR_LIST_X + 136, y, 58,
-                   LV_TEXT_ALIGN_LEFT, col);
-        radar_text(layer, kn, RADAR_LIST_X + 194, y, 44, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_text(layer, dist, RADAR_LIST_X + 238, y, 56, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_cell(layer, &s_sh_col[SH_NAME], s->name, y, LV_TEXT_ALIGN_LEFT, c_txt);
+        radar_cell(layer, &s_sh_col[SH_TYPE], ais_category_label(s->category), y, LV_TEXT_ALIGN_LEFT, col);
+        radar_cell(layer, &s_sh_col[SH_KN], kn, y, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_cell(layer, &s_sh_col[SH_DIST], dist, y, LV_TEXT_ALIGN_RIGHT, c_txt);
     }
     if (res->total > res->count) {
         char more[40];
@@ -1508,11 +1604,11 @@ static void radar_draw_cb(lv_event_t *e)
 
     /* Table header + divider. */
     radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
-    radar_text(layer, "Fly", RADAR_LIST_X, 50, 88, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_text(layer, "Type", RADAR_LIST_X + 88, 50, 58, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_text(layer, "H\xC3\xB8yde", RADAR_LIST_X + 146, 50, 72, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_text(layer, "kt", RADAR_LIST_X + 218, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_text(layer, "km", RADAR_LIST_X + 256, 50, 38, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_CALL], "Fly", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_TYPE], "Type", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_ALT], "H\xC3\xB8yde", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_GS], "kt", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
 
     const adsb_result_t *res = (s_radar_valid && s_radar_data != NULL) ? s_radar_data : NULL;
 
@@ -1613,11 +1709,11 @@ static void radar_draw_cb(lv_event_t *e)
         radar_fmt_alt(alt, sizeof(alt), a->alt_ft);
         snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
         snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
-        radar_text(layer, a->callsign, RADAR_LIST_X, y, 88, LV_TEXT_ALIGN_LEFT, c_txt);
-        radar_text(layer, a->type, RADAR_LIST_X + 88, y, 58, LV_TEXT_ALIGN_LEFT, c_dim);
-        radar_text(layer, alt, RADAR_LIST_X + 146, y, 72, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_text(layer, gs, RADAR_LIST_X + 218, y, 38, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_text(layer, dist, RADAR_LIST_X + 256, y, 38, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_cell(layer, &s_ac_col[AC_CALL], a->callsign, y, LV_TEXT_ALIGN_LEFT, c_txt);
+        radar_cell(layer, &s_ac_col[AC_TYPE], a->type, y, LV_TEXT_ALIGN_LEFT, c_dim);
+        radar_cell(layer, &s_ac_col[AC_ALT], alt, y, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_cell(layer, &s_ac_col[AC_GS], gs, y, LV_TEXT_ALIGN_RIGHT, c_txt);
+        radar_cell(layer, &s_ac_col[AC_DIST], dist, y, LV_TEXT_ALIGN_RIGHT, c_txt);
     }
     if (res->total > res->count) {
         char more[40];
@@ -1764,6 +1860,9 @@ static void build_radar(lv_obj_t *root)
     lv_label_set_text(s_radar_info, "");
 
     lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
+    radar_layout_tables();
+    ESP_LOGI(TAG, "Radar table: callsign %d px%s, name %d px", s_ac_col[AC_CALL].w,
+             s_ac_col[AC_TYPE].w ? "" : " (no type column)", s_sh_col[SH_NAME].w);
 
     for (int l = 1; l <= RAIN_LEVELS; l++) {
         const uint32_t c = s_rp->rain[l - 1];
