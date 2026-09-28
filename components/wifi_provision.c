@@ -8,7 +8,10 @@
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
+#include "esp_image_format.h"
 #include "esp_mac.h"
+#include "esp_ota_ops.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -129,6 +132,17 @@ static const char PAGE_HEAD[] =
 
 static const char PAGE_TAIL[] =
     "<button type=submit>Save &amp; restart</button></form>"
+    /* Firmware update: the .bin goes up as the raw body of POST /ota. */
+    "<fieldset><legend>Firmware update</legend><small>build/multi_display.bin from the "
+    "project. The display restarts on the new firmware, and goes back to the current "
+    "one if the new one doesn't start properly.</small>"
+    "<input type=file id=fw accept=.bin style='margin-top:.6rem'>"
+    "<button type=button id=fwb>Upload &amp; restart</button><small id=fws></small></fieldset>"
+    "<script>fwb.onclick=()=>{let f=fw.files[0];if(!f)return;fwb.disabled=true;"
+    "fws.textContent='Uploading...';let x=new XMLHttpRequest();x.open('POST','/ota');"
+    "x.upload.onprogress=e=>fws.textContent='Uploading '+Math.round(100*e.loaded/e.total)+' %';"
+    "x.onload=()=>{fws.textContent=x.responseText;fwb.disabled=x.status==200};"
+    "x.onerror=()=>{fws.textContent='Upload failed';fwb.disabled=false};x.send(f)}</script>"
     "<script>fetch('/scan').then(r=>r.json()).then(l=>{let d=document.getElementById('nets');"
     "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>"
     /* Move a location up or down: swap every field with the neighbour's
@@ -434,6 +448,104 @@ static esp_err_t h_save(httpd_req_t *req)
     return err;
 }
 
+/* POST /ota: a firmware image (build/multi_display.bin) as the raw request
+ * body - from the setup page, or e.g.
+ *     curl --data-binary @build/multi_display.bin http://<ip>/ota
+ * It goes into the app slot not running and is booted into; the bootloader
+ * returns to the running firmware if the new one doesn't mark itself valid
+ * (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, see main.c). */
+#define OTA_CHUNK 4096
+
+static esp_err_t ota_fail(httpd_req_t *req, const char *http_status, const char *msg)
+{
+    ESP_LOGE(TAG, "Firmware update: %s", msg);
+    status("Programvareoppdatering feilet");
+    httpd_resp_set_status(req, http_status);
+    return httpd_resp_sendstr(req, msg);
+}
+
+static esp_err_t h_ota(httpd_req_t *req)
+{
+    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
+    if (part == NULL) {
+        return ota_fail(req, "500 Internal Server Error", "No slot to update into (flash the OTA partition table by USB first)");
+    }
+    if (req->content_len < sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t) ||
+        req->content_len > part->size) {
+        return ota_fail(req, "400 Bad Request", "That doesn't look like a firmware image of the right size");
+    }
+    uint8_t *buf = malloc(OTA_CHUNK);
+    if (buf == NULL) {
+        return ota_fail(req, "500 Internal Server Error", "Out of memory");
+    }
+    ESP_LOGI(TAG, "Firmware update: %u bytes into %s", (unsigned)req->content_len, part->label);
+    status("Oppdaterer programvare...");
+
+    esp_ota_handle_t ota = 0;
+    const char *err = NULL;
+    size_t done = 0;
+    while (err == NULL && done < req->content_len) {
+        /* Whole chunks, so the first one holds the app description. */
+        size_t n = 0;
+        const size_t want = (req->content_len - done < OTA_CHUNK) ? req->content_len - done : OTA_CHUNK;
+        int timeouts = 0;
+        while (n < want) {
+            int r = httpd_req_recv(req, (char *)buf + n, want - n);
+            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 5) {
+                continue;
+            }
+            if (r <= 0) {
+                err = "Upload interrupted";
+                break;
+            }
+            n += (size_t)r;
+        }
+        if (err != NULL) {
+            break;
+        }
+        if (done == 0) {
+            /* Refuse anything that isn't this project's firmware. */
+            const esp_app_desc_t *d =
+                (const esp_app_desc_t *)(buf + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t));
+            if (buf[0] != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD ||
+                strncmp(d->project_name, esp_app_get_description()->project_name, sizeof(d->project_name)) != 0) {
+                err = "Not a MultiDisplay firmware image";
+                break;
+            }
+            ESP_LOGI(TAG, "Firmware update: version %.32s, built %.16s %.16s", d->version, d->date, d->time);
+            if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
+                err = "Couldn't start writing the update";
+                break;
+            }
+        }
+        if (esp_ota_write(ota, buf, n) != ESP_OK) {
+            err = "Writing the update failed";
+            break;
+        }
+        done += n;
+    }
+    free(buf);
+    if (err == NULL) {
+        if (esp_ota_end(ota) != ESP_OK) {
+            err = "The uploaded image is damaged or incomplete";
+        } else if (esp_ota_set_boot_partition(part) != ESP_OK) {
+            err = "Couldn't select the new firmware";
+        }
+        ota = 0;
+    }
+    if (err != NULL) {
+        if (ota != 0) {
+            esp_ota_abort(ota);
+        }
+        return ota_fail(req, "400 Bad Request", err);
+    }
+    ESP_LOGI(TAG, "Firmware update written - restarting");
+    status("Programvare oppdatert.\nStarter p\xC3\xA5 nytt...");
+    httpd_resp_sendstr(req, "Updated - restarting\n");
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
 /* "HH:MM" (as an <input type=time> sends it) to minutes after midnight, or
  * -1 if it isn't a valid time. */
 static int parse_hhmm(const char *s)
@@ -697,7 +809,7 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     /* The POST body and the app_config_t are on the heap (see h_save). */
     config.stack_size = 6144;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 10;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -707,6 +819,7 @@ static void start_web_server(void)
         return;
     }
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/save", .method = HTTP_POST, .handler = h_save });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/ota", .method = HTTP_POST, .handler = h_ota });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/scan", .method = HTTP_GET, .handler = h_scan });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/", .method = HTTP_GET, .handler = h_root });
@@ -878,9 +991,19 @@ static bool sta_try_connect(const app_config_t *cfg)
     return false;
 }
 
-static void portal_run(void)
+/* How often the portal tries the saved network again (see portal_run). */
+#define PORTAL_STA_RETRY_MS     60000
+
+/* Run the setup portal until the form is saved (h_save reboots). With
+ * `retry_sta` - a provisioned device whose network didn't answer, typically
+ * because the router is still booting after a power cut - the saved network
+ * is also tried again every PORTAL_STA_RETRY_MS, and the device restarts
+ * into normal operation once it connects. Not while someone is on the
+ * portal's own network: a connect attempt hops channels and would drop them. */
+static void portal_run(bool retry_sta)
 {
     s_stop_reconnect = true;
+    xEventGroupClearBits(s_events, BIT_CONNECTED);
 
     wifi_config_t ap = { 0 };
     snprintf((char *)ap.ap.ssid, sizeof(ap.ap.ssid), "%s", s_ap_ssid);
@@ -895,17 +1018,38 @@ static void portal_run(void)
 
     ESP_LOGI(TAG, "Setup portal: SSID '%s' -> http://%s/", s_ap_ssid, PORTAL_AP_IP);
 
-    char msg[96];
-    snprintf(msg, sizeof(msg), "Oppsett:\nKoble til WiFi \"%s\"\nog \xC3\xA5pne  http://%s", s_ap_ssid, PORTAL_AP_IP);
+    char msg[160];
+    snprintf(msg, sizeof(msg), "Oppsett:\nKoble til WiFi \"%s\"\nog \xC3\xA5pne  http://%s%s", s_ap_ssid, PORTAL_AP_IP,
+             retry_sta ? "\n\nPr\xC3\xB8ver lagret WiFi igjen hvert minutt" : "");
     status(msg);
 
     xTaskCreate(dns_task, "captdns", 3072, NULL, 4, NULL);
     start_web_server();
 
-    /* Nothing more to do here - h_save reboots the device once the form is
-     * submitted. */
+    /* Otherwise nothing more to do here - h_save reboots the device once the
+     * form is submitted. */
+    TickType_t last_try = xTaskGetTickCount();
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
+        if (!retry_sta) {
+            continue;
+        }
+        if (xEventGroupGetBits(s_events) & BIT_CONNECTED) {
+            ESP_LOGI(TAG, "Saved network is back - restarting");
+            status("WiFi tilkoblet \xE2\x80\x93 starter p\xC3\xA5 nytt...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+        }
+        wifi_sta_list_t clients;
+        if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num > 0) {
+            last_try = xTaskGetTickCount(); /* someone is setting it up: leave them be */
+            continue;
+        }
+        if (xTaskGetTickCount() - last_try >= pdMS_TO_TICKS(PORTAL_STA_RETRY_MS)) {
+            last_try = xTaskGetTickCount();
+            ESP_LOGI(TAG, "Trying the saved network again...");
+            esp_wifi_connect();
+        }
     }
 }
 
@@ -932,9 +1076,10 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
         ESP_LOGW(TAG, "WiFi connect failed - opening setup portal");
         status("WiFi feilet \xE2\x80\x93 starter oppsett");
         esp_wifi_stop();
+        portal_run(true); /* never returns */
     }
 
-    portal_run(); /* never returns */
+    portal_run(false); /* never returns */
     return ESP_OK;
 }
 

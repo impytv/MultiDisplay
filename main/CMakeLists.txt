@@ -26,6 +26,10 @@ idf_component_register(
         nvs_flash
         esp_http_client
         esp_http_server
+        esp_timer
+        app_update
+        bootloader_support
+        esp_app_format
         esp_partition
         esp_driver_gpio
         lwip

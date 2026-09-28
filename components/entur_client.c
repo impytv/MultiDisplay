@@ -19,7 +19,9 @@ static const char *TAG = "entur_client";
 /* Entur asks every client to identify itself as "<company>-<application>". */
 #define ENTUR_CLIENT_NAME     "trondve-multidisplay"
 #define ENTUR_HTTP_TIMEOUT_MS 15000
-/* ~450 bytes per call; at most ENTUR_MAX_STOPS * 100 calls. */
+/* Departures asked for per stop, at most. */
+#define ENTUR_MAX_CALLS       200
+/* ~450 bytes per call; at most ENTUR_MAX_STOPS * ENTUR_MAX_CALLS calls. */
 #define ENTUR_MAX_RESPONSE_LEN (512 * 1024)
 
 /* cJSON in PSRAM - the response is hundreds of small nodes (see
@@ -241,15 +243,15 @@ static char *build_query(const entur_selection_t *sel)
     size_t n = snprintf(q, cap, "{");
     for (int i = 0; i < sel->stop_count && n < cap; i++) {
         const entur_stop_sel_t *st = &sel->stops[i];
-        /* Enough calls to find the next two departures per line and direction. */
-        int calls = st->line_count ? 20 * st->line_count : 100;
-        if (calls > 100) {
-            calls = 100;
-        }
+        /* The next ENTUR_PER_GROUP departures of every line and destination,
+         * however often the others go: a plain "next N departures" at a busy
+         * stop is all frequent lines, and the rare ones never show. The total
+         * is only a cap on the response. */
         n += snprintf(q + n, cap - n,
                       "s%d:stopPlace(id:\"%s\"){name estimatedCalls(timeRange:86400,numberOfDepartures:%d,"
+                      "numberOfDeparturesPerLineAndDestinationDisplay:%d,"
                       "arrivalDeparture:departures,includeCancelledTrips:true",
-                      i, st->stop_id, calls);
+                      i, st->stop_id, ENTUR_MAX_CALLS, ENTUR_PER_GROUP);
         if (st->line_count && n < cap) {
             n += snprintf(q + n, cap - n, ",whiteListed:{lines:[");
             for (int l = 0; l < st->line_count && n < cap; l++) {

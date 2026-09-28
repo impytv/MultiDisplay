@@ -37,7 +37,25 @@ again only after regenerating it:
 idf.py -p PORT coast-flash
 ```
 
+### Updating over WiFi
+
+After the first USB flash, new firmware can go over WiFi. Upload
+`build/multi_display.bin` under **Firmware update** on the setup page, or:
+
+```bash
+curl --data-binary @build/multi_display.bin http://DEVICE-IP/ota
+```
+
+The display restarts on the new firmware. If that firmware doesn't get
+through one full round of fetching and drawing, the next restart goes back
+to the previous one. Only firmware built from this project is accepted.
+Changes to the partition table, the bootloader, the fonts or the coastline
+still need USB.
+
 ## Notes
+
+- A software watchdog restarts the device if the screen stops updating for a
+  minute or the fetching stalls for 20 minutes; the next boot logs which.
 
 - The example keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.
 - The default panel resolution is `800x480`.
@@ -202,7 +220,10 @@ stored in NVS — no rebuild needed to change them.
 
 On a fresh flash (WiFi SSID still the `myssid` placeholder in `sdkconfig`),
 or any time you **hold the BOOT button while powering on**, or if the saved
-WiFi fails to connect, the device starts a setup access point:
+WiFi fails to connect, the device starts a setup access point. If the saved
+WiFi is only down for now (a router still starting after a power cut), the
+device tries it again every minute, unless someone is connected to the setup
+network, and restarts normally once it's back:
 
 1. Connect a phone/laptop to the WiFi network **`MultiDisplay-XXXX`** (open).
 2. A "sign in to network" page opens automatically (captive portal); if not,

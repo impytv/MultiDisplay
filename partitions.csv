@@ -1,6 +1,12 @@
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     ,        0x6000,
-phy_init, data, phy,     ,        0x1000,
-factory,  app,  factory, ,        4M,
-fonts,    data, spiffs,  ,        0x80000,
-coast,    data, 0x40,    ,        5M,
+# Name,   Type, SubType, Offset,   Size, Flags
+# Two app slots for updates over WiFi (POST /ota, see wifi_provision.c).
+# ota_0 is where the single factory app used to be, and fonts/coast keep
+# their offsets, so moving to this table needs no rewrite of the data
+# partitions; otadata and ota_1 go after them.
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+ota_0,    app,  ota_0,   0x10000,  4M,
+fonts,    data, spiffs,  0x410000, 0x80000,
+coast,    data, 0x40,    0x490000, 5M,
+otadata,  data, ota,     0x990000, 0x2000,
+ota_1,    app,  ota_1,   0x9a0000, 4M,

@@ -5,14 +5,18 @@
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 #include "esp_netif_sntp.h"
+#include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_rom_crc.h"
+#include "esp_rom_sys.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmap_generate_fonts.h"
@@ -182,6 +186,7 @@ static const char *TAG = "lvgl9_demo";
 #define DEP_X               12
 #define DEP_BADGE_W         64
 #define DEP_TIME_W          112
+#define DEP_GONE_S          30  /* a departure this long past is no longer shown */
 
 static const lv_font_t *s_font_body;
 static const lv_font_t *s_font_large;
@@ -227,6 +232,24 @@ static uint32_t s_last_touch_ms;
 static bool s_auto_running;
 static uint32_t s_auto_switch_ms;
 static TaskHandle_t s_yr_task;
+
+static void view_enter(int idx);
+static void wd_lvgl_beat_cb(lv_timer_t *t);
+
+/* Take the adapter lock to show what was fetched for screen `for_view`;
+ * false, without the lock, if the screen has moved on. Checked under the
+ * lock, as taps switch screens from the LVGL task (see view_enter). */
+static bool lock_for_view(int for_view)
+{
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        return false;
+    }
+    if (s_view_index != for_view) {
+        esp_lv_adapter_unlock();
+        return false;
+    }
+    return true;
+}
 
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
@@ -341,8 +364,54 @@ static int s_rain_pos = -1;         /* frame position on show */
 static int s_rain_hold;             /* ticks left resting on the latest */
 static time_t s_rain_time;          /* when the frame on show was taken */
 static int s_coast_loc = -1;
+/* The location and range the rain frames are held for (see rain_prepare). */
+static int s_rain_prep_loc = -1, s_rain_prep_range;
+/* Frames older than this aren't shown again on coming back to the screen. */
+#define RAIN_KEEP_S         (15 * 60)
 static int s_coast_km;
 static int s_radar_loc = -1;        /* location the radar screen is set to */
+
+/* The last data fetched for each location's aircraft, ship and departure
+ * screens, and its weather screen as last drawn (forecast with the nowcast
+ * spliced in, resampled). A screen comes back showing these at once, while
+ * the weather task fetches afresh, as long as they aren't older than the
+ * *_CACHE_MAX_MS below. PSRAM, allocated in app_main for the locations that
+ * have the screen; written and read with the adapter lock held. */
+typedef struct {
+    bool valid;
+    uint32_t tick; /* lv_tick_get() when fetched */
+    time_t when;   /* wall clock when fetched, 0 if not synced yet */
+} fetch_stamp_t;
+#define RADAR_CACHE_MAX_MS  30000              /* dead-reckoned from here on */
+#define SHIP_CACHE_MAX_MS   (5 * 60 * 1000)
+#define DEP_CACHE_MAX_MS    (5 * 60 * 1000)
+#define WX_CACHE_MAX_MS     (30 * 60 * 1000)
+/* A forecast fetched this long ago is flagged as old on screen. */
+#define WX_STALE_S          (30 * 60)
+/* How long the weather task lets a screen just switched to draw before it
+ * starts fetching for it (see yr_weather_task). */
+#define VIEW_SETTLE_MS      500
+static adsb_result_t *s_adsb_cache[APP_CONFIG_MAX_LOCATIONS];
+static fetch_stamp_t s_adsb_at[APP_CONFIG_MAX_LOCATIONS];
+static ais_result_t *s_ais_cache[APP_CONFIG_MAX_LOCATIONS];
+static fetch_stamp_t s_ais_at[APP_CONFIG_MAX_LOCATIONS];
+static entur_departures_t *s_dep_cache[APP_CONFIG_MAX_LOCATIONS];
+static fetch_stamp_t s_dep_at[APP_CONFIG_MAX_LOCATIONS];
+static yr_forecast_t *s_wx_shown[APP_CONFIG_MAX_LOCATIONS];
+static fetch_stamp_t s_wx_shown_at[APP_CONFIG_MAX_LOCATIONS];
+
+static void stamp_now(fetch_stamp_t *st)
+{
+    const time_t now = time(NULL);
+    st->valid = true;
+    st->tick = lv_tick_get();
+    st->when = (now > PLAUSIBLE_EPOCH_S) ? now : 0;
+}
+
+static bool stamp_fresh(const fetch_stamp_t *st, uint32_t max_ms)
+{
+    return st->valid && lv_tick_get() - st->tick < max_ms;
+}
 
 /* The radar screen now shows `loc` at `range_km` (adapter lock held): stop
  * drawing a coastline image made for anything else until coast_render redoes it. */
@@ -370,6 +439,7 @@ static lv_obj_t *s_ov_alert[APP_CONFIG_MAX_LOCATIONS]; /* small badge beside the
 static yr_forecast_t *s_fc_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_fc_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_fc_tk[APP_CONFIG_MAX_LOCATIONS];
+static time_t s_fc_when[APP_CONFIG_MAX_LOCATIONS]; /* wall clock of that refresh, 0 if not synced */
 
 /* Per-location severe weather alerts (PSRAM), same shape as the forecast
  * cache above and refreshed on its own cadence (see ALERT_REFRESH_INTERVAL_MS). */
@@ -457,11 +527,16 @@ static void init_fonts(void)
      * in main/CMakeLists.txt) as the "F:" drive: LVGL's FreeType binding opens
      * the .ttf by path, and the MET weather icons are loaded the same way
      * (F:<symbol_code>.png, decoded by esp_lv_decoder). */
+    /* Read through esp_partition_read, not memory-mapped: with the app
+     * running from PSRAM (SPIRAM_XIP_FROM_PSRAM) the other core keeps going
+     * during a flash write - an NVS save on every tap, a firmware update -
+     * and a glyph read from mapped flash then got garbage, FreeType failed,
+     * and LVGL asserted. Partition reads wait for the write instead. */
     const mmap_assets_config_t mmap_cfg = {
         .partition_label = "fonts",
         .max_files = MMAP_FONTS_FILES,
         .checksum = MMAP_FONTS_CHECKSUM,
-        .flags = { .mmap_enable = 1 },
+        .flags = { .mmap_enable = 0 },
     };
     mmap_assets_handle_t mmap_handle = NULL;
     ESP_ERROR_CHECK(mmap_assets_new(&mmap_cfg, &mmap_handle));
@@ -485,9 +560,10 @@ static void init_fonts(void)
 }
 
 /* Tap the right half of the screen: next stop (overview -> location 1 ->
- * location 2 -> ... -> overview); tap the left half: previous stop. Wakes the weather task so it
- * re-renders / refetches. Runs in the LVGL context (which already holds the
- * adapter lock), so it only pokes volatiles + a notify. */
+ * location 2 -> ... -> overview); tap the left half: previous stop. Runs in
+ * the LVGL context (which already holds the adapter lock): switches the
+ * screen at once, showing whatever is cached for it (view_enter), and wakes
+ * the weather task to fetch afresh. */
 static void screen_touch_cb(lv_event_t *e)
 {
     /* Any touch holds off the automatic rotation for another idle period. */
@@ -522,6 +598,7 @@ static void screen_touch_cb(lv_event_t *e)
     }
     s_view_auto = false;
     s_view_index = next;
+    view_enter(next);
     ESP_LOGI(TAG, "Tap: view %d/%d", next, s_stop_count);
     if (s_yr_task != NULL) {
         xTaskNotifyGive(s_yr_task);
@@ -563,6 +640,7 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
             if (next != s_view_index) {
                 s_view_auto = true;
                 s_view_index = next;
+                view_enter(next);
                 ESP_LOGI(TAG, "Auto: view %d/%d", next, s_stop_count);
                 if (s_yr_task != NULL) {
                     xTaskNotifyGive(s_yr_task);
@@ -1768,28 +1846,27 @@ static void radar_redraw_timer_cb(lv_timer_t *t)
     }
 }
 
-/* Called with the adapter lock held. */
-static void ships_apply(const ais_result_t *res)
+/* Show `res`, fetched at `at`. Called with the adapter lock held. */
+static void ships_apply(const ais_result_t *res, const fetch_stamp_t *at)
 {
     memcpy(s_ship_data, res, sizeof(*res));
     s_radar_valid = true;
-    s_radar_tick = lv_tick_get();
+    s_radar_tick = at->tick;
     ship_info_set(res->total);
     lv_obj_invalidate(s_radar_canvas);
 }
 
-/* Called with the adapter lock held. */
-static void radar_apply(const adsb_result_t *res)
+/* Show `res`, fetched at `at`. Called with the adapter lock held. */
+static void radar_apply(const adsb_result_t *res, const fetch_stamp_t *at)
 {
     memcpy(s_radar_data, res, sizeof(*res));
     s_radar_valid = true;
-    s_radar_tick = lv_tick_get();
+    s_radar_tick = at->tick;
 
     char info[64];
-    time_t now = time(NULL);
-    if (now > PLAUSIBLE_EPOCH_S) {
+    if (at->when > 0) {
         struct tm lt;
-        localtime_r(&now, &lt);
+        localtime_r(&at->when, &lt);
         snprintf(info, sizeof(info), "%d fly innen %u km  kl. %02d:%02d",
                  res->total, (unsigned)s_radar_range_km, lt.tm_hour, lt.tm_min);
     } else {
@@ -1900,17 +1977,24 @@ static void ships_set_location(int loc)
 }
 
 /* Point the radar screen at location `loc`'s rain radar (adapter lock held).
- * Blank until the first image for it lands. */
+ * The hour of frames still held for it is kept if recent enough (the poll
+ * then only fetches what's new); otherwise blank until the first image for
+ * it lands. */
 static void rain_set_location(int loc)
 {
     s_ship_mode = false;
     s_rain_mode = true;
-    s_rain_valid = false;
-    s_rain_pos = -1;
-    s_rain_hold = 0;
-    s_rain_latest = 0;
-    for (int i = 0; i < RAIN_FRAMES; i++) {
-        s_rain_ftime[i] = RAIN_EMPTY;
+    const time_t now = time(NULL);
+    const bool keep = s_rain_valid && loc == s_rain_prep_loc && s_cfg->rain_km[loc] == s_rain_prep_range &&
+                      now > PLAUSIBLE_EPOCH_S && now - s_rain_latest < RAIN_KEEP_S;
+    if (!keep) {
+        s_rain_valid = false;
+        s_rain_pos = -1;
+        s_rain_hold = 0;
+        s_rain_latest = 0;
+        for (int i = 0; i < RAIN_FRAMES; i++) {
+            s_rain_ftime[i] = RAIN_EMPTY;
+        }
     }
     lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", s_cfg->locations[loc].name);
     s_radar_range_km = s_cfg->rain_km[loc];
@@ -1978,6 +2062,14 @@ static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right,
     radar_text(layer, buf, x_right - DEP_TIME_W, y, DEP_TIME_W, LV_TEXT_ALIGN_RIGHT, color);
 }
 
+/* Whether call `c` is still to come (or only just gone) at `now` - the data
+ * can be up to a poll old, or much older while fetches fail. */
+static bool dep_call_upcoming(const entur_call_t *c, time_t now)
+{
+    const int64_t t = c->cancelled ? c->aimed : c->expected;
+    return t >= (int64_t)now - DEP_GONE_S;
+}
+
 static void dep_draw_cb(lv_event_t *e)
 {
     if (!s_dep_valid) {
@@ -1994,6 +2086,18 @@ static void dep_draw_cb(lv_event_t *e)
     const lv_color_t c_txt = dep_text_color();
     const lv_color_t c_dim = dep_dim_color();
 
+    /* Rows with something still to come, to say how many didn't fit. */
+    int rows_left = 0;
+    for (int g = 0; g < s_dep_data->group_count; g++) {
+        const entur_group_t *grp = &s_dep_data->groups[g];
+        for (int c = 0; c < grp->call_count; c++) {
+            if (now <= PLAUSIBLE_EPOCH_S || dep_call_upcoming(&grp->calls[c], now)) {
+                rows_left++;
+                break;
+            }
+        }
+    }
+
     int y = DEP_BODY_Y;
     for (int si = 0; si < s_dep_data->stop_count && y + row_h <= bottom; si++) {
         /* The stop's name as a heading - only needed to tell several apart. */
@@ -2005,6 +2109,18 @@ static void dep_draw_cb(lv_event_t *e)
         for (int g = 0; g < s_dep_data->group_count && y + row_h <= bottom; g++) {
             const entur_group_t *grp = &s_dep_data->groups[g];
             if (grp->stop != si) {
+                continue;
+            }
+            /* Only the departures still to come; a row whose departures have all gone
+             * is left out until the next poll brings the next ones. */
+            const entur_call_t *calls[ENTUR_PER_GROUP];
+            int n_calls = 0;
+            for (int c = 0; c < grp->call_count; c++) {
+                if (now <= PLAUSIBLE_EPOCH_S || dep_call_upcoming(&grp->calls[c], now)) {
+                    calls[n_calls++] = &grp->calls[c];
+                }
+            }
+            if (n_calls == 0) {
                 continue;
             }
             any = true;
@@ -2030,13 +2146,12 @@ static void dep_draw_cb(lv_event_t *e)
             }
             radar_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, x_t1 - DEP_TIME_W - x_dest - 8, c_txt);
 
-            if (grp->call_count > 0) {
-                dep_draw_call(layer, &grp->calls[0], x_t1, y + (row_h - lh) / 2, now);
-            }
-            if (grp->call_count > 1) {
-                dep_draw_call(layer, &grp->calls[1], x_t2, y + (row_h - lh) / 2, now);
+            dep_draw_call(layer, calls[0], x_t1, y + (row_h - lh) / 2, now);
+            if (n_calls > 1) {
+                dep_draw_call(layer, calls[1], x_t2, y + (row_h - lh) / 2, now);
             }
             y += row_h;
+            rows_left--;
         }
         if (!any && y + row_h <= bottom) {
             radar_text(layer, "Ingen avganger de neste 24 timene.", x_dest, y + (row_h - lh) / 2,
@@ -2044,6 +2159,14 @@ static void dep_draw_cb(lv_event_t *e)
             y += row_h;
         }
         y += 6;
+    }
+    if (rows_left > 0) {
+        char more[64];
+        /* At ENTUR_MAX_GROUPS the fetch itself may have left some out. */
+        snprintf(more, sizeof(more), "+ %s%d %s som ikke f\xC3\xA5r plass",
+                 s_dep_data->group_count >= ENTUR_MAX_GROUPS ? "minst " : "", rows_left,
+                 rows_left == 1 ? "linje" : "linjer");
+        radar_text(layer, more, DEP_X, bottom + 4, x_t1 - DEP_X, LV_TEXT_ALIGN_LEFT, c_dim);
     }
 }
 
@@ -2135,16 +2258,34 @@ static void build_departures(lv_obj_t *root)
     lv_timer_create(dep_clock_timer_cb, 1000, NULL);
 }
 
+/* "Oppdatert HH:MM:SS" for data fetched at `at` (adapter lock held). */
+static void dep_updated_set(const fetch_stamp_t *at)
+{
+    if (at->when > 0) {
+        struct tm lt;
+        localtime_r(&at->when, &lt);
+        lv_label_set_text_fmt(s_dep_updated, "Oppdatert %02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+    } else {
+        lv_label_set_text(s_dep_updated, "");
+    }
+}
+
 /* Point the board at location `loc` (adapter lock held): its title and its
- * selection, blank until the first fetch for it lands. */
+ * selection, and its last departures if they're recent - otherwise blank
+ * until the first fetch for it lands. */
 static void dep_set_location(int loc)
 {
-    s_dep_valid = false;
     if (!entur_parse_selection(s_cfg->departures[loc], s_dep_sel)) {
         s_dep_sel->stop_count = 0;
     }
     lv_label_set_text_fmt(s_dep_title, "Avganger %s", s_cfg->locations[loc].name);
-    lv_label_set_text(s_dep_updated, "");
+    s_dep_valid = s_dep_cache[loc] != NULL && stamp_fresh(&s_dep_at[loc], DEP_CACHE_MAX_MS);
+    if (s_dep_valid) {
+        memcpy(s_dep_data, s_dep_cache[loc], sizeof(*s_dep_data));
+        dep_updated_set(&s_dep_at[loc]);
+    } else {
+        lv_label_set_text(s_dep_updated, "");
+    }
     lv_obj_invalidate(s_dep_canvas);
 }
 
@@ -2152,29 +2293,35 @@ static void dep_set_location(int loc)
  * on it. Returns whether the board has data up. */
 static bool departures_poll(int loc, entur_departures_t *scratch, int for_view)
 {
-    (void)loc; /* s_dep_sel was parsed for it by dep_set_location */
-    if (s_dep_sel->stop_count == 0) {
-        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+    /* s_dep_sel was parsed for `loc` by dep_set_location; copied, as a tap
+     * may re-parse it for another location while the fetch is under way. */
+    static entur_selection_t sel;
+    bool have = false;
+    if (lock_for_view(for_view)) {
+        sel = *s_dep_sel;
+        have = true;
+        if (sel.stop_count == 0) {
             lv_label_set_text(s_status_label, "Ingen holdeplasser valgt.\nLegg dem inn p\xC3\xA5 oppsettsiden.");
-            esp_lv_adapter_unlock();
         }
+        esp_lv_adapter_unlock();
+    }
+    if (!have || sel.stop_count == 0) {
         return false;
     }
-    esp_err_t err = entur_client_fetch(s_dep_sel, scratch);
+    esp_err_t err = entur_client_fetch(&sel, scratch);
 
-    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
-        return s_dep_valid;
+    if (!lock_for_view(for_view)) {
+        return false;
     }
     if (err == ESP_OK) {
         memcpy(s_dep_data, scratch, sizeof(*scratch));
         s_dep_valid = true;
-        lv_label_set_text(s_status_label, "");
-        time_t now = time(NULL);
-        if (now > PLAUSIBLE_EPOCH_S) {
-            struct tm lt;
-            localtime_r(&now, &lt);
-            lv_label_set_text_fmt(s_dep_updated, "Oppdatert %02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+        stamp_now(&s_dep_at[loc]);
+        if (s_dep_cache[loc] != NULL) {
+            memcpy(s_dep_cache[loc], scratch, sizeof(*scratch));
         }
+        lv_label_set_text(s_status_label, "");
+        dep_updated_set(&s_dep_at[loc]);
         lv_obj_invalidate(s_dep_canvas);
     } else if (!s_dep_valid) {
         lv_label_set_text(s_status_label, "Kunne ikke hente avganger. Pr\xC3\xB8ver igjen...");
@@ -2550,6 +2697,9 @@ static void build_ui(lv_obj_t *screen)
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
+    /* The software watchdog's sign of life from the LVGL task (wd_start). */
+    lv_timer_create(wd_lvgl_beat_cb, 1000, NULL);
+
     /* Automatic rotation, counting the idle time from boot. */
     s_last_touch_ms = lv_tick_get();
     if (s_cfg->auto_idle_min > 0) {
@@ -2837,11 +2987,29 @@ static void format_hour_label(int64_t epoch, char *out, size_t out_len)
     snprintf(out, out_len, "%02d:00", lt.tm_hour);
 }
 
-static void update_ui_with_forecast(const yr_forecast_t *fc)
+/* Draw forecast `fc`, fetched at wall-clock `fetched` (0 if the clock
+ * wasn't synced): "Oppdatert kl." is when the device got it, not when MET
+ * issued it, and turns orange once it's WX_STALE_S old - the chart itself
+ * looks the same however old the data is. Adapter lock held. */
+static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
 {
     const yr_forecast_point_t *now = &fc->points[0];
 
-    lv_label_set_text_fmt(s_updated_label, "Oppdatert kl. %s", fc->updated_hour_minute);
+    const time_t wall = time(NULL);
+    if (fetched > 0) {
+        struct tm lt;
+        localtime_r(&fetched, &lt);
+        const bool stale = wall - fetched >= WX_STALE_S;
+        lv_label_set_text_fmt(s_updated_label, "%s kl. %02d:%02d", stale ? "Sist oppdatert" : "Oppdatert",
+                              lt.tm_hour, lt.tm_min);
+        if (stale) {
+            lv_obj_set_style_text_color(s_updated_label, lv_palette_main(LV_PALETTE_ORANGE), 0);
+        } else {
+            lv_obj_remove_local_style_prop(s_updated_label, LV_STYLE_TEXT_COLOR, 0);
+        }
+    } else {
+        lv_label_set_text_fmt(s_updated_label, "Varsel fra kl. %s", fc->updated_hour_minute);
+    }
 
     int temp_min_idx = 0, temp_max_idx = 0;
     float temp_min = now->air_temperature_c;
@@ -3308,12 +3476,16 @@ static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
     double lon = atof(s_cfg->locations[loc].lon);
     bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg->radar_km[loc], scratch) == ESP_OK);
 
-    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
+    if (!lock_for_view(for_view)) {
         return;
     }
     if (ok) {
         lv_label_set_text(s_status_label, "");
-        radar_apply(scratch);
+        stamp_now(&s_adsb_at[loc]);
+        if (s_adsb_cache[loc] != NULL) {
+            memcpy(s_adsb_cache[loc], scratch, sizeof(*scratch));
+        }
+        radar_apply(scratch, &s_adsb_at[loc]);
     } else if (!s_radar_valid) {
         lv_label_set_text(s_status_label, "Kunne ikke hente fly. Pr\xC3\xB8ver igjen...");
     }
@@ -3676,12 +3848,16 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
                                      (float)s_cfg->ship_near_km[loc], s_cfg->ship_near_min_len_m[loc],
                                      scratch);
 
-    if (s_view_index != for_view || esp_lv_adapter_lock(-1) != ESP_OK) {
+    if (!lock_for_view(for_view)) {
         return;
     }
     if (err == ESP_OK) {
         lv_label_set_text(s_status_label, "");
-        ships_apply(scratch);
+        stamp_now(&s_ais_at[loc]);
+        if (s_ais_cache[loc] != NULL) {
+            memcpy(s_ais_cache[loc], scratch, sizeof(*scratch));
+        }
+        ships_apply(scratch, &s_ais_at[loc]);
     } else if (err == ESP_ERR_INVALID_ARG) {
         lv_label_set_text(s_status_label, "Mangler BarentsWatch-n\xC3\xB8kkel");
     } else if (err == ESP_ERR_INVALID_STATE) {
@@ -3738,8 +3914,7 @@ static void rain_store(time_t t, time_t latest, int range)
  * the location, range or area changes. False if out of memory. */
 static bool rain_prepare(int loc, int range, const rain_area_t *area)
 {
-    static int s_prep_loc = -1, s_prep_range;
-    if (loc == s_prep_loc && range == s_prep_range && area == s_rain_area) {
+    if (loc == s_rain_prep_loc && range == s_rain_prep_range && area == s_rain_area) {
         return true;
     }
 
@@ -3835,8 +4010,8 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     if (ok) {
         s_rain_area = area;
-        s_prep_loc = loc;
-        s_prep_range = range;
+        s_rain_prep_loc = loc;
+        s_rain_prep_range = range;
     }
     return ok; /* else tried again on the next poll */
 }
@@ -3880,7 +4055,7 @@ static bool rain_poll(int loc, int for_view)
                 continue; /* no new image since the last poll */
             }
         }
-        if (s_view_index == for_view && esp_lv_adapter_lock(-1) == ESP_OK) {
+        if (lock_for_view(for_view)) {
             if (s_radar_loc == loc && s_radar_range_km == range) {
                 rain_store(taken, latest, range);
             }
@@ -3889,7 +4064,7 @@ static bool rain_poll(int loc, int for_view)
     }
 
     bool shown = false;
-    if (s_view_index == for_view && esp_lv_adapter_lock(-1) == ESP_OK) {
+    if (lock_for_view(for_view)) {
         if (area == NULL) {
             lv_label_set_text(s_status_label, "Ingen nedb\xC3\xB8rsradar her");
         } else if (!s_rain_valid) {
@@ -3899,6 +4074,73 @@ static bool rain_poll(int loc, int for_view)
         esp_lv_adapter_unlock();
     }
     return shown;
+}
+
+/* --------------------------------------------------------------------------
+ * Software watchdog: restart if the LVGL task (everything on screen) or the
+ * weather task (all the fetching) stops making progress. A deadlock or a
+ * call that never returns would otherwise leave the screen frozen on old
+ * data for good: the task watchdog only logs here (ESP_TASK_WDT_PANIC is
+ * off), and only notices busy loops, not a blocked task.
+ * ------------------------------------------------------------------------ */
+
+#define WD_LVGL_MAX_S       60
+/* One pass of the weather task is at most a 5-minute wait plus its fetches
+ * (15 s timeouts; the rain radar's hour of images is the longest run). */
+#define WD_WEATHER_MAX_S    (20 * 60)
+#define WD_TRIP_LVGL        0x57444c56u
+#define WD_TRIP_WEATHER     0x57445754u
+
+/* esp_timer_get_time() of each task's last sign of life; 0 = not watched
+ * (the weather task sits in the setup portal indefinitely, legitimately). */
+static volatile int64_t s_wd_lvgl_us;
+static volatile int64_t s_wd_weather_us;
+/* Survives the restart, so the next boot can say why it happened. */
+static RTC_NOINIT_ATTR uint32_t s_wd_tripped;
+
+static void wd_weather_beat(void)
+{
+    s_wd_weather_us = esp_timer_get_time();
+}
+
+static void wd_lvgl_beat_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_wd_lvgl_us = esp_timer_get_time();
+}
+
+static void wd_check_cb(void *arg)
+{
+    (void)arg;
+    const int64_t now = esp_timer_get_time();
+    const int64_t lvgl = s_wd_lvgl_us, weather = s_wd_weather_us;
+    if (lvgl != 0 && now - lvgl > WD_LVGL_MAX_S * 1000000LL) {
+        s_wd_tripped = WD_TRIP_LVGL;
+    } else if (weather != 0 && now - weather > WD_WEATHER_MAX_S * 1000000LL) {
+        s_wd_tripped = WD_TRIP_WEATHER;
+    } else {
+        return;
+    }
+    ESP_LOGE(TAG, "Watchdog: the %s task has stalled - restarting",
+             s_wd_tripped == WD_TRIP_LVGL ? "LVGL" : "weather");
+    esp_restart();
+}
+
+/* Start watching (the LVGL heartbeat timer must already exist), and report
+ * whether the watchdog caused this boot. */
+static void wd_start(void)
+{
+    if (esp_reset_reason() == ESP_RST_SW &&
+        (s_wd_tripped == WD_TRIP_LVGL || s_wd_tripped == WD_TRIP_WEATHER)) {
+        ESP_LOGW(TAG, "Restarted by the watchdog: the %s task had stalled",
+                 s_wd_tripped == WD_TRIP_LVGL ? "LVGL" : "weather");
+    }
+    s_wd_tripped = 0;
+    s_wd_lvgl_us = esp_timer_get_time();
+    const esp_timer_create_args_t args = { .callback = wd_check_cb, .name = "watchdog" };
+    esp_timer_handle_t timer;
+    ESP_ERROR_CHECK(esp_timer_create(&args, &timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 10 * 1000000LL));
 }
 
 /* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
@@ -3924,6 +4166,9 @@ static time_t compute_next_nightly_reboot(time_t now)
  * blocks, one per row), which needs no compressor and streams row by row;
  * about 1.1 MB for 800 x 480.
  * ------------------------------------------------------------------------ */
+
+/* PSRAM left over for everything else while a screenshot is taken. */
+#define SCREENSHOT_PSRAM_SPARE (640 * 1024)
 
 typedef struct {
     httpd_req_t *req;
@@ -3971,9 +4216,19 @@ static void png_chunk_end(png_out_t *o)
 
 static esp_err_t h_screenshot(httpd_req_t *req)
 {
+    /* The snapshot is a full-screen RGB565 copy (750 KB of PSRAM). Refuse
+     * rather than take it when that would leave too little for the fetches
+     * running meanwhile (a coastline render needs ~600 KB, a forecast parse
+     * ~350 KB). */
+    const size_t snap_bytes = (size_t)EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * 2;
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < snap_bytes ||
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < snap_bytes + SCREENSHOT_PSRAM_SPARE) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Not enough free memory for a screenshot right now\n");
+    }
     lv_draw_buf_t *snap = NULL;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB888);
+        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
         esp_lv_adapter_unlock();
     }
     png_out_t *o = heap_caps_calloc(1, sizeof(*o), MALLOC_CAP_SPIRAM);
@@ -4008,10 +4263,12 @@ static esp_err_t h_screenshot(httpd_req_t *req)
     for (uint32_t y = 0; y < h && o->err == ESP_OK; y++) {
         const uint8_t *src = snap->data + y * snap->header.stride;
         row[0] = 0; /* no filter */
-        for (uint32_t x = 0; x < w; x++) { /* LVGL's RGB888 is B, G, R in memory */
-            row[1 + 3 * x] = src[3 * x + 2];
-            row[2 + 3 * x] = src[3 * x + 1];
-            row[3 + 3 * x] = src[3 * x];
+        for (uint32_t x = 0; x < w; x++) { /* RGB565, little-endian */
+            const uint16_t v = (uint16_t)(src[2 * x] | (src[2 * x + 1] << 8));
+            const uint8_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
+            row[1 + 3 * x] = (uint8_t)((r << 3) | (r >> 2));
+            row[2 + 3 * x] = (uint8_t)((g << 2) | (g >> 4));
+            row[3 + 3 * x] = (uint8_t)((b << 3) | (b >> 2));
         }
         for (uint32_t i = 0; i < row_len; i++) {
             a1 = (a1 + row[i]) % 65521;
@@ -4037,6 +4294,73 @@ static esp_err_t h_screenshot(httpd_req_t *req)
     }
     free(o);
     return err;
+}
+
+/* Switch to screen `idx` of s_stops (adapter lock held), showing whatever
+ * is cached for it straight away - see s_adsb_cache and friends - or a
+ * "Henter..." note until the weather task's fetch lands. Called from a tap,
+ * the rotation, and the weather task's first pass. */
+static void view_enter(int idx)
+{
+    const view_stop_t *stop = &s_stops[idx];
+    const int loc = stop->loc;
+    show_view((stop_kind_t)stop->kind);
+    switch ((stop_kind_t)stop->kind) {
+    case STOP_OVERVIEW:
+        /* Always render: the IP/heap footnotes must show up right away,
+         * not only once a forecast lands. */
+        update_overview();
+        lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
+        break;
+    case STOP_RADAR:
+        radar_set_location(loc);
+        lv_label_set_text(s_radar_info, "");
+        /* Never another location's aircraft: blank unless this one's are
+         * recent. */
+        s_radar_valid = s_adsb_cache[loc] != NULL && stamp_fresh(&s_adsb_at[loc], RADAR_CACHE_MAX_MS);
+        if (s_radar_valid) {
+            radar_apply(s_adsb_cache[loc], &s_adsb_at[loc]);
+        }
+        lv_obj_invalidate(s_radar_canvas);
+        lv_label_set_text(s_status_label, s_radar_valid ? "" : "Henter fly...");
+        break;
+    case STOP_SHIPS:
+        ships_set_location(loc);
+        lv_label_set_text(s_radar_info, "");
+        s_radar_valid = s_ais_cache[loc] != NULL && stamp_fresh(&s_ais_at[loc], SHIP_CACHE_MAX_MS);
+        if (s_radar_valid) {
+            ships_apply(s_ais_cache[loc], &s_ais_at[loc]);
+        }
+        lv_obj_invalidate(s_radar_canvas);
+        lv_label_set_text(s_status_label, s_radar_valid ? "" : "Henter skip...");
+        break;
+    case STOP_RAIN:
+        s_radar_valid = false; /* nothing to dead-reckon: no periodic redraw */
+        rain_set_location(loc);
+        lv_label_set_text(s_radar_info, "");
+        lv_obj_invalidate(s_radar_canvas);
+        lv_label_set_text(s_status_label, s_rain_valid ? "" : "Henter nedb\xC3\xB8r...");
+        break;
+    case STOP_DEPARTURES:
+        dep_set_location(loc);
+        lv_label_set_text(s_status_label, s_dep_valid ? "" : "Henter avganger...");
+        break;
+    case STOP_WEATHER:
+        lv_label_set_text(s_location_label, s_cfg->locations[loc].name);
+        /* Unlike the forecast, the alert cache carries over as-is from
+         * whatever this location's last fetch found. */
+        update_alert_banner(loc);
+        if (s_wx_shown[loc] != NULL && stamp_fresh(&s_wx_shown_at[loc], WX_CACHE_MAX_MS)) {
+            update_ui_with_forecast(s_wx_shown[loc], s_wx_shown_at[loc].when);
+            lv_label_set_text(s_status_label, "");
+        } else {
+            /* Never another location's chart under this one's name: hidden
+             * until the forecast and nowcast for it land. */
+            lv_obj_add_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text_fmt(s_status_label, "Henter v\xC3\xA6rvarsel for %s...", s_cfg->locations[loc].name);
+        }
+        break;
+    }
 }
 
 static void yr_weather_task(void *arg)
@@ -4110,6 +4434,7 @@ static void yr_weather_task(void *arg)
     bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
 
     while (1) {
+        wd_weather_beat();
         /* Once a day, purely for memory-pressure hygiene. Checked every loop
          * wake (every few minutes at idle, immediately on a tap) rather than
          * slept for separately - a few minutes of drift past the target hour
@@ -4162,6 +4487,7 @@ static void yr_weather_task(void *arg)
         int want_view = s_view_index;
         bool force_sel_refetch = false;
         if (want_view != active_view) {
+            const bool first = (active_view < 0);
             active_view = want_view;
             const view_stop_t *stop = &s_stops[want_view];
             overview = (stop->kind == STOP_OVERVIEW);
@@ -4200,49 +4526,22 @@ static void yr_weather_task(void *arg)
                 entur_client_close();
             }
 
-            if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                show_view((stop_kind_t)stop->kind);
-                if (overview) {
-                    /* Always render: the IP/heap footnotes must show up right
-                     * away, not only once a forecast lands. */
-                    update_overview();
-                    lv_label_set_text(s_status_label,
-                                      overview_loading() ? "Henter oversikt..." : "");
-                } else if (radar) {
-                    /* Never show another location's aircraft: blank until the
-                     * first fetch for this one lands. */
-                    s_radar_valid = false;
-                    radar_set_location(sel);
-                    lv_label_set_text(s_radar_info, "");
-                    lv_obj_invalidate(s_radar_canvas);
-                    lv_label_set_text(s_status_label, "Henter fly...");
-                } else if (ships) {
-                    s_radar_valid = false;
-                    ships_set_location(sel);
-                    lv_label_set_text(s_radar_info, "");
-                    lv_obj_invalidate(s_radar_canvas);
-                    lv_label_set_text(s_status_label, "Henter skip...");
-                } else if (rain) {
-                    s_radar_valid = false; /* nothing to dead-reckon: no periodic redraw */
-                    rain_set_location(sel);
-                    lv_label_set_text(s_radar_info, "");
-                    lv_obj_invalidate(s_radar_canvas);
-                    lv_label_set_text(s_status_label, "Henter nedb\xC3\xB8r...");
-                } else if (departures) {
-                    dep_set_location(sel);
-                    lv_label_set_text(s_status_label, "Henter avganger...");
-                } else {
-                    const app_location_t *loc = &s_cfg->locations[sel];
-                    lv_label_set_text(s_location_label, loc->name);
-                    /* Unlike the forecast, the alert cache carries over as-is
-                     * from whatever this location's last fetch found. */
-                    update_alert_banner(sel);
-                    /* Never render from cache here, even if valid - wait for
-                     * the fresh forecast+nowcast fetch below so the graph
-                     * doesn't flash an old forecast before the nowcast lands. */
-                    lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
+            /* A tap or the rotation already switched the screen (view_enter);
+             * only the first pass, after the WiFi connect's own messages,
+             * sets it up from here. Otherwise let LVGL finish drawing the
+             * screen just shown before starting a download: drawing a full
+             * screen and a TLS fetch at once took internal DRAM down to a
+             * few KB, where WiFi's own buffers start failing. */
+            if (first && esp_lv_adapter_lock(-1) == ESP_OK) {
+                if (s_view_index == want_view) {
+                    view_enter(want_view);
                 }
                 esp_lv_adapter_unlock();
+            } else if (!first) {
+                vTaskDelay(pdMS_TO_TICKS(VIEW_SETTLE_MS));
+                if (s_view_index != active_view) {
+                    continue;
+                }
             }
         }
 
@@ -4273,6 +4572,7 @@ static void yr_weather_task(void *arg)
                 break; /* view changed mid-scan - restart the loop */
             }
             int i = (sel + k) % s_cfg->location_count;
+            wd_weather_beat();
             if (!(s_cfg->show[i] & APP_SHOW_WEATHER)) {
                 continue; /* radar-only location: no forecast needed */
             }
@@ -4289,10 +4589,13 @@ static void yr_weather_task(void *arg)
 
             if (stale) {
                 if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
-                    scratch->valid && scratch->point_count > 0) {
+                    scratch->valid && scratch->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
+                    /* Under the lock: the overview may be drawn from a tap. */
                     *s_fc_cache[i] = *scratch;
                     s_fc_valid[i] = true;
                     s_fc_tk[i] = now_tk;
+                    s_fc_when[i] = (time(NULL) > PLAUSIBLE_EPOCH_S) ? time(NULL) : 0;
+                    esp_lv_adapter_unlock();
                     ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
                              i, s_cfg->locations[i].name, s_fc_cache[i]->point_count,
                              s_fc_cache[i]->updated_hour_minute,
@@ -4304,10 +4607,12 @@ static void yr_weather_task(void *arg)
             }
 
             if (alert_stale) {
-                if (met_alerts_client_fetch(lat, lon, alert_scratch) == ESP_OK && alert_scratch->valid) {
+                if (met_alerts_client_fetch(lat, lon, alert_scratch) == ESP_OK && alert_scratch->valid &&
+                    esp_lv_adapter_lock(-1) == ESP_OK) {
                     *s_alert_cache[i] = *alert_scratch;
                     s_alert_valid[i] = true;
                     s_alert_tk[i] = now_tk;
+                    esp_lv_adapter_unlock();
                     if (alert_scratch->count > 0) {
                         ESP_LOGI(TAG, "Alerts[%d] %s: %d active", i, s_cfg->locations[i].name,
                                  alert_scratch->count);
@@ -4321,7 +4626,7 @@ static void yr_weather_task(void *arg)
             /* Fill the overview row-by-row (forecast + alert badge) as each
              * location lands, and keep the selected detail screen's banner
              * current the moment its own alert fetch lands. */
-            if (s_view_index == active_view && esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (lock_for_view(active_view)) {
                 if (overview) {
                     update_overview();
                     lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
@@ -4337,7 +4642,7 @@ static void yr_weather_task(void *arg)
         }
 
         if (overview) {
-            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (lock_for_view(active_view)) {
                 update_overview();
                 lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
                 esp_lv_adapter_unlock();
@@ -4348,7 +4653,7 @@ static void yr_weather_task(void *arg)
             /* Keeps the banner in sync with whatever the fetch loop below
              * last landed for this location, even on a pass that finds
              * nothing else to do (e.g. the forecast is still fresh). */
-            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (lock_for_view(active_view)) {
                 update_alert_banner(sel);
                 esp_lv_adapter_unlock();
             }
@@ -4379,13 +4684,19 @@ static void yr_weather_task(void *arg)
                      * series' densely-sampled first ~2h would visually eat
                      * as much of the x-axis as several hours further out. */
                     resample_uniform_time(resampled, to_render);
-                    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                    if (lock_for_view(active_view)) {
                         lv_label_set_text(s_status_label, "");
-                        update_ui_with_forecast(resampled);
+                        update_ui_with_forecast(resampled, s_fc_when[sel]);
+                        lv_obj_clear_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN);
+                        if (s_wx_shown[sel] != NULL) {
+                            *s_wx_shown[sel] = *resampled;
+                            stamp_now(&s_wx_shown_at[sel]);
+                            s_wx_shown_at[sel].when = s_fc_when[sel]; /* the forecast's age, not the drawing's */
+                        }
                         esp_lv_adapter_unlock();
                     }
                 }
-            } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            } else if (lock_for_view(active_view)) {
                 lv_label_set_text(s_status_label,
                                   "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
                 esp_lv_adapter_unlock();
@@ -4396,6 +4707,22 @@ static void yr_weather_task(void *arg)
          * while still waiting for the first data. A tap notifies us, cutting
          * the wait short. */
         bool ready = overview ? !overview_loading() : s_fc_valid[sel];
+        wd_weather_beat();
+
+        /* A full pass, so WiFi, the fetching and the screen all work: keep
+         * this firmware. Until then a freshly updated one is on probation,
+         * and a restart goes back to the previous (see wifi_provision's
+         * h_ota). No-op otherwise. */
+        static bool app_valid;
+        if (!app_valid) {
+            app_valid = true;
+            esp_ota_img_states_t st;
+            if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+                st == ESP_OTA_IMG_PENDING_VERIFY) {
+                ESP_LOGI(TAG, "New firmware works - keeping it");
+                esp_ota_mark_app_valid_cancel_rollback();
+            }
+        }
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
                                                : ships ? SHIP_POLL_MS
                                                : rain ? (rain_shown ? RAIN_POLL_MS : RAIN_RETRY_MS)
@@ -4405,8 +4732,21 @@ static void yr_weather_task(void *arg)
     }
 }
 
+/* Every failed allocation is logged, with who asked: running out of PSRAM
+ * or internal DRAM otherwise shows up only as some unrelated failure. */
+static void alloc_failed_cb(size_t size, uint32_t caps, const char *function_name)
+{
+    esp_rom_printf("ALLOC FAILED: %u bytes, caps 0x%x, in %s; free psram %u (largest %u), int %u (largest %u)\n",
+                   (unsigned)size, (unsigned)caps, function_name ? function_name : "?",
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
 void app_main(void)
 {
+    heap_caps_register_failed_alloc_callback(alloc_failed_cb);
     /* Logged first, unconditionally, so a boot that never reaches "Got IP"
      * still leaves a trail: reason 1 is a normal power-on, but e.g. 3 (panic)
      * or 8 (task/int watchdog) points at a crash-reboot loop rather than a
@@ -4435,6 +4775,21 @@ void app_main(void)
      * app_config_save_last_view) rather than always starting at the
      * overview. Clamped in case the location count shrank since. */
     build_stops();
+    for (int i = 0; i < s_cfg->location_count; i++) {
+        const uint8_t show = s_cfg->show[i];
+        if (show & APP_SHOW_WEATHER) {
+            s_wx_shown[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
+        }
+        if (show & APP_SHOW_RADAR) {
+            s_adsb_cache[i] = heap_caps_malloc(sizeof(adsb_result_t), MALLOC_CAP_SPIRAM);
+        }
+        if (show & APP_SHOW_SHIPS) {
+            s_ais_cache[i] = heap_caps_malloc(sizeof(ais_result_t), MALLOC_CAP_SPIRAM);
+        }
+        if (show & APP_SHOW_DEPARTURES) {
+            s_dep_cache[i] = heap_caps_malloc(sizeof(entur_departures_t), MALLOC_CAP_SPIRAM);
+        }
+    }
     s_view_index = app_config_load_last_view();
     if (s_view_index >= s_stop_count) {
         s_view_index = 0;
@@ -4493,6 +4848,7 @@ void app_main(void)
         build_ui(lv_screen_active());
         esp_lv_adapter_unlock();
     }
+    wd_start();
 
     /* This task must keep its stack in internal RAM: it calls
      * nvs_flash_init()/esp_wifi via wifi_connect_sta(), and flash/NVS

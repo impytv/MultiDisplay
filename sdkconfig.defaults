@@ -106,13 +106,15 @@ CONFIG_SPIRAM_MEMTEST=n
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 # mbedtls defaults to CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC, which pins every TLS
 # allocation to internal DRAM with an explicit MALLOC_CAP_INTERNAL and so
-# bypasses the SPIRAM_MALLOC_ALWAYSINTERNAL threshold above entirely. That's
-# why the ~16KB handshake RX buffer still failed ("Dynamic Impl: alloc(16749
-# bytes) failed") with dynamic buffers already on. Switch mbedtls to plain
-# malloc/free so the ">=1KB spills to PSRAM" rule actually applies to it:
-# the large handshake/record buffers land in PSRAM, while small frequent
-# allocations stay under the 1KB threshold and remain internal.
-CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# bypasses the SPIRAM_MALLOC_ALWAYSINTERNAL threshold above entirely - the
+# ~16KB handshake RX buffer failed ("Dynamic Impl: alloc(16749 bytes)
+# failed"). DEFAULT_MEM_ALLOC (plain malloc) moved the big buffers out but
+# still kept every allocation under 1KB internal, and a handshake makes
+# lots of those: a forecast fetch while LVGL drew a screen took internal
+# DRAM down to ~2KB, with WiFi's own buffers failing. EXTERNAL puts all of
+# mbedtls in PSRAM; handshakes are a little slower, which doesn't matter for
+# a fetch every few seconds at most.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
@@ -146,3 +148,16 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 # CONFIG_LV_DEMO_MUSIC_AUTO_PLAY is not set
 # GET /screen.png on the config web server (h_screenshot in main.c).
 CONFIG_LV_USE_SNAPSHOT=y
+# Abort (panic, backtrace, restart) on an LVGL assert instead of spinning
+# forever with the display lock held - see config/lv_assert_abort.h.
+CONFIG_LV_ASSERT_HANDLER_INCLUDE="lv_assert_abort.h"
+# A firmware update (POST /ota) boots once on probation: unless it marks
+# itself valid (after the weather task's first full pass, so WiFi, the
+# fetches and the screen all work), the bootloader goes back to the
+# previous firmware on the next restart.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# LVGL's NULL-pointer asserts are off: one fires spuriously when a FreeType
+# glyph fails to render (lv_draw_buf_destroy(NULL), which it then handles),
+# and with the assert handler aborting that restarted the device. A real
+# NULL dereference still panics and restarts.
+# CONFIG_LV_USE_ASSERT_NULL is not set
