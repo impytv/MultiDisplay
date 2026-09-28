@@ -1,54 +1,40 @@
+/* Start-up, the cycle of screens (taps and the automatic rotation), and the
+ * weather task that does all the fetching for whichever screen is shown.
+ * The screens themselves are in weather.c (a location's forecast and the
+ * overview), radar.c (aircraft, ships and rain) and departures.c. */
+
 #include <assert.h>
-#include <math.h>
-#include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
-#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
 #include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
-#include "esp_partition.h"
-#include "esp_rom_crc.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mmap_generate_fonts.h"
 #include "nvs_flash.h"
-#include "waveshare_rgb_lcd_port.h"
 #include "adsb_client.h"
 #include "ais_client.h"
-#include "app_config.h"
+#include "app.h"
+#include "departures.h"
 #include "entur_client.h"
-#include "met_alerts_client.h"
+#include "radar.h"
 #include "rain_client.h"
+#include "screenshot.h"
+#include "watchdog.h"
+#include "waveshare_rgb_lcd_port.h"
+#include "weather.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
 
-static const char *TAG = "lvgl9_demo";
+static const char *TAG = "main";
 
-/* The hourly Locationforecast is updated seldom upstream - poll it slowly.
- * The Nowcast (radar precipitation for the next ~2 h) refreshes every 5 min,
- * so poll it on its own faster cadence and splice it in ahead of the hourly
- * points. */
-#define WEATHER_REFRESH_INTERVAL_MS (10 * 60 * 1000)
-#define NOWCAST_REFRESH_INTERVAL_MS (5 * 60 * 1000)
-#define WEATHER_RETRY_INTERVAL_MS (20 * 1000)
-/* MET Norway's severe weather alerts ("farevarsel") change far less often
- * than the forecast - polled on its own, slower, independent cadence so one
- * data source's staleness never forces a refetch of the other. */
-#define ALERT_REFRESH_INTERVAL_MS (10 * 60 * 1000)
-/* Take every Nth nowcast step (5 min apart) into the merged series: every
- * 2nd = 10-minute resolution for the near term, still 6x finer than hourly
- * without over-compressing the rest of the chart. */
-#define NOWCAST_MERGE_STRIDE 2
-#define NUM_HOUR_LABELS 8
 #define YR_TASK_STACK_SIZE 8192
 
 /* Restart once a day, at this local hour, purely as memory-pressure
@@ -58,143 +44,27 @@ static const char *TAG = "lvgl9_demo";
  * until a sync has happened. The current screen survives the restart (see
  * app_config_save_last_view). */
 #define NIGHTLY_REBOOT_HOUR 2
-/* Treat the clock as synced once it reads past this (2023-01-01 UTC) -
- * comfortably below "now" for the life of this project, comfortably above
- * the unsynced epoch. */
-#define PLAUSIBLE_EPOCH_S 1672531200
 
 /* Night dimming: the backlight itself can't be dimmed (see s_tap_layer), so
  * a translucent black layer over the whole screen stands in for it during
- * the local hours set on the setup page (s_cfg->dim_*). LV_OPA_70 cuts the
+ * the local hours set on the setup page (g_cfg->dim_*). LV_OPA_70 cuts the
  * effective brightness a lot while keeping high-contrast text/lines legible
  * in a dark room. */
 #define NIGHT_DIM_OPA         LV_OPA_70
 
-#define ICON_ROW_Y 44
-#define ICON_SIZE 48
+/* How long the weather task lets a screen just switched to draw before it
+ * starts fetching for it: drawing a full screen and a TLS fetch at once took
+ * internal DRAM down to a few KB, where WiFi's own buffers start failing. */
+#define VIEW_SETTLE_MS      500
 
-#define CHART_X 20
-#define CHART_W 760
-/* Main temperature/precipitation chart. */
-#define CHART_Y 100
-#define CHART_H 244
-/* Precipitation bars are drawn on a taller-than-needed axis so they only
- * occupy the bottom fraction of the shared chart, leaving the rest of the
- * height for the temperature line to read clearly. */
-#define PRECIP_AXIS_COMPRESSION 3
-#define TEMP_LINE_WIDTH 3
+/* A screen chosen by tap is remembered for the next boot once it has been
+ * on show this long - not on every tap, each of which would write flash. */
+#define LAST_VIEW_SAVE_MS   10000
 
-/* Wind section stacked below the main chart: a row of direction arrows over a
- * short wind-speed bar chart, sharing the main chart's x-scale. */
-#define WIND_DIR_ROW_Y (CHART_Y + CHART_H + 4)
-#define WIND_ARROW_SIZE 28
-#define WIND_CHART_Y (WIND_DIR_ROW_Y + WIND_ARROW_SIZE + 2)
-#define WIND_CHART_H 54
-
-#define HOUR_ROW_Y (WIND_CHART_Y + WIND_CHART_H + 6)
-
-/* Chart value markers. Temperature: the global high and low are always
- * labelled; precipitation/wind: the global peak is always labelled. Further
- * local extrema get a label only once at least MARKER_MIN_GAP_H hours have
- * passed since the previously shown marker OF THE SAME TYPE (a max only
- * spaces against the previous max, a min against the previous min). So a fast
- * swing can still show a peak and the trough right after it, while a long,
- * gently varying forecast stays uncrowded - which also keeps the label pools
- * (and their scarce internal-DRAM widgets) small. */
-#define MARKER_MIN_GAP_H 8
-/* A non-global local temperature extremum earns a label only if it stands at
- * least this far (deg C) clear of its surroundings - keeps a shallow wiggle
- * next to a real peak or trough from getting its own number. */
-#define MARKER_TEMP_MIN_SWING 1.0f
-/* Pools sized for the realistic worst case under the 8 h same-type spacing
- * over a ~48 h forecast (a handful of maxima + minima for temperature; fewer
- * peaks for the smoother precipitation and wind series). An overflow just
- * drops the least important trailing label - no crash. */
-#define TEMP_MARKER_POOL 8
-#define PRECIP_MARKER_POOL 2 /* the two highest max-precipitation peaks - see place_precip_markers */
-#define WIND_MARKER_POOL 2   /* the two highest gust peaks - see place_wind_markers */
-/* Wind/gust and precipitation-range peak labels (pick_top_peaks) use their
- * own, tighter spacing than MARKER_MIN_GAP_H: a second peak within this many
- * hours of a stronger one is the same event, not a distinct one, so only the
- * stronger of the two is labelled. */
-#define PEAK_LABEL_MIN_GAP_H 6
-
-/* Overview screen: a table with one row per location and OV_COLS time columns
- * OV_STEP_H hours apart. Each cell shows the weather icon, the temperature at
- * that hour and the precipitation summed over the following OV_STEP_H hours.
- * It is always the first stop when cycling (see build_stops). */
-#define OV_COLS     4
-#define OV_STEP_H   6
-#define OV_X        10
-#define OV_NAME_W   150            /* wide enough for the alert dot + the longest
-                                    * location names (e.g. "Kvaløysletta") on one line */
-#define OV_COL_W    157            /* (800 - OV_X*2 - OV_NAME_W) / OV_COLS   */
-#define OV_TITLE_Y  6
-#define OV_HDR_Y    42
-#define OV_BODY_Y   64
-/* 76, not 80: at the 5-location max that leaves a clear strip at the very
- * bottom of the screen for the IP-address label. */
-#define OV_ROW_H    76
-#define OV_ICON     34
-#define OV_ALERT_DOT 18 /* the per-row severe-weather-alert badge, see s_ov_alert */
-
-/* Aircraft radar screen (one per location that has it ticked in the setup
- * portal): a sonar-style plot on the left, a table of the nearest aircraft on
- * the right. Everything is drawn in one custom draw callback rather than as
- * LVGL objects - an object per aircraft/label would cost scarce internal DRAM. */
-#define RADAR_CX            250
-#define RADAR_CY            262
-#define RADAR_R             190   /* outer ring radius, px */
-#define RADAR_LIST_X        500
-#define RADAR_LIST_Y        78
-#define RADAR_LIST_ROW_H    26
-#define RADAR_LIST_ROWS     14
-#define RADAR_LIST_R        (RADAR_LIST_X + 294) /* right edge of the table */
-#define RADAR_COL_GAP       8
-#define RADAR_TAGS          10    /* aircraft that also get a callsign tag on the plot */
-#define KM_PER_NM           1.852f
-/* One request per poll; adsb.fi allows at most 1/s. */
-#define ADSB_POLL_MS        5000
-/* Aircraft are dead-reckoned between polls, so repaint now and then. */
-#define RADAR_REDRAW_MS     2000
-/* Ship traffic (same screen as the aircraft radar): one BarentsWatch request
- * per 30 s. Ships are dead-reckoned in between like the aircraft, but never
- * further than SHIP_EXTRAP_MAX_S past their last report. */
-#define SHIP_POLL_MS        30000
-#define SHIP_EXTRAP_MAX_S   600.0f
-#define SHIP_VEC_MIN        10    /* course vector: where it will be in this many minutes */
-#define SHIP_TAG_MAX_W      120   /* px; longer names are shortened on the plot */
-/* Rain radar (same screen again): MET makes a new image every 5 minutes.
- * Retried sooner while there is none yet. The screen loops through the last
- * hour of them, a frame every RAIN_ANIM_MS, resting on the latest for
- * RAIN_HOLD_TICKS more. */
-#define RAIN_POLL_MS        (5 * 60 * 1000)
-#define RAIN_RETRY_MS       30000
-#define RAIN_STEP_S         300
-#define RAIN_FRAMES         (60 * 60 / RAIN_STEP_S + 1)
-#define RAIN_ANIM_MS        500
-#define RAIN_HOLD_TICKS     4
-#define RAIN_BUDGET         (1024 * 1024) /* bytes for all the frames at most */
-
-/* Departure board (entur_client): polled every 30 s, and
- * repainted between polls so the "N min" countdowns stay current. */
-#define DEP_POLL_MS         30000
-#define DEP_RETRY_MS        15000
-#define DEP_REDRAW_S        15
-#define DEP_CLOCK_PX        48
-#define DEP_BODY_Y          64
-#define DEP_X               12
-#define DEP_BADGE_W         64
-#define DEP_TIME_W          112
-#define DEP_GONE_S          30  /* a departure this long past is no longer shown */
-
-static const lv_font_t *s_font_body;
-static const lv_font_t *s_font_large;
-
-/* Runtime settings (WiFi + forecast locations), from NVS via the setup portal
- * or the compiled-in defaults. Loaded once in app_main, into PSRAM: with the
- * departure selections it's a couple of KB of otherwise internal DRAM. */
-static app_config_t *s_cfg;
+app_config_t *g_cfg;
+const lv_font_t *g_font_body;
+const lv_font_t *g_font_large;
+lv_obj_t *g_status_label;
 
 /* The screens a tap cycles through, in order (see build_stops): the overview
  * table (always present, even with zero or one weather location - it's the
@@ -202,28 +72,19 @@ static app_config_t *s_cfg;
  * portal for further configuration), then for each location whichever of its
  * weather screen, aircraft radar, ship traffic, rain radar and departure board
  * are enabled, in that order. */
-typedef enum {
-    STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4, STOP_DEPARTURES = 5
-} stop_kind_t;
 typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
 static view_stop_t s_stops[1 + 5 * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
-
-/* Locations that show weather, in order: the rows of the overview and the
- * "n/m" counter on the weather screens. A location can be radar-only. */
-static int s_weather_count;
-static uint8_t s_wx_loc[APP_CONFIG_MAX_LOCATIONS]; /* weather index -> location */
-static int8_t s_wx_pos[APP_CONFIG_MAX_LOCATIONS];  /* location -> weather index, -1 if none */
-static bool s_any_radar; /* some location shows aircraft, ships or rain (they share the radar screen) */
+static bool s_any_radar;      /* some location shows aircraft, ships or rain (they share the radar screen) */
 static bool s_any_departures; /* some location shows a departure board */
 
-/* Index into s_stops of the screen on show. Advanced by a tap or the
- * automatic rotation; the weather task watches it and re-renders.
+/* Index into s_stops of the screen on show. Switched by a tap or the
+ * automatic rotation (view_enter); the weather task watches it and fetches.
  * s_view_auto says the rotation made the last switch. */
-static volatile int s_view_index;
+volatile int g_view_index;
 static volatile bool s_view_auto;
 
 /* Automatic rotation (see auto_rotate_timer_cb): when the screen was last
@@ -233,284 +94,37 @@ static bool s_auto_running;
 static uint32_t s_auto_switch_ms;
 static TaskHandle_t s_yr_task;
 
-static void view_enter(int idx);
-static void wd_lvgl_beat_cb(lv_timer_t *t);
+/* One full-screen container per kind of screen; only one is visible. */
+static lv_obj_t *s_detail_root;   /* a location's weather */
+static lv_obj_t *s_overview_root; /* all locations' weather */
+static lv_obj_t *s_radar_root;    /* aircraft, ships or rain; only if some location has one */
+static lv_obj_t *s_dep_root;      /* departures; only if some location has them */
+static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 
-/* Take the adapter lock to show what was fetched for screen `for_view`;
- * false, without the lock, if the screen has moved on. Checked under the
- * lock, as taps switch screens from the LVGL task (see view_enter). */
-static bool lock_for_view(int for_view)
+bool lock_for_view(int for_view)
 {
     if (esp_lv_adapter_lock(-1) != ESP_OK) {
         return false;
     }
-    if (s_view_index != for_view) {
+    if (g_view_index != for_view) {
         esp_lv_adapter_unlock();
         return false;
     }
     return true;
 }
 
-static lv_obj_t *s_status_label;
-static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
-/* Aircraft radar / ship traffic / rain radar colours, one set per theme.
- * ship[] is per ais_category_t, rain[] per rain level (1..RAIN_LEVELS). */
-typedef struct {
-    uint32_t bg, disc, ring, txt, dim, plane, vec, apt, coast, water;
-    uint32_t ship[AIS_CAT_COUNT];
-    uint32_t rain[RAIN_LEVELS];
-} radar_palette_t;
-
-static const radar_palette_t RADAR_DARK = {
-    .bg = 0x050B12, .disc = 0x0A1E30, .ring = 0x1F6E45, .txt = 0xDDE6EE,
-    .dim = 0x8AA0B4, .plane = 0xFF5A4F, .vec = 0xE060E0, .apt = 0x3FBFB0,
-    .coast = 0x6F93AD, .water = 0x0F3A5F,
-    .ship = {
-        [AIS_CAT_OTHER] = 0xB0BEC5, [AIS_CAT_CARGO] = 0x66BB6A, [AIS_CAT_TANKER] = 0xFF7043,
-        [AIS_CAT_PASSENGER] = 0x42A5F5, [AIS_CAT_FISHING] = 0xFFCA28, [AIS_CAT_LEISURE] = 0xE040FB,
-        [AIS_CAT_TUG] = 0x26C6DA,
-    },
-    .rain = { 0x3E7F35, 0x5DB33B, 0xE8D234, 0xF08A24, 0xE0352A },
-};
-static const radar_palette_t RADAR_LIGHT = {
-    .bg = 0xEEF2F6, .disc = 0xFFFFFF, .ring = 0x6BAF8A, .txt = 0x1B2631,
-    .dim = 0x5D6D7E, .plane = 0xD62D20, .vec = 0xA83CA8, .apt = 0x1B8A7E,
-    .coast = 0x7F9AB0, .water = 0xD4E8F7,
-    .ship = {
-        [AIS_CAT_OTHER] = 0x607D8B, [AIS_CAT_CARGO] = 0x2E7D32, [AIS_CAT_TANKER] = 0xD84315,
-        [AIS_CAT_PASSENGER] = 0x1565C0, [AIS_CAT_FISHING] = 0xB28704, [AIS_CAT_LEISURE] = 0x9C27B0,
-        [AIS_CAT_TUG] = 0x00838F,
-    },
-    .rain = { 0xA6DB8E, 0x5DB33B, 0xF2D22E, 0xF08A24, 0xD7301F },
-};
-static const radar_palette_t *s_rp = &RADAR_DARK; /* set from the theme in build_radar */
-static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
-static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
-static lv_obj_t *s_location_label;
-static lv_obj_t *s_updated_label;
-static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
-
-/* Departure board (built only if some location has one): the location's
- * name, a large 24-hour clock, and the rows painted by dep_draw_cb from
- * s_dep_data. s_dep_sel is the parsed selection of the location on show. */
-static lv_obj_t *s_dep_root;
-static lv_obj_t *s_dep_title;
-/* The clock, one label per character ("HH:MM:SS") in cells of a fixed
- * width, so the proportional digits don't shift it as the time ticks. */
-#define DEP_CLOCK_CHARS 8
-static lv_obj_t *s_dep_clock[DEP_CLOCK_CHARS];
-static lv_obj_t *s_dep_updated;
-static lv_obj_t *s_dep_canvas;
-static entur_departures_t *s_dep_data; /* PSRAM */
-static entur_selection_t *s_dep_sel;   /* PSRAM */
-static bool s_dep_valid;
-
-/* Aircraft radar, also used for ship traffic (built only if some location has
- * either enabled). s_ship_mode picks which the screen is showing. */
-static lv_obj_t *s_radar_root;
-static lv_obj_t *s_radar_title;
-static lv_obj_t *s_radar_info;
-static lv_obj_t *s_radar_canvas;
-static adsb_result_t *s_radar_data; /* PSRAM; last fetch for the location on show */
-static bool s_radar_valid;
-static uint32_t s_radar_tick;       /* lv_tick_get() when s_radar_data / s_ship_data was stored */
-static ais_result_t *s_ship_data;   /* PSRAM; last ship fetch for the location on show */
-static bool s_ship_mode;
-static bool s_rain_mode;
-
-/* Coastline under the aircraft or ships (see coast_render): an A8 coverage
- * image of the radar disc, drawn in s_rp->coast, over an A8 mask of the
- * water, drawn in s_rp->water. They show s_coast_loc at
- * s_coast_km; s_coast_valid gates drawing them. */
-#define COAST_D  (2 * RADAR_R + 1)
-static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
-static uint8_t *s_water_px;         /* PSRAM, COAST_D x COAST_D */
-static lv_image_dsc_t s_coast_img;
-static lv_image_dsc_t s_water_img;
-/* Coastline segment middles with the normal to their water side, noted by
- * coast_seed for coast_fill_water. */
-typedef struct {
-    float x, y, nx, ny;
-} water_seed_t;
-#define WATER_SEEDS_MAX 32768
-static water_seed_t *s_water_seeds; /* PSRAM, WATER_SEEDS_MAX */
-static int s_water_n_seeds;
-static bool s_coast_valid;
-/* Rain over the disc: the last hour of radar images, each kept as the
- * s_rain_crop of MET's rain levels under the disc (see rain_poll), and the
- * one on show drawn into an ARGB8888 image the size of the coastline one
- * (see rain_render). Frame position p (0 = an hour back, RAIN_FRAMES - 1 =
- * the latest) is the image taken at s_rain_latest - (RAIN_FRAMES - 1 - p) *
- * RAIN_STEP_S; s_rain_ftime says which slot holds which (RAIN_EMPTY if
- * none). Written by the weather task with the adapter lock held, played by
- * rain_anim_timer_cb. */
-#define RAIN_EMPTY  ((time_t)-1)
-#define RAIN_GRID   20
-#define RAIN_GRID_N (COAST_D / RAIN_GRID + 2)
-static uint8_t *s_rain_frame[RAIN_FRAMES]; /* PSRAM, s_rain_cells each */
-static time_t s_rain_ftime[RAIN_FRAMES];
-static uint8_t *s_rain_spare;       /* PSRAM; rain_poll fetches here, then swaps it in */
-static size_t s_rain_cells;         /* what the frame buffers were allocated for */
-static const rain_area_t *s_rain_area;
-static rain_crop_t s_rain_crop;
-/* Where every RAIN_GRID-th disc pixel falls in the crop, in cells. */
-static float s_rain_gx[RAIN_GRID_N][RAIN_GRID_N], s_rain_gy[RAIN_GRID_N][RAIN_GRID_N];
-static float s_rain_col[RAIN_LEVELS + 1][4]; /* premultiplied colour per level; 0 is clear */
-static time_t s_rain_latest;
-static uint32_t *s_rain_px;         /* PSRAM, COAST_D x COAST_D */
-static lv_image_dsc_t s_rain_img;
-static bool s_rain_valid;           /* s_rain_px holds a frame */
-static int s_rain_pos = -1;         /* frame position on show */
-static int s_rain_hold;             /* ticks left resting on the latest */
-static time_t s_rain_time;          /* when the frame on show was taken */
-static int s_coast_loc = -1;
-/* The location and range the rain frames are held for (see rain_prepare). */
-static int s_rain_prep_loc = -1, s_rain_prep_range;
-/* Frames older than this aren't shown again on coming back to the screen. */
-#define RAIN_KEEP_S         (15 * 60)
-static int s_coast_km;
-static int s_radar_loc = -1;        /* location the radar screen is set to */
-
-/* The last data fetched for each location's aircraft, ship and departure
- * screens, and its weather screen as last drawn (forecast with the nowcast
- * spliced in, resampled). A screen comes back showing these at once, while
- * the weather task fetches afresh, as long as they aren't older than the
- * *_CACHE_MAX_MS below. PSRAM, allocated in app_main for the locations that
- * have the screen; written and read with the adapter lock held. */
-typedef struct {
-    bool valid;
-    uint32_t tick; /* lv_tick_get() when fetched */
-    time_t when;   /* wall clock when fetched, 0 if not synced yet */
-} fetch_stamp_t;
-#define RADAR_CACHE_MAX_MS  30000              /* dead-reckoned from here on */
-#define SHIP_CACHE_MAX_MS   (5 * 60 * 1000)
-#define DEP_CACHE_MAX_MS    (5 * 60 * 1000)
-#define WX_CACHE_MAX_MS     (30 * 60 * 1000)
-/* A forecast fetched this long ago is flagged as old on screen. */
-#define WX_STALE_S          (30 * 60)
-/* How long the weather task lets a screen just switched to draw before it
- * starts fetching for it (see yr_weather_task). */
-#define VIEW_SETTLE_MS      500
-static adsb_result_t *s_adsb_cache[APP_CONFIG_MAX_LOCATIONS];
-static fetch_stamp_t s_adsb_at[APP_CONFIG_MAX_LOCATIONS];
-static ais_result_t *s_ais_cache[APP_CONFIG_MAX_LOCATIONS];
-static fetch_stamp_t s_ais_at[APP_CONFIG_MAX_LOCATIONS];
-static entur_departures_t *s_dep_cache[APP_CONFIG_MAX_LOCATIONS];
-static fetch_stamp_t s_dep_at[APP_CONFIG_MAX_LOCATIONS];
-static yr_forecast_t *s_wx_shown[APP_CONFIG_MAX_LOCATIONS];
-static fetch_stamp_t s_wx_shown_at[APP_CONFIG_MAX_LOCATIONS];
-
-static void stamp_now(fetch_stamp_t *st)
+lv_obj_t *screen_root_create(lv_obj_t *screen)
 {
-    const time_t now = time(NULL);
-    st->valid = true;
-    st->tick = lv_tick_get();
-    st->when = (now > PLAUSIBLE_EPOCH_S) ? now : 0;
+    lv_obj_t *root = lv_obj_create(screen);
+    lv_obj_remove_style_all(root);
+    lv_obj_set_pos(root, 0, 0);
+    lv_obj_set_size(root, LV_PCT(100), LV_PCT(100));
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+    return root;
 }
 
-static bool stamp_fresh(const fetch_stamp_t *st, uint32_t max_ms)
-{
-    return st->valid && lv_tick_get() - st->tick < max_ms;
-}
-
-/* The radar screen now shows `loc` at `range_km` (adapter lock held): stop
- * drawing a coastline image made for anything else until coast_render redoes it. */
-static void coast_mark(int loc, int range_km)
-{
-    s_radar_loc = loc;
-    if (loc != s_coast_loc || range_km != s_coast_km) {
-        s_coast_valid = false;
-    }
-}
-
-/* Overview table widgets (built only when >= 2 locations). */
-static lv_obj_t *s_ov_title;
-static lv_obj_t *s_ov_ip_label;   /* bottom-right: the address to browse to for setup */
-static lv_obj_t *s_ov_heap_label; /* bottom-left: free internal-DRAM bytes */
-static lv_obj_t *s_ov_hdr[OV_COLS];
-static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
-static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
-static lv_obj_t *s_ov_cell[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
-static lv_obj_t *s_ov_alert[APP_CONFIG_MAX_LOCATIONS]; /* small badge beside the name, worst active alert's colour */
-
-/* Per-location hourly forecast cache (PSRAM), kept warm for every location so
- * the overview can show them all at once. s_fc_cache[i] is allocated in the
- * weather task; s_fc_valid[i] gates reads; s_fc_tk[i] is its last refresh. */
-static yr_forecast_t *s_fc_cache[APP_CONFIG_MAX_LOCATIONS];
-static bool s_fc_valid[APP_CONFIG_MAX_LOCATIONS];
-static TickType_t s_fc_tk[APP_CONFIG_MAX_LOCATIONS];
-static time_t s_fc_when[APP_CONFIG_MAX_LOCATIONS]; /* wall clock of that refresh, 0 if not synced */
-
-/* Per-location severe weather alerts (PSRAM), same shape as the forecast
- * cache above and refreshed on its own cadence (see ALERT_REFRESH_INTERVAL_MS). */
-static met_alerts_t *s_alert_cache[APP_CONFIG_MAX_LOCATIONS];
-static bool s_alert_valid[APP_CONFIG_MAX_LOCATIONS];
-static TickType_t s_alert_tk[APP_CONFIG_MAX_LOCATIONS];
-
-/* s_precip_max_chart is the frame (background/border/gridlines) for the
- * whole precip+temp area, and sits behind s_precip_chart (created first, so
- * it's drawn first / lower z-order) and s_temp_line - both fully transparent
- * overlays, so this chart's own (taller, paler) max-precipitation bars show
- * through above wherever the shorter min bar doesn't reach. */
-static lv_obj_t *s_precip_max_chart;
-static lv_chart_series_t *s_precip_max_series;
-static lv_obj_t *s_precip_chart;
-static lv_chart_series_t *s_precip_series;
-static lv_obj_t *s_temp_line;
-static lv_obj_t *s_temp_markers[TEMP_MARKER_POOL];
-static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
-
-/* s_gust_chart is a plain, frameless bars-only layer sitting behind
- * s_wind_chart (created first, so it's drawn first / lower z-order);
- * s_wind_chart's own background is made transparent so the taller gust bars
- * show through above wherever the shorter wind bar doesn't reach - the same
- * "frame widget + transparent overlay" trick as s_precip_max_chart above. */
-static lv_obj_t *s_gust_chart;
-static lv_chart_series_t *s_gust_series;
-static lv_obj_t *s_wind_chart;
-static lv_chart_series_t *s_wind_series;
-static lv_obj_t *s_wind_markers[WIND_MARKER_POOL];
-static lv_obj_t *s_wind_dir_arrows[NUM_HOUR_LABELS];
-
-static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
-static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
-
-static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS];     /* millimeters * 10 */
-static int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
-static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
-static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
-static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
-/* The temperature each s_temp_line_points entry was plotted from, and the
- * chart y of 0 degrees C, so temp_line_draw_cb can colour the sub-zero parts
- * of the line separately. */
-static float s_temp_line_values[YR_FORECAST_MAX_POINTS];
-static uint32_t s_temp_line_count;
-static lv_color_t s_temp_warm_color;
-static lv_color_t s_temp_cold_color;
-
-static int32_t round_to_int(float v)
-{
-    return (int32_t)(v + (v >= 0.0f ? 0.5f : -0.5f));
-}
-
-/* Point the icon widget at the MET Norway PNG for this symbol_code (packed
- * into the asset drive as "F:<symbol_code>.png"). An empty code just hides
- * the widget. The file set is the full github.com/metno/weathericons list,
- * so every code the API returns resolves directly. */
-static void set_weather_icon(lv_obj_t *img, const char *symbol_code)
-{
-    if (symbol_code == NULL || symbol_code[0] == '\0') {
-        lv_obj_add_flag(img, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-
-    char path[80];
-    snprintf(path, sizeof(path), "F:%s.png", symbol_code);
-    lv_image_set_src(img, path);
-    lv_obj_clear_flag(img, LV_OBJ_FLAG_HIDDEN);
-}
-
-static const lv_font_t *load_font(uint8_t px, bool bold)
+const lv_font_t *load_font(uint8_t px, bool bold)
 {
     esp_lv_adapter_ft_font_handle_t handle = NULL;
     const esp_lv_adapter_ft_font_config_t cfg = ESP_LV_ADAPTER_FT_FONT_FILE_CONFIG(
@@ -526,12 +140,13 @@ static void init_fonts(void)
     /* Mount the "fonts" SPIFFS partition (built by spiffs_create_partition_assets
      * in main/CMakeLists.txt) as the "F:" drive: LVGL's FreeType binding opens
      * the .ttf by path, and the MET weather icons are loaded the same way
-     * (F:<symbol_code>.png, decoded by esp_lv_decoder). */
-    /* Read through esp_partition_read, not memory-mapped: with the app
+     * (F:<symbol_code>.png, decoded by esp_lv_decoder).
+     *
+     * Read through esp_partition_read, not memory-mapped: with the app
      * running from PSRAM (SPIRAM_XIP_FROM_PSRAM) the other core keeps going
-     * during a flash write - an NVS save on every tap, a firmware update -
-     * and a glyph read from mapped flash then got garbage, FreeType failed,
-     * and LVGL asserted. Partition reads wait for the write instead. */
+     * during a flash write - an NVS save, a firmware update - and a glyph
+     * read from mapped flash then got garbage, FreeType failed, and LVGL
+     * asserted. Partition reads wait for the write instead. */
     const mmap_assets_config_t mmap_cfg = {
         .partition_label = "fonts",
         .max_files = MMAP_FONTS_FILES,
@@ -552,18 +167,113 @@ static void init_fonts(void)
     esp_lv_fs_handle_t fs_handle = NULL;
     ESP_ERROR_CHECK(esp_lv_adapter_fs_mount(&fs_cfg, &fs_handle));
 
-    /* Sizes and weights from the setup page (s_cfg->title_* / text_*). Bold
+    /* Sizes and weights from the setup page (g_cfg->title_* / text_*). Bold
      * is a font file of its own: LVGL's FreeType binding renders bitmaps, and
      * only its outline mode honours the BOLD style flag. */
-    s_font_body = load_font(s_cfg->text_px, s_cfg->text_bold);
-    s_font_large = load_font(s_cfg->title_px, s_cfg->title_bold);
+    g_font_body = load_font(g_cfg->text_px, g_cfg->text_bold);
+    g_font_large = load_font(g_cfg->title_px, g_cfg->title_bold);
+}
+
+/* Lay out the cycle of screens from the configuration. */
+static void build_stops(void)
+{
+    s_stop_count = 0;
+    /* Always a stop, regardless of location_count: it's the only screen that
+     * shows the device's IP address, so it must always be reachable by tap. */
+    s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
+    static const struct {
+        uint8_t show, kind;
+    } order[] = {
+        { APP_SHOW_WEATHER, STOP_WEATHER }, { APP_SHOW_RADAR, STOP_RADAR }, { APP_SHOW_SHIPS, STOP_SHIPS },
+        { APP_SHOW_RAIN, STOP_RAIN }, { APP_SHOW_DEPARTURES, STOP_DEPARTURES },
+    };
+    for (int i = 0; i < g_cfg->location_count; i++) {
+        for (size_t k = 0; k < sizeof(order) / sizeof(order[0]); k++) {
+            if (g_cfg->show[i] & order[k].show) {
+                s_stops[s_stop_count++] = (view_stop_t){ order[k].kind, (uint8_t)i };
+            }
+        }
+        if (g_cfg->show[i] & (APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN)) {
+            s_any_radar = true;
+        }
+        if (g_cfg->show[i] & APP_SHOW_DEPARTURES) {
+            s_any_departures = true;
+        }
+    }
+}
+
+/* Show the container for screens of `kind`, hiding the others. The status
+ * label and tap layer sit above all of them and are left alone. */
+static void show_view(stop_kind_t kind)
+{
+    lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root };
+    lv_obj_t *shown = (kind == STOP_OVERVIEW) ? s_overview_root
+                    : (kind == STOP_WEATHER) ? s_detail_root
+                    : (kind == STOP_DEPARTURES) ? s_dep_root : s_radar_root;
+    for (size_t k = 0; k < sizeof(roots) / sizeof(roots[0]); k++) {
+        if (roots[k] == NULL) {
+            continue;
+        }
+        if (roots[k] == shown) {
+            lv_obj_clear_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* The status text sits above whichever screen is shown. On the radar it
+     * takes the radar's text colour, and is moved over the table half so it
+     * doesn't sit on the plot. */
+    if (kind == STOP_RADAR || kind == STOP_SHIPS || kind == STOP_RAIN) {
+        lv_obj_set_style_text_color(g_status_label, lv_color_hex(radar_status_colour()), 0);
+        lv_obj_align(g_status_label, LV_ALIGN_CENTER, 245, 0);
+    } else {
+        lv_obj_remove_local_style_prop(g_status_label, LV_STYLE_TEXT_COLOR, 0);
+        lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
+    }
+}
+
+/* Switch to screen `idx` of s_stops (adapter lock held), showing whatever
+ * is cached for it straight away, or a "Henter..." note until the weather
+ * task's fetch lands. Called from a tap, the rotation, and the start. */
+static void view_enter(int idx)
+{
+    const view_stop_t *stop = &s_stops[idx];
+    show_view((stop_kind_t)stop->kind);
+    switch ((stop_kind_t)stop->kind) {
+    case STOP_OVERVIEW:
+        overview_enter();
+        break;
+    case STOP_WEATHER:
+        weather_enter(stop->loc);
+        break;
+    case STOP_RADAR:
+    case STOP_SHIPS:
+    case STOP_RAIN:
+        radar_enter(stop->kind, stop->loc);
+        break;
+    case STOP_DEPARTURES:
+        departures_enter(stop->loc);
+        break;
+    }
+}
+
+/* Switch to stop `next` and wake the weather task to fetch for it. LVGL
+ * context (adapter lock held). */
+static void view_switch(int next, bool automatic)
+{
+    s_view_auto = automatic;
+    g_view_index = next;
+    view_enter(next);
+    ESP_LOGI(TAG, "%s: view %d/%d", automatic ? "Auto" : "Tap", next, s_stop_count);
+    if (s_yr_task != NULL) {
+        xTaskNotifyGive(s_yr_task);
+    }
 }
 
 /* Tap the right half of the screen: next stop (overview -> location 1 ->
  * location 2 -> ... -> overview); tap the left half: previous stop. Runs in
- * the LVGL context (which already holds the adapter lock): switches the
- * screen at once, showing whatever is cached for it (view_enter), and wakes
- * the weather task to fetch afresh. */
+ * the LVGL context, which already holds the adapter lock. */
 static void screen_touch_cb(lv_event_t *e)
 {
     /* Any touch holds off the automatic rotation for another idle period. */
@@ -589,20 +299,7 @@ static void screen_touch_cb(lv_event_t *e)
         lv_indev_get_point(indev, &p);
     }
     bool left = p.x < lv_obj_get_width(lv_event_get_target_obj(e)) / 2;
-
-    int next = s_view_index + (left ? -1 : 1);
-    if (next >= s_stop_count) {
-        next = 0;
-    } else if (next < 0) {
-        next = s_stop_count - 1;
-    }
-    s_view_auto = false;
-    s_view_index = next;
-    view_enter(next);
-    ESP_LOGI(TAG, "Tap: view %d/%d", next, s_stop_count);
-    if (s_yr_task != NULL) {
-        xTaskNotifyGive(s_yr_task);
-    }
+    view_switch((g_view_index + (left ? s_stop_count - 1 : 1)) % s_stop_count, false);
 }
 
 /* Whether stop `i` is one the automatic rotation visits. */
@@ -614,9 +311,9 @@ static bool stop_in_rotation(int i)
     };
     const view_stop_t *st = &s_stops[i];
     if (st->kind == STOP_OVERVIEW) {
-        return s_cfg->auto_overview;
+        return g_cfg->auto_overview;
     }
-    return (s_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
+    return (g_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
 }
 
 /* Once a second: after auto_idle_min minutes without a touch, move on to the
@@ -626,2065 +323,60 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
 {
     (void)t;
     const uint32_t now = lv_tick_get();
-    if (now - s_last_touch_ms < (uint32_t)s_cfg->auto_idle_min * 60000u) {
+    if (now - s_last_touch_ms < (uint32_t)g_cfg->auto_idle_min * 60000u) {
         return;
     }
-    if (s_auto_running && now - s_auto_switch_ms < (uint32_t)s_cfg->auto_dwell_s * 1000u) {
+    if (s_auto_running && now - s_auto_switch_ms < (uint32_t)g_cfg->auto_dwell_s * 1000u) {
         return;
     }
     s_auto_running = true;
     s_auto_switch_ms = now;
     for (int k = 1; k <= s_stop_count; k++) {
-        int next = (s_view_index + k) % s_stop_count;
+        int next = (g_view_index + k) % s_stop_count;
         if (stop_in_rotation(next)) {
-            if (next != s_view_index) {
-                s_view_auto = true;
-                s_view_index = next;
-                view_enter(next);
-                ESP_LOGI(TAG, "Auto: view %d/%d", next, s_stop_count);
-                if (s_yr_task != NULL) {
-                    xTaskNotifyGive(s_yr_task);
-                }
+            if (next != g_view_index) {
+                view_switch(next, true);
             }
             return;
         }
     }
 }
 
-/* Lay out the cycle of screens from the configuration. */
-static void build_stops(void)
-{
-    s_weather_count = 0;
-    s_any_radar = false;
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        s_wx_pos[i] = -1;
-        if (s_cfg->show[i] & APP_SHOW_WEATHER) {
-            s_wx_pos[i] = (int8_t)s_weather_count;
-            s_wx_loc[s_weather_count++] = (uint8_t)i;
-        }
-        if (s_cfg->show[i] & (APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN)) {
-            s_any_radar = true;
-        }
-        if (s_cfg->show[i] & APP_SHOW_DEPARTURES) {
-            s_any_departures = true;
-        }
-    }
-
-    s_stop_count = 0;
-    /* Always a stop, regardless of location_count: it's the only screen that
-     * shows the device's IP address, so it must always be reachable by tap. */
-    s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        if (s_cfg->show[i] & APP_SHOW_WEATHER) {
-            s_stops[s_stop_count++] = (view_stop_t){ STOP_WEATHER, (uint8_t)i };
-        }
-        if (s_cfg->show[i] & APP_SHOW_RADAR) {
-            s_stops[s_stop_count++] = (view_stop_t){ STOP_RADAR, (uint8_t)i };
-        }
-        if (s_cfg->show[i] & APP_SHOW_SHIPS) {
-            s_stops[s_stop_count++] = (view_stop_t){ STOP_SHIPS, (uint8_t)i };
-        }
-        if (s_cfg->show[i] & APP_SHOW_RAIN) {
-            s_stops[s_stop_count++] = (view_stop_t){ STOP_RAIN, (uint8_t)i };
-        }
-        if (s_cfg->show[i] & APP_SHOW_DEPARTURES) {
-            s_stops[s_stop_count++] = (view_stop_t){ STOP_DEPARTURES, (uint8_t)i };
-        }
-    }
-}
-
-/* Show the overview table, the per-location weather screen or the radar. The
- * status label and tap layer sit above all of them and are left alone. */
-static void show_view(stop_kind_t kind)
-{
-    lv_obj_t *roots[4];
-    roots[STOP_OVERVIEW] = s_overview_root;
-    roots[STOP_WEATHER] = s_detail_root;
-    roots[STOP_RADAR] = s_radar_root;
-    roots[3] = s_dep_root;
-    int shown = (kind == STOP_SHIPS || kind == STOP_RAIN) ? STOP_RADAR
-              : (kind == STOP_DEPARTURES) ? 3 : (int)kind;
-    for (int k = 0; k < 4; k++) {
-        if (roots[k] == NULL) {
-            continue;
-        }
-        if (k == shown) {
-            lv_obj_clear_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(roots[k], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-
-    /* The status text sits above whichever screen is shown. On the radar it
-     * takes the radar's text colour, and is moved over the table half so it
-     * doesn't sit on the plot. */
-    if (kind == STOP_RADAR || kind == STOP_SHIPS || kind == STOP_RAIN) {
-        lv_obj_set_style_text_color(s_status_label, lv_color_hex(s_rp->txt), 0);
-        lv_obj_align(s_status_label, LV_ALIGN_CENTER, 245, 0);
-    } else {
-        lv_obj_remove_local_style_prop(s_status_label, LV_STYLE_TEXT_COLOR, 0);
-        lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
-    }
-}
-
-/* Build the overview table into `root`: a title, a header row of clock hours
- * (filled in each refresh), then one row per location with a name cell and
- * OV_COLS cells of {weather icon, temperature, precipitation}. Always called;
- * the row loop below is simply empty when no location shows weather - the IP
- * and free-heap footnotes are the only content in that case. */
-static void build_overview(lv_obj_t *root)
-{
-    const lv_color_t footnote = (s_cfg->theme == APP_THEME_DARK)
-        ? lv_palette_main(LV_PALETTE_GREY) : lv_palette_darken(LV_PALETTE_GREY, 2);
-    s_ov_title = lv_label_create(root);
-    lv_obj_set_style_text_font(s_ov_title, s_font_large, 0);
-    lv_obj_set_pos(s_ov_title, OV_X, OV_TITLE_Y);
-    lv_label_set_text(s_ov_title, "Oversikt");
-
-    lv_obj_t *sted = lv_label_create(root);
-    lv_obj_set_pos(sted, OV_X, OV_HDR_Y);
-    lv_label_set_text(sted, "Sted");
-
-    for (int c = 0; c < OV_COLS; c++) {
-        s_ov_hdr[c] = lv_label_create(root);
-        lv_obj_set_pos(s_ov_hdr[c], OV_X + OV_NAME_W + c * OV_COL_W, OV_HDR_Y);
-        lv_obj_set_width(s_ov_hdr[c], OV_COL_W);
-        lv_label_set_text(s_ov_hdr[c], "");
-    }
-
-    /* One row per location that shows weather (row r = s_wx_loc[r]). */
-    for (int i = 0; i < s_weather_count; i++) {
-        int row_y = OV_BODY_Y + i * OV_ROW_H;
-
-        /* The name text is indented to leave room for the alert dot at the
-         * left of the row (below) - sized and positioned first so the dot
-         * can align itself to it. */
-        s_ov_name[i] = lv_label_create(root);
-        lv_obj_set_pos(s_ov_name[i], OV_X + OV_ALERT_DOT + 6, row_y + OV_ICON / 2 - 4);
-        lv_obj_set_width(s_ov_name[i], OV_NAME_W - OV_ALERT_DOT - 10);
-        /* DOTS mode only truncates (rather than wrapping to a second line
-         * that bleeds into the row below) when the object has a fixed,
-         * single-line height - auto height lets it grow instead. */
-        lv_obj_set_height(s_ov_name[i], lv_font_get_line_height(lv_obj_get_style_text_font(s_ov_name[i], 0)));
-        lv_obj_set_style_text_align(s_ov_name[i], LV_TEXT_ALIGN_LEFT, 0);
-        lv_label_set_long_mode(s_ov_name[i], LV_LABEL_LONG_MODE_DOTS);
-        lv_label_set_text(s_ov_name[i], s_cfg->locations[s_wx_loc[i]].name);
-
-        /* Worst active alert's colour, or hidden. Vertically centred on the
-         * name text regardless of font metrics, via align-to. */
-        s_ov_alert[i] = lv_obj_create(root);
-        lv_obj_remove_style_all(s_ov_alert[i]);
-        lv_obj_set_size(s_ov_alert[i], OV_ALERT_DOT, OV_ALERT_DOT);
-        lv_obj_set_style_radius(s_ov_alert[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_opa(s_ov_alert[i], LV_OPA_COVER, 0);
-        lv_obj_align_to(s_ov_alert[i], s_ov_name[i], LV_ALIGN_OUT_LEFT_MID, -4, 0);
-        lv_obj_add_flag(s_ov_alert[i], LV_OBJ_FLAG_HIDDEN);
-
-        for (int c = 0; c < OV_COLS; c++) {
-            int cell_x = OV_X + OV_NAME_W + c * OV_COL_W;
-
-            s_ov_icon[i][c] = lv_image_create(root);
-            lv_obj_set_pos(s_ov_icon[i][c], cell_x + (OV_COL_W - OV_ICON) / 2, row_y);
-            lv_obj_set_size(s_ov_icon[i][c], OV_ICON, OV_ICON);
-            lv_image_set_inner_align(s_ov_icon[i][c], LV_IMAGE_ALIGN_CENTER);
-            lv_image_set_scale(s_ov_icon[i][c], 256 * OV_ICON / ICON_SIZE);
-            lv_obj_add_flag(s_ov_icon[i][c], LV_OBJ_FLAG_HIDDEN);
-
-            s_ov_cell[i][c] = lv_label_create(root);
-            lv_obj_set_pos(s_ov_cell[i][c], cell_x, row_y + OV_ICON + 1);
-            lv_obj_set_width(s_ov_cell[i][c], OV_COL_W);
-            lv_label_set_text(s_ov_cell[i][c], "");
-        }
-    }
-
-    /* The address to browse to for WiFi/location setup (see wifi_provision).
-     * Text is filled in each refresh by update_overview(); muted so it reads
-     * as a footnote, not another data row. */
-    s_ov_ip_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_ip_label, footnote, 0);
-    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4);
-    lv_label_set_text(s_ov_ip_label, "");
-
-    /* Free internal-DRAM bytes, the figure this project's memory work has
-     * been tracking throughout - a running diagnostic, not user-facing data,
-     * so it's a footnote like the IP label. */
-    s_ov_heap_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_heap_label, footnote, 0);
-    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4);
-    lv_label_set_text(s_ov_heap_label, "");
-}
-
-/* --------------------------------------------------------------------------
- * Aircraft radar
- *
- * The plot and table are painted straight into the draw layer from one
- * LV_EVENT_DRAW_MAIN handler. LVGL renders in horizontal strips (the draw
- * buffer is only a few lines tall), calling the handler once per strip, so
- * every primitive is culled against the strip first: creating a draw task per
- * element per strip would otherwise cost a lot of transient internal DRAM.
- * ------------------------------------------------------------------------ */
-
-static bool radar_area_hits_clip(const lv_layer_t *layer, const lv_area_t *a)
-{
-    const lv_area_t *c = &layer->_clip_area;
-    return a->x1 <= c->x2 && a->x2 >= c->x1 && a->y1 <= c->y2 && a->y2 >= c->y1;
-}
-
-static bool radar_vis(const lv_layer_t *layer, int x1, int y1, int x2, int y2)
-{
-    lv_area_t a = { x1, y1, x2, y2 };
-    return radar_area_hits_clip(layer, &a);
-}
-
-static void radar_text(lv_layer_t *layer, const char *txt, int x, int y, int w,
-                       lv_text_align_t align, lv_color_t color)
-{
-    int h = lv_font_get_line_height(s_font_body);
-    if (!radar_vis(layer, x, y, x + w - 1, y + h - 1)) {
-        return;
-    }
-    lv_draw_label_dsc_t d;
-    lv_draw_label_dsc_init(&d);
-    d.font = s_font_body;
-    d.color = color;
-    d.text = txt;
-    d.text_local = 1; /* drawing is deferred; LVGL copies the string */
-    d.align = align;
-    lv_area_t a = { x, y, x + w - 1, y + h - 1 };
-    lv_draw_label(layer, &d, &a);
-}
-
-static void radar_line(lv_layer_t *layer, int x1, int y1, int x2, int y2, int width, lv_color_t color)
-{
-    int lo_x = x1 < x2 ? x1 : x2, hi_x = x1 < x2 ? x2 : x1;
-    int lo_y = y1 < y2 ? y1 : y2, hi_y = y1 < y2 ? y2 : y1;
-    if (!radar_vis(layer, lo_x - width, lo_y - width, hi_x + width, hi_y + width)) {
-        return;
-    }
-    lv_draw_line_dsc_t d;
-    lv_draw_line_dsc_init(&d);
-    d.p1.x = x1;
-    d.p1.y = y1;
-    d.p2.x = x2;
-    d.p2.y = y2;
-    d.width = width;
-    d.color = color;
-    d.opa = LV_OPA_COVER;
-    lv_draw_line(layer, &d);
-}
-
-/* A circle centred on the radar: an outline, optionally filled. */
-static void radar_circle(lv_layer_t *layer, int r, int border_w, lv_color_t border,
-                         bool fill, lv_color_t fill_color)
-{
-    lv_area_t a = { RADAR_CX - r, RADAR_CY - r, RADAR_CX + r, RADAR_CY + r };
-    if (!radar_area_hits_clip(layer, &a)) {
-        return;
-    }
-    lv_draw_rect_dsc_t d;
-    lv_draw_rect_dsc_init(&d);
-    d.radius = LV_RADIUS_CIRCLE;
-    d.bg_opa = fill ? LV_OPA_COVER : LV_OPA_TRANSP;
-    d.bg_color = fill_color;
-    d.border_width = border_w;
-    d.border_color = border;
-    d.border_opa = border_w > 0 ? LV_OPA_COVER : LV_OPA_TRANSP;
-    lv_draw_rect(layer, &d, &a);
-}
-
-static void radar_triangle(lv_layer_t *layer, const int pts[3][2], lv_color_t color)
-{
-    int lo_x = pts[0][0], hi_x = pts[0][0], lo_y = pts[0][1], hi_y = pts[0][1];
-    for (int i = 1; i < 3; i++) {
-        if (pts[i][0] < lo_x) lo_x = pts[i][0];
-        if (pts[i][0] > hi_x) hi_x = pts[i][0];
-        if (pts[i][1] < lo_y) lo_y = pts[i][1];
-        if (pts[i][1] > hi_y) hi_y = pts[i][1];
-    }
-    if (!radar_vis(layer, lo_x, lo_y, hi_x, hi_y)) {
-        return;
-    }
-    lv_draw_triangle_dsc_t d;
-    lv_draw_triangle_dsc_init(&d);
-    for (int i = 0; i < 3; i++) {
-        d.p[i].x = pts[i][0];
-        d.p[i].y = pts[i][1];
-    }
-    d.color = color;
-    d.opa = LV_OPA_COVER;
-    lv_draw_triangle(layer, &d);
-}
-
-/* Altitude in metres (to the nearest 10), or kilometres from 1000 m up. The
- * feed reports feet. */
-static void radar_fmt_alt(char *buf, size_t n, int32_t alt_ft)
-{
-    if (alt_ft == ADSB_ALT_UNKNOWN) {
-        snprintf(buf, n, "-");
-        return;
-    }
-    float m = (float)alt_ft * 0.3048f;
-    if (m < 995.0f) {
-        snprintf(buf, n, "%d m", (int)lroundf(m / 10.0f) * 10);
-    } else {
-        snprintf(buf, n, "%.1f km", (double)(m / 1000.0f));
-    }
-}
-
-
-/* Airports inside the radar's range, drawn under the aircraft: runway lines
- * (or a dot when they'd be too small to see) and an ICAO label. The full table
- * (components/airports.bin, built by scripts/build_airports.py from OurAirports)
- * lives in flash; only the handful in range are kept, precomputed as km offsets
- * from the radar centre whenever the radar is shown for a location. */
-#define RADAR_APT_MAX      24
-#define RADAR_APT_RWY_MAX  4    /* runways kept per airport */
-
-typedef struct {
-    char label[5];     /* IATA code, or the ICAO code where the airport has none */
-    float x_km, y_km;  /* east / north of the radar centre */
-    uint8_t n_rwy;
-    uint8_t first_rwy; /* index into s_radar_rwy */
-} radar_apt_t;
-
-typedef struct {
-    float x1, y1, x2, y2; /* km east / north of the radar centre */
-} radar_rwy_t;
-
-static radar_apt_t *s_radar_apt; /* PSRAM; most important first (large, then nearer) */
-static radar_rwy_t *s_radar_rwy; /* PSRAM */
-static int s_radar_apt_n;
-static int s_radar_range_km = APP_CONFIG_RADAR_KM_DEFAULT; /* range of the radar on show (its location's setting) */
-
-extern const uint8_t airports_bin_start[] asm("_binary_airports_bin_start");
-extern const uint8_t airports_bin_end[] asm("_binary_airports_bin_end");
-
-static int32_t rd_i32(const uint8_t *p)
-{
-    int32_t v;
-    memcpy(&v, p, sizeof(v)); /* the embedded blob has no alignment guarantee */
-    return v;
-}
-
-/* Collect the airports within s_radar_range_km of (lat0, lon0). */
-static void radar_load_airports(double lat0, double lon0)
-{
-    s_radar_apt_n = 0;
-    const uint8_t *blob = airports_bin_start;
-    size_t size = (size_t)(airports_bin_end - airports_bin_start);
-    if (size < 12 || memcmp(blob, "APT2", 4) != 0) {
-        return;
-    }
-    uint32_t n_ap = (uint32_t)rd_i32(blob + 4);
-    uint32_t n_rw = (uint32_t)rd_i32(blob + 8);
-    if (12 + (size_t)n_ap * 20 + (size_t)n_rw * 16 > size) {
-        return;
-    }
-    const uint8_t *ap = blob + 12;
-    const uint8_t *rw = ap + (size_t)n_ap * 20;
-
-    const float range = (float)s_radar_range_km;
-    const double ky = 110.57;
-    const double kx = 111.32 * cos(lat0 * M_PI / 180.0);
-    const int32_t lat0_e4 = (int32_t)lround(lat0 * 1e4);
-    const int32_t lon0_e4 = (int32_t)lround(lon0 * 1e4);
-    const int32_t dlat_e4 = (int32_t)(range / ky * 1e4) + 10;
-    const int32_t dlon_e4 = (int32_t)(range / kx * 1e4) + 10;
-
-    /* Keep the RADAR_APT_MAX most important candidates: rank by class, then by
-     * distance. `best` holds record indices in rank order. */
-    uint32_t best[RADAR_APT_MAX];
-    float best_key[RADAR_APT_MAX];
-    int n_best = 0;
-    for (uint32_t i = 0; i < n_ap; i++) {
-        const uint8_t *rec = ap + (size_t)i * 20;
-        int32_t lat = rd_i32(rec + 8), lon = rd_i32(rec + 12);
-        if (abs(lat - lat0_e4) > dlat_e4 || abs(lon - lon0_e4) > dlon_e4) {
-            continue;
-        }
-        float x = (float)((lon - lon0_e4) * 1e-4 * kx);
-        float y = (float)((lat - lat0_e4) * 1e-4 * ky);
-        float d2 = x * x + y * y;
-        if (d2 > range * range) {
-            continue;
-        }
-        float key = (float)rec[19] * 1e6f + d2; /* class 0=large .. 2=small */
-        int at = n_best;
-        if (n_best == RADAR_APT_MAX) {
-            if (key >= best_key[n_best - 1]) {
-                continue;
-            }
-            at = n_best - 1;
-        } else {
-            n_best++;
-        }
-        while (at > 0 && best_key[at - 1] > key) {
-            best[at] = best[at - 1];
-            best_key[at] = best_key[at - 1];
-            at--;
-        }
-        best[at] = i;
-        best_key[at] = key;
-    }
-
-    int n_rwy_used = 0;
-    for (int b = 0; b < n_best; b++) {
-        const uint8_t *rec = ap + (size_t)best[b] * 20;
-        radar_apt_t *a = &s_radar_apt[b];
-        /* IATA code (offset 4) if it has one, else the ICAO code (offset 0). */
-        memcpy(a->label, rec + 4, 4);
-        if (a->label[0] == ' ' || a->label[0] == '\0') {
-            memcpy(a->label, rec, 4);
-        }
-        a->label[4] = '\0';
-        for (int k = 3; k >= 0 && (a->label[k] == ' ' || a->label[k] == '\0'); k--) {
-            a->label[k] = '\0';
-        }
-        a->x_km = (float)((rd_i32(rec + 12) - lon0_e4) * 1e-4 * kx);
-        a->y_km = (float)((rd_i32(rec + 8) - lat0_e4) * 1e-4 * ky);
-        uint16_t first;
-        memcpy(&first, rec + 16, sizeof(first));
-        int n = rec[18];
-        if (n > RADAR_APT_RWY_MAX) {
-            n = RADAR_APT_RWY_MAX;
-        }
-        a->first_rwy = (uint8_t)n_rwy_used;
-        a->n_rwy = (uint8_t)n;
-        for (int r = 0; r < n; r++) {
-            const uint8_t *rr = rw + ((size_t)first + r) * 16;
-            radar_rwy_t *o = &s_radar_rwy[n_rwy_used++];
-            o->y1 = (float)((rd_i32(rr + 0) - lat0_e4) * 1e-4 * ky);
-            o->x1 = (float)((rd_i32(rr + 4) - lon0_e4) * 1e-4 * kx);
-            o->y2 = (float)((rd_i32(rr + 8) - lat0_e4) * 1e-4 * ky);
-            o->x2 = (float)((rd_i32(rr + 12) - lon0_e4) * 1e-4 * kx);
-        }
-    }
-    s_radar_apt_n = n_best;
-    ESP_LOGI(TAG, "Radar: %d airport(s) within %d km", n_best, s_radar_range_km);
-}
-
-static void radar_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color)
-{
-    lv_area_t a = { cx - r, cy - r, cx + r, cy + r };
-    if (!radar_area_hits_clip(layer, &a)) {
-        return;
-    }
-    lv_draw_rect_dsc_t d;
-    lv_draw_rect_dsc_init(&d);
-    d.radius = LV_RADIUS_CIRCLE;
-    d.bg_opa = LV_OPA_COVER;
-    d.bg_color = color;
-    d.border_width = 0;
-    lv_draw_rect(layer, &d, &a);
-}
-
-/* Runways (or a dot when they would be under a few pixels), under the aircraft. */
-static void radar_draw_airports(lv_layer_t *layer, int range)
-{
-    const lv_color_t col = lv_color_hex(s_rp->apt);
-    const float px_per_km = (float)RADAR_R / (float)range;
-    for (int i = 0; i < s_radar_apt_n; i++) {
-        const radar_apt_t *a = &s_radar_apt[i];
-        int cx = RADAR_CX + (int)lroundf(a->x_km * px_per_km);
-        int cy = RADAR_CY - (int)lroundf(a->y_km * px_per_km);
-        float longest = 0.0f;
-        for (int r = 0; r < a->n_rwy; r++) {
-            const radar_rwy_t *w = &s_radar_rwy[a->first_rwy + r];
-            float len = hypotf(w->x2 - w->x1, w->y2 - w->y1) * px_per_km;
-            if (len > longest) {
-                longest = len;
-            }
-            radar_line(layer,
-                       RADAR_CX + (int)lroundf(w->x1 * px_per_km), RADAR_CY - (int)lroundf(w->y1 * px_per_km),
-                       RADAR_CX + (int)lroundf(w->x2 * px_per_km), RADAR_CY - (int)lroundf(w->y2 * px_per_km),
-                       2, col);
-        }
-        if (longest < 8.0f) {
-            radar_dot(layer, cx, cy, 3, col);
-        }
-    }
-}
-
-/* ICAO labels for the airports, most important first, drawn after the aircraft
- * tags and skipped where they would land on a tag or on each other. `tags`
- * holds the rectangles already taken; new labels are appended to it. */
-static void radar_draw_airport_labels(lv_layer_t *layer, int range, int lh, lv_area_t *tags, int *n_tags,
-                                      int max_tags)
-{
-    const lv_color_t col = lv_color_hex(s_rp->apt);
-    const float px_per_km = (float)RADAR_R / (float)range;
-    for (int i = 0; i < s_radar_apt_n && *n_tags < max_tags; i++) {
-        const radar_apt_t *a = &s_radar_apt[i];
-        if (a->label[0] == '\0') {
-            continue;
-        }
-        int cx = RADAR_CX + (int)lroundf(a->x_km * px_per_km);
-        int cy = RADAR_CY - (int)lroundf(a->y_km * px_per_km);
-        lv_point_t sz;
-        lv_text_get_size(&sz, a->label, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-
-        /* To the right of the airport, or to the left if that would spill
-         * out of the plot. */
-        lv_area_t lab = { cx + 8, cy - lh / 2, 0, cy + lh / 2 };
-        lab.x2 = lab.x1 + sz.x + 2;
-        int dxr = lab.x2 - RADAR_CX, dyr = cy - RADAR_CY;
-        if (dxr * dxr + dyr * dyr > RADAR_R * RADAR_R) {
-            lab.x1 = cx - 8 - sz.x - 2;
-            lab.x2 = lab.x1 + sz.x + 2;
-        }
-        bool clash = false;
-        for (int k = 0; k < *n_tags; k++) {
-            const lv_area_t *o = &tags[k];
-            if (lab.x1 <= o->x2 && lab.x2 >= o->x1 && lab.y1 <= o->y2 && lab.y2 >= o->y1) {
-                clash = true;
-                break;
-            }
-        }
-        if (clash) {
-            continue;
-        }
-        tags[(*n_tags)++] = lab;
-        radar_text(layer, a->label, lab.x1, lab.y1, sz.x + 2, LV_TEXT_ALIGN_LEFT, col);
-    }
-}
-
-/* Draw `txt` left-aligned in w px, shortened with ".." if it doesn't fit. */
-static void radar_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color)
-{
-    if (!radar_vis(layer, x, y, x + w - 1, y + lv_font_get_line_height(s_font_body) - 1)) {
-        return;
-    }
-    char buf[sizeof(((entur_group_t *)0)->dest) + 2]; /* the longest: a departure's destination */
-    size_t len = strlen(txt);
-    if (len > sizeof(buf) - 3) {
-        len = sizeof(buf) - 3;
-    }
-    for (size_t n = len;; n--) {
-        memcpy(buf, txt, n);
-        if (n < len) {
-            memcpy(buf + n, "..", 3);
-        } else {
-            buf[n] = '\0';
-        }
-        lv_point_t sz;
-        lv_text_get_size(&sz, buf, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-        if (sz.x <= w || n <= 1) {
-            break;
-        }
-    }
-    radar_text(layer, buf, x, y, w, LV_TEXT_ALIGN_LEFT, color);
-}
-
-/* Where ship `s` is now on the plot, in px from the centre (y up): its reported
- * position moved along its course for the report's age, unless it's moored.
- * False if that is outside the outer ring. */
-static bool ship_plot_pos(const ais_ship_t *s, int range, float since_fetch_s, float *sx, float *sy)
-{
-    const float deg = (float)M_PI / 180.0f;
-    float x_km = s->dist_km * sinf(s->bearing_deg * deg);
-    float y_km = s->dist_km * cosf(s->bearing_deg * deg);
-    if (!s->moored) {
-        float t = fminf(s->age_s + since_fetch_s, SHIP_EXTRAP_MAX_S);
-        float moved_km = s->sog_kn * KM_PER_NM * t / 3600.0f;
-        x_km += moved_km * sinf(s->cog_deg * deg);
-        y_km += moved_km * cosf(s->cog_deg * deg);
-    }
-    *sx = x_km / (float)range * RADAR_R;
-    *sy = y_km / (float)range * RADAR_R;
-    return *sx * *sx + *sy * *sy <= (float)(RADAR_R * RADAR_R);
-}
-
-/* Table columns beside the radar (x and width in px), measured from the
- * body font at start-up (radar_layout_tables): the text size is a setting,
- * so fixed widths would let a larger font wrap or run cells together. */
-typedef struct {
-    int x, w; /* w == 0: column left out */
-} radar_col_t;
-enum { AC_CALL, AC_TYPE, AC_ALT, AC_GS, AC_DIST, AC_COLS };
-enum { SH_NAME, SH_TYPE, SH_KN, SH_DIST, SH_COLS };
-static radar_col_t s_ac_col[AC_COLS];
-static radar_col_t s_sh_col[SH_COLS];
-
-static int radar_text_w(const char *txt)
-{
-    lv_point_t sz;
-    lv_text_get_size(&sz, txt, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-    return sz.x;
-}
-
-/* Place columns 1..n-1 right to left from the table's right edge, each
- * w[i] wide (0 = left out); column 0 gets whatever is left. Returns its
- * width. */
-static int radar_layout_cols(radar_col_t *c, const int *w, int n)
-{
-    int right = RADAR_LIST_R;
-    for (int i = n - 1; i >= 1; i--) {
-        c[i].w = w[i];
-        if (w[i] > 0) {
-            c[i].x = right - w[i];
-            right = c[i].x - RADAR_COL_GAP;
-        }
-    }
-    c[0].x = RADAR_LIST_X;
-    c[0].w = right - RADAR_LIST_X;
-    return c[0].w;
-}
-
-static int radar_max_w(const char *const *txt, int n)
-{
-    int w = 0;
-    for (int i = 0; i < n; i++) {
-        int t = radar_text_w(txt[i]);
-        w = t > w ? t : w;
-    }
-    return w;
-}
-
-/* Each column as wide as its header or its widest likely value. The aircraft
- * type is left out if the callsign would otherwise get too narrow for a
- * typical one; names, callsigns and types that still don't fit are shortened
- * with "..". */
-static void radar_layout_tables(void)
-{
-    int ac[AC_COLS] = {
-        [AC_TYPE] = radar_max_w((const char *[]){ "Type", "B77W" }, 2),
-        [AC_ALT] = radar_max_w((const char *[]){ "H\xC3\xB8yde", "00.0 km", "88.8 km", "000 m", "888 m" }, 5),
-        [AC_GS] = radar_max_w((const char *[]){ "kt", "000", "888" }, 3),
-        [AC_DIST] = radar_max_w((const char *[]){ "km", "000", "888" }, 3),
-    };
-    if (radar_layout_cols(s_ac_col, ac, AC_COLS) < radar_text_w("SAS1234")) {
-        ac[AC_TYPE] = 0;
-        radar_layout_cols(s_ac_col, ac, AC_COLS);
-    }
-
-    const char *cats[AIS_CAT_COUNT + 1];
-    for (int i = 0; i < AIS_CAT_COUNT; i++) {
-        cats[i] = ais_category_label(i);
-    }
-    cats[AIS_CAT_COUNT] = "Type";
-    int sh[SH_COLS] = {
-        [SH_TYPE] = radar_max_w(cats, AIS_CAT_COUNT + 1),
-        [SH_KN] = radar_max_w((const char *[]){ "kn", "00", "88" }, 3),
-        [SH_DIST] = radar_max_w((const char *[]){ "km", "000", "888", "8.8" }, 4),
-    };
-    radar_layout_cols(s_sh_col, sh, SH_COLS);
-}
-
-/* One table cell: left-aligned text is shortened to fit; right-aligned
- * (numbers) is drawn in an area exactly its own width against the column's
- * right edge, so it can't wrap onto the next row. Nothing for a left-out
- * column. */
-static void radar_cell(lv_layer_t *layer, const radar_col_t *c, const char *txt, int y,
-                       lv_text_align_t align, lv_color_t color)
-{
-    if (c->w <= 0) {
-        return;
-    }
-    if (align == LV_TEXT_ALIGN_LEFT) {
-        radar_text_fit(layer, txt, c->x, y, c->w, color);
-    } else if (radar_vis(layer, c->x - RADAR_COL_GAP, y, c->x + c->w, y + lv_font_get_line_height(s_font_body))) {
-        /* Measured only in the strips it's drawn in - this runs per strip. */
-        const int w = radar_text_w(txt) + 1;
-        radar_text(layer, txt, c->x + c->w - w, y, w, LV_TEXT_ALIGN_RIGHT, color);
-    }
-}
-
-/* Ship traffic on the radar grid (already drawn): a hull-shaped marker along
- * each ship's heading with a SHIP_VEC_MIN-minute course vector, a dot for
- * moored / anchored ones, name tags for the nearest (those underway first),
- * and the table. */
-static void ships_draw(lv_layer_t *layer, int range, int lh)
-{
-    const lv_color_t c_ring = lv_color_hex(s_rp->ring);
-    const lv_color_t c_txt = lv_color_hex(s_rp->txt);
-    const lv_color_t c_dim = lv_color_hex(s_rp->dim);
-
-    radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
-    radar_cell(layer, &s_sh_col[SH_NAME], "Navn", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_sh_col[SH_TYPE], "Type", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_sh_col[SH_KN], "kn", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_cell(layer, &s_sh_col[SH_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
-
-    const ais_result_t *res = (s_radar_valid && s_ship_data != NULL) ? s_ship_data : NULL;
-    if (res == NULL) {
-        return;
-    }
-
-    lv_area_t tags[RADAR_TAGS];
-    int n_tags = 0;
-    const float since_fetch_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
-    const float deg = (float)M_PI / 180.0f;
-
-    /* Farthest first, so the nearest ships end up on top. */
-    for (int i = res->count - 1; i >= 0; i--) {
-        const ais_ship_t *s = &res->ship[i];
-        const lv_color_t col = lv_color_hex(s_rp->ship[s->category < AIS_CAT_COUNT ? s->category : 0]);
-
-        float sx, sy;
-        if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
-            continue;
-        }
-        int px = RADAR_CX + (int)lroundf(sx);
-        int py = RADAR_CY - (int)lroundf(sy);
-
-        if (s->moored) {
-            radar_dot(layer, px, py, 3, col);
-        } else {
-            float hr = s->heading_deg * deg;
-            float fx = sinf(hr), fy = -cosf(hr);
-            float qx = -fy, qy = fx;
-            int tri[3][2] = {
-                { px + (int)lroundf(fx * 10), py + (int)lroundf(fy * 10) },
-                { px + (int)lroundf(-fx * 6 + qx * 4), py + (int)lroundf(-fy * 6 + qy * 4) },
-                { px + (int)lroundf(-fx * 6 - qx * 4), py + (int)lroundf(-fy * 6 - qy * 4) },
-            };
-            float vx = sinf(s->cog_deg * deg), vy = -cosf(s->cog_deg * deg);
-            float vec_px = s->sog_kn * KM_PER_NM * SHIP_VEC_MIN / 60.0f / (float)range * RADAR_R;
-            if (vec_px > 70.0f) {
-                vec_px = 70.0f;
-            }
-            float b = sx * vx - sy * vy;
-            float c = sx * sx + sy * sy - (float)(RADAR_R * RADAR_R);
-            float t_max = -b + sqrtf(b * b - c);
-            if (vec_px > t_max) {
-                vec_px = t_max;
-            }
-            if (vec_px > 3.0f) {
-                radar_line(layer, px, py, px + (int)lroundf(vx * vec_px), py + (int)lroundf(vy * vec_px),
-                           1, col);
-            }
-            radar_triangle(layer, tri, col);
-        }
-    }
-
-    /* Name tags for up to RADAR_TAGS ships, on the side facing the centre,
-     * skipped where they'd overlap an earlier one: first the ships underway,
-     * nearest first, then the moored / anchored ones in what room is left.
-     * Computed in the same order on every strip so the choice is consistent
-     * across the whole frame. */
-    for (int pass = 0; pass < 2; pass++) {
-        for (int i = 0; i < res->count && n_tags < RADAR_TAGS; i++) {
-            const ais_ship_t *s = &res->ship[i];
-            if (s->moored != (pass == 1)) {
-                continue;
-            }
-            float sx, sy;
-            if (!ship_plot_pos(s, range, since_fetch_s, &sx, &sy)) {
-                continue;
-            }
-            int px = RADAR_CX + (int)lroundf(sx);
-            int py = RADAR_CY - (int)lroundf(sy);
-            lv_point_t sz;
-            lv_text_get_size(&sz, s->name, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            int w = sz.x + 2 < SHIP_TAG_MAX_W ? sz.x + 2 : SHIP_TAG_MAX_W;
-            lv_area_t tag = { (px < RADAR_CX) ? px + 10 : px - 10 - w, py - lh / 2, 0, py + lh / 2 };
-            tag.x2 = tag.x1 + w;
-            bool clash = false;
-            for (int k = 0; k < n_tags; k++) {
-                const lv_area_t *o = &tags[k];
-                if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
-                    clash = true;
-                    break;
-                }
-            }
-            if (!clash) {
-                tags[n_tags++] = tag;
-                radar_text_fit(layer, s->name, tag.x1, tag.y1, w, c_txt);
-            }
-        }
-    }
-
-    if (res->count == 0) {
-        char none[48];
-        snprintf(none, sizeof(none), "Ingen skip innen %d km", range);
-        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
-        return;
-    }
-
-    for (int i = 0; i < res->count && i < RADAR_LIST_ROWS; i++) {
-        const ais_ship_t *s = &res->ship[i];
-        const lv_color_t col = lv_color_hex(s_rp->ship[s->category < AIS_CAT_COUNT ? s->category : 0]);
-        int y = RADAR_LIST_Y + i * RADAR_LIST_ROW_H;
-        char kn[8], dist[8];
-        if (s->moored) {
-            snprintf(kn, sizeof(kn), "-");
-        } else {
-            snprintf(kn, sizeof(kn), "%.0f", (double)s->sog_kn);
-        }
-        snprintf(dist, sizeof(dist), s->dist_km < 10.0f ? "%.1f" : "%.0f", (double)s->dist_km);
-        radar_cell(layer, &s_sh_col[SH_NAME], s->name, y, LV_TEXT_ALIGN_LEFT, c_txt);
-        radar_cell(layer, &s_sh_col[SH_TYPE], ais_category_label(s->category), y, LV_TEXT_ALIGN_LEFT, col);
-        radar_cell(layer, &s_sh_col[SH_KN], kn, y, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_cell(layer, &s_sh_col[SH_DIST], dist, y, LV_TEXT_ALIGN_RIGHT, c_txt);
-    }
-    if (res->total > res->count) {
-        char more[40];
-        snprintf(more, sizeof(more), "Viser %d av %d skip", res->count, res->total);
-        radar_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
-                   290, LV_TEXT_ALIGN_LEFT, c_dim);
-    }
-}
-
-/* The slot holding the image taken at `t`, or -1. */
-static int rain_slot_for(time_t t)
-{
-    for (int i = 0; i < RAIN_FRAMES; i++) {
-        if (s_rain_ftime[i] != RAIN_EMPTY && s_rain_ftime[i] == t) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-/* The slot holding frame position `p`, or -1. */
-static int rain_slot_at(int p)
-{
-    return rain_slot_for(s_rain_latest - (time_t)(RAIN_FRAMES - 1 - p) * RAIN_STEP_S);
-}
-
-/* ARGB8888 as LVGL stores it (0xAARRGGBB), from 0xRRGGBB and an alpha. */
-static uint32_t rain_argb(uint32_t rgb, uint32_t a)
-{
-    return (a << 24) | (rgb & 0xFFFFFF);
-}
-
-/* Draw the frame `lvl` (s_rain_crop's cells) into s_rain_px: each disc pixel
- * is placed on the crop (the disc uses the same flat local projection as the
- * coastline) and blended from the four cells around it, so the 1 km radar
- * pixels don't show as blocks. Where each pixel lands is interpolated from
- * s_rain_gx/gy. */
-static void rain_render(const uint8_t *lvl)
-{
-    const int w = s_rain_crop.w, h = s_rain_crop.h;
-    memset(s_rain_px, 0, (size_t)COAST_D * COAST_D * sizeof(uint32_t));
-    for (int y = 0; y < COAST_D; y++) {
-        const int dy = y - RADAR_R;
-        const int half = (int)sqrtf((float)(RADAR_R * RADAR_R - dy * dy));
-        const int gj = y / RAIN_GRID;
-        const float ty = (float)(y - gj * RAIN_GRID) / RAIN_GRID;
-        float ex[RAIN_GRID_N], ey[RAIN_GRID_N]; /* the grid, down at this row */
-        for (int i = 0; i < RAIN_GRID_N; i++) {
-            ex[i] = s_rain_gx[gj][i] + (s_rain_gx[gj + 1][i] - s_rain_gx[gj][i]) * ty;
-            ey[i] = s_rain_gy[gj][i] + (s_rain_gy[gj + 1][i] - s_rain_gy[gj][i]) * ty;
-        }
-        uint32_t *row = s_rain_px + (size_t)y * COAST_D;
-        for (int x = RADAR_R - half; x <= RADAR_R + half; x++) {
-            const int gi = x / RAIN_GRID;
-            const float tx = (float)(x - gi * RAIN_GRID) / RAIN_GRID;
-            const float fx = ex[gi] + (ex[gi + 1] - ex[gi]) * tx;
-            const float fy = ey[gi] + (ey[gi + 1] - ey[gi]) * tx;
-            const int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
-            if (x0 < 0 || y0 < 0 || x0 + 1 >= w || y0 + 1 >= h) {
-                continue;
-            }
-            const uint8_t *p = lvl + (size_t)y0 * w + x0;
-            if ((p[0] | p[1] | p[w] | p[w + 1]) == 0) {
-                continue; /* dry: the common case */
-            }
-            const float ux = fx - x0, uy = fy - y0;
-            const float wt[4] = { (1 - ux) * (1 - uy), ux * (1 - uy), (1 - ux) * uy, ux * uy };
-            const uint8_t lv[4] = { p[0], p[1], p[w], p[w + 1] };
-            float acc[4] = { 0 };
-            for (int k = 0; k < 4; k++) {
-                for (int c = 0; c < 4; c++) {
-                    acc[c] += wt[k] * s_rain_col[lv[k]][c];
-                }
-            }
-            if (acc[3] < 0.02f) {
-                continue;
-            }
-            row[x] = rain_argb(((uint32_t)(acc[0] / acc[3]) << 16) | ((uint32_t)(acc[1] / acc[3]) << 8) |
-                                   (uint32_t)(acc[2] / acc[3]),
-                               (uint32_t)(acc[3] * 255.0f));
-        }
-    }
-}
-
-/* Put frame position `p` (held in `slot`) on screen. Adapter lock held. */
-static void rain_show(int p, int slot)
-{
-    rain_render(s_rain_frame[slot]);
-    s_rain_pos = p;
-    s_rain_time = s_rain_ftime[slot];
-    s_rain_valid = true;
-    lv_obj_invalidate(s_radar_canvas);
-}
-
-/* Step the rain animation on to the next frame the hour has, back to the
- * first after resting on the latest. Runs in the LVGL task. */
-static void rain_anim_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (!s_rain_mode || !s_rain_valid || s_radar_canvas == NULL ||
-        lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
-        return;
-    }
-    if (s_rain_hold > 0) {
-        s_rain_hold--;
-        return;
-    }
-    for (int k = 1; k <= RAIN_FRAMES; k++) {
-        int p = (s_rain_pos + k) % RAIN_FRAMES;
-        int slot = rain_slot_at(p);
-        if (slot < 0) {
-            continue;
-        }
-        if (p != s_rain_pos) {
-            rain_show(p, slot);
-        }
-        if (p == RAIN_FRAMES - 1) {
-            s_rain_hold = RAIN_HOLD_TICKS;
-        }
-        return;
-    }
-}
-
-/* The rain radar's table half: what the colours mean and where the data is from. */
-static void rain_draw_legend(lv_layer_t *layer, int lh)
-{
-    /* Heaviest first, like MET's own legend. The levels are MET's
-     * 5level_reflectivity classes: about 0.03, 0.1, 1, 2.5 and 5 mm/h. */
-    static const char *const LABELS[RAIN_LEVELS] = {
-        "Under 0,1 mm/t", "0,1 - 1 mm/t", "1 - 2,5 mm/t", "2,5 - 5 mm/t", "Over 5 mm/t",
-    };
-    const lv_color_t c_txt = lv_color_hex(s_rp->txt);
-    const lv_color_t c_dim = lv_color_hex(s_rp->dim);
-    const int row_h = 34;
-    int y = 70;
-
-    radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, lv_color_hex(s_rp->ring));
-    radar_text(layer, "Nedb\xC3\xB8r", RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_dim);
-    y += lh + 12;
-    for (int lvl = RAIN_LEVELS; lvl >= RAIN_LEVEL_MIN; lvl--, y += row_h) {
-        lv_area_t a = { RADAR_LIST_X, y + 2, RADAR_LIST_X + 40, y + lh - 2 };
-        if (radar_area_hits_clip(layer, &a)) {
-            lv_draw_rect_dsc_t d;
-            lv_draw_rect_dsc_init(&d);
-            d.radius = 3;
-            d.bg_opa = LV_OPA_COVER;
-            d.bg_color = lv_color_hex(s_rp->rain[lvl - 1]);
-            lv_draw_rect(layer, &d, &a);
-        }
-        radar_text(layer, LABELS[lvl - 1], RADAR_LIST_X + 54, y, 230, LV_TEXT_ALIGN_LEFT, c_txt);
-    }
-
-    y += 16;
-    if (s_rain_valid && s_rain_time > PLAUSIBLE_EPOCH_S) {
-        char when[40];
-        struct tm lt;
-        localtime_r(&s_rain_time, &lt);
-        snprintf(when, sizeof(when), "Radarbilde kl. %02d:%02d", lt.tm_hour, lt.tm_min);
-        radar_text(layer, when, RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_txt);
-        y += lh + 4;
-
-        /* Where the animation is in the hour: a tick per frame, the one on
-         * show highlighted, faint where MET had no image. */
-        for (int p = 0; p < RAIN_FRAMES; p++) {
-            lv_area_t a = { RADAR_LIST_X + p * 21, y + 4, RADAR_LIST_X + p * 21 + 16, y + 12 };
-            if (!radar_area_hits_clip(layer, &a)) {
-                continue;
-            }
-            lv_draw_rect_dsc_t d;
-            lv_draw_rect_dsc_init(&d);
-            d.radius = 2;
-            d.bg_color = (p == s_rain_pos) ? c_txt : lv_color_hex(s_rp->ring);
-            d.bg_opa = (p == s_rain_pos || rain_slot_at(p) >= 0) ? LV_OPA_COVER : LV_OPA_20;
-            lv_draw_rect(layer, &d, &a);
-        }
-        y += 24;
-    }
-    radar_text(layer, "Radar: MET Norge", RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_dim);
-}
-
-static void radar_draw_cb(lv_event_t *e)
-{
-    lv_layer_t *layer = lv_event_get_layer(e);
-    const lv_color_t c_disc = lv_color_hex(s_rp->disc);
-    const lv_color_t c_ring = lv_color_hex(s_rp->ring);
-    const lv_color_t c_txt = lv_color_hex(s_rp->txt);
-    const lv_color_t c_dim = lv_color_hex(s_rp->dim);
-    const lv_color_t c_plane = lv_color_hex(s_rp->plane);
-    const lv_color_t c_vec = lv_color_hex(s_rp->vec);
-    const int lh = lv_font_get_line_height(s_font_body);
-    const int range = s_radar_range_km;
-
-    /* Grid: disc, range rings at 1/4 steps, crosshair, centre dot - with the
-     * coastline under the rings. */
-    radar_circle(layer, RADAR_R, 2, c_ring, true, c_disc);
-    if (s_coast_valid &&
-        radar_vis(layer, RADAR_CX - RADAR_R, RADAR_CY - RADAR_R, RADAR_CX + RADAR_R, RADAR_CY + RADAR_R)) {
-        lv_draw_image_dsc_t d;
-        lv_draw_image_dsc_init(&d);
-        lv_area_t a = { RADAR_CX - RADAR_R, RADAR_CY - RADAR_R,
-                        RADAR_CX - RADAR_R + COAST_D - 1, RADAR_CY - RADAR_R + COAST_D - 1 };
-        d.src = &s_water_img;
-        d.recolor = lv_color_hex(s_rp->water); /* the colour of an A8 image */
-        lv_draw_image(layer, &d, &a);
-        if (s_rain_mode && s_rain_valid) {
-            lv_draw_image_dsc_t r;
-            lv_draw_image_dsc_init(&r);
-            r.src = &s_rain_img;
-            lv_draw_image(layer, &r, &a);
-        }
-        d.src = &s_coast_img;
-        d.recolor = lv_color_hex(s_rp->coast);
-        lv_draw_image(layer, &d, &a);
-    }
-    for (int i = 1; i < 4; i++) {
-        radar_circle(layer, RADAR_R * i / 4, 1, c_ring, false, c_disc);
-    }
-    radar_line(layer, RADAR_CX - RADAR_R, RADAR_CY, RADAR_CX + RADAR_R, RADAR_CY, 1, c_ring);
-    radar_line(layer, RADAR_CX, RADAR_CY - RADAR_R, RADAR_CX, RADAR_CY + RADAR_R, 1, c_ring);
-    radar_circle(layer, 3, 0, c_txt, true, c_txt);
-
-    /* Compass letters at the rim and the ring distances along the east spoke. */
-    radar_text(layer, "N", RADAR_CX - 12, RADAR_CY - RADAR_R - lh + 1, 24, LV_TEXT_ALIGN_CENTER, c_txt);
-    radar_text(layer, "S", RADAR_CX - 12, RADAR_CY + RADAR_R + 1, 24, LV_TEXT_ALIGN_CENTER, c_txt);
-    radar_text(layer, "\xC3\x98", RADAR_CX + RADAR_R + 4, RADAR_CY - lh / 2, 24, LV_TEXT_ALIGN_LEFT, c_txt);
-    radar_text(layer, "V", RADAR_CX - RADAR_R - 28, RADAR_CY - lh / 2, 24, LV_TEXT_ALIGN_RIGHT, c_txt);
-    /* Range labels on every other ring: the second ring's number sits on the
-     * east spoke; the outer ring's is lifted one line above the spoke (clear of
-     * the "\xC3\x98" there), with the number just inside the ring and the unit
-     * just outside it. */
-    for (int i = 2; i <= 4; i += 2) {
-        char num[12];
-        float ring_km = range * i / 4.0f;
-        if (ring_km == floorf(ring_km)) {
-            snprintf(num, sizeof(num), "%d", (int)ring_km);
-        } else {
-            snprintf(num, sizeof(num), "%.1f", (double)ring_km);
-        }
-        if (i == 2) {
-            radar_text(layer, num, RADAR_CX + RADAR_R * i / 4 - 70, RADAR_CY - lh - 1, 70,
-                       LV_TEXT_ALIGN_RIGHT, c_dim);
-        } else {
-            int y = RADAR_CY - 2 * lh - 1;
-            float dy = (float)(RADAR_CY - (y + lh / 2)); /* label centre above the spoke */
-            int ring_x = RADAR_CX + (int)lroundf(sqrtf((float)(RADAR_R * RADAR_R) - dy * dy));
-            radar_text(layer, num, ring_x - 4 - 60, y, 60, LV_TEXT_ALIGN_RIGHT, c_dim);
-            radar_text(layer, "km", ring_x + 4, y, 34, LV_TEXT_ALIGN_LEFT, c_dim);
-        }
-    }
-
-    if (s_coast_valid) {
-        radar_text(layer, "\xC2\xA9 OpenStreetMap", 8, 480 - lh - 4, 200, LV_TEXT_ALIGN_LEFT, c_dim);
-    }
-    if (s_ship_mode) {
-        ships_draw(layer, range, lh);
-        return;
-    }
-    if (s_rain_mode) {
-        rain_draw_legend(layer, lh);
-        return;
-    }
-
-    radar_draw_airports(layer, range);
-
-    /* Table header + divider. */
-    radar_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
-    radar_cell(layer, &s_ac_col[AC_CALL], "Fly", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_TYPE], "Type", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_ALT], "H\xC3\xB8yde", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_GS], "kt", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
-
-    const adsb_result_t *res = (s_radar_valid && s_radar_data != NULL) ? s_radar_data : NULL;
-
-    lv_area_t tags[RADAR_TAGS + RADAR_APT_MAX];
-    int n_tags = 0;
-    const float age_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
-    const float deg = (float)M_PI / 180.0f;
-
-    for (int i = 0; res != NULL && i < res->count; i++) {
-        const adsb_aircraft_t *a = &res->ac[i];
-
-        /* Where it is now: its reported position moved along its track for the
-         * time since the report (fetch age + the report's own age). */
-        float br = a->bearing_deg * deg;
-        float tr = a->track_deg * deg;
-        float x_km = a->dist_km * sinf(br);
-        float y_km = a->dist_km * cosf(br);
-        float moved_km = a->gs_kt * KM_PER_NM * (age_s + a->seen_pos_s) / 3600.0f;
-        x_km += moved_km * sinf(tr);
-        y_km += moved_km * cosf(tr);
-
-        float sx = x_km / (float)range * RADAR_R;
-        float sy = y_km / (float)range * RADAR_R;
-        if (sx * sx + sy * sy > (float)(RADAR_R * RADAR_R)) {
-            continue; /* flown out of range since the report */
-        }
-        int px = RADAR_CX + (int)lroundf(sx);
-        int py = RADAR_CY - (int)lroundf(sy);
-
-        /* Heading triangle plus a 60-second speed vector ahead of it. */
-        float fx = sinf(tr), fy = -cosf(tr); /* unit vector along the track, screen coords */
-        float qx = -fy, qy = fx;             /* perpendicular */
-        int tri[3][2] = {
-            { px + (int)lroundf(fx * 9), py + (int)lroundf(fy * 9) },
-            { px + (int)lroundf(-fx * 5 + qx * 5), py + (int)lroundf(-fy * 5 + qy * 5) },
-            { px + (int)lroundf(-fx * 5 - qx * 5), py + (int)lroundf(-fy * 5 - qy * 5) },
-        };
-        float vec_px = a->gs_kt * KM_PER_NM / 60.0f / (float)range * RADAR_R;
-        if (vec_px > 70.0f) {
-            vec_px = 70.0f;
-        }
-        {
-            /* Keep the vector inside the outer ring: distance along the track
-             * from the aircraft to where it crosses the ring. */
-            float b = sx * fx - sy * fy; /* p . f, with p in screen coordinates (y down) */
-            float c = sx * sx + sy * sy - (float)(RADAR_R * RADAR_R);
-            float t_max = -b + sqrtf(b * b - c) - 9.0f;
-            if (vec_px > t_max) {
-                vec_px = t_max;
-            }
-        }
-        if (vec_px > 3.0f) {
-            radar_line(layer, tri[0][0], tri[0][1],
-                       px + (int)lroundf(fx * (9 + vec_px)), py + (int)lroundf(fy * (9 + vec_px)),
-                       1, c_vec);
-        }
-        radar_triangle(layer, tri, c_plane);
-
-        /* Callsign tag for the nearest few, on the side facing the centre;
-         * skipped if it would land on a tag already placed. */
-        if (i < RADAR_TAGS) {
-            lv_point_t sz;
-            lv_text_get_size(&sz, a->callsign, s_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-            lv_area_t tag = { (px < RADAR_CX) ? px + 12 : px - 12 - sz.x, py - lh / 2, 0, py + lh / 2 };
-            tag.x2 = tag.x1 + sz.x + 2;
-            bool clash = false;
-            for (int k = 0; k < n_tags; k++) {
-                const lv_area_t *o = &tags[k];
-                if (tag.x1 <= o->x2 && tag.x2 >= o->x1 && tag.y1 <= o->y2 && tag.y2 >= o->y1) {
-                    clash = true;
-                    break;
-                }
-            }
-            if (!clash) {
-                tags[n_tags++] = tag;
-                radar_text(layer, a->callsign, tag.x1, tag.y1, sz.x + 2, LV_TEXT_ALIGN_LEFT, c_txt);
-            }
-        }
-    }
-
-    radar_draw_airport_labels(layer, range, lh, tags, &n_tags, RADAR_TAGS + RADAR_APT_MAX);
-
-    if (res == NULL) {
-        return; /* nothing fetched yet */
-    }
-    if (res->count == 0) {
-        char none[48];
-        snprintf(none, sizeof(none), "Ingen fly innen %d km", range);
-        radar_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
-        return;
-    }
-
-    /* Table of the nearest aircraft. */
-    for (int i = 0; i < res->count && i < RADAR_LIST_ROWS; i++) {
-        const adsb_aircraft_t *a = &res->ac[i];
-        int y = RADAR_LIST_Y + i * RADAR_LIST_ROW_H;
-        char alt[16], gs[8], dist[8];
-        radar_fmt_alt(alt, sizeof(alt), a->alt_ft);
-        snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
-        snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
-        radar_cell(layer, &s_ac_col[AC_CALL], a->callsign, y, LV_TEXT_ALIGN_LEFT, c_txt);
-        radar_cell(layer, &s_ac_col[AC_TYPE], a->type, y, LV_TEXT_ALIGN_LEFT, c_dim);
-        radar_cell(layer, &s_ac_col[AC_ALT], alt, y, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_cell(layer, &s_ac_col[AC_GS], gs, y, LV_TEXT_ALIGN_RIGHT, c_txt);
-        radar_cell(layer, &s_ac_col[AC_DIST], dist, y, LV_TEXT_ALIGN_RIGHT, c_txt);
-    }
-    if (res->total > res->count) {
-        char more[40];
-        snprintf(more, sizeof(more), "Viser %d av %d fly", res->count, res->total);
-        radar_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
-                   290, LV_TEXT_ALIGN_LEFT, c_dim);
-    }
-}
-
-/* The ship count line, e.g. "2 skip lengre enn 100 meter innen 20 km",
- * mentioning the length filter only when one is configured, and the inner
- * zone's own filter when it differs. */
-static void ship_info_set(int total)
-{
-    const int loc = s_radar_loc;
-    const unsigned min_len = (loc >= 0) ? s_cfg->ship_min_len_m[loc] : 0;
-    const unsigned near_km = (loc >= 0) ? s_cfg->ship_near_km[loc] : 0;
-    const unsigned near_len = (loc >= 0) ? s_cfg->ship_near_min_len_m[loc] : 0;
-    if (near_km > 0 && near_km < (unsigned)s_radar_range_km && near_len != min_len) {
-        char near[40];
-        if (near_len > 0) {
-            snprintf(near, sizeof(near), "over %u m innen %u km", near_len, near_km);
-        } else {
-            snprintf(near, sizeof(near), "alle innen %u km", near_km);
-        }
-        if (min_len > 0) {
-            lv_label_set_text_fmt(s_radar_info, "%d skip: %s, over %u m innen %u km",
-                                  total, near, min_len, (unsigned)s_radar_range_km);
-        } else {
-            lv_label_set_text_fmt(s_radar_info, "%d skip: %s, alle innen %u km",
-                                  total, near, (unsigned)s_radar_range_km);
-        }
-        return;
-    }
-    /* One filter over the whole range: the inner zone's if it covers it. */
-    const unsigned len = (near_km >= (unsigned)s_radar_range_km) ? near_len : min_len;
-    if (len > 0) {
-        lv_label_set_text_fmt(s_radar_info, "%d skip lengre enn %u meter innen %u km",
-                              total, len, (unsigned)s_radar_range_km);
-    } else {
-        lv_label_set_text_fmt(s_radar_info, "%d skip innen %u km", total, (unsigned)s_radar_range_km);
-    }
-}
-
-/* Positions are extrapolated from each aircraft's speed and track, so repaint
- * periodically while the radar is on screen. Runs in the LVGL task. */
-static void radar_redraw_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    if (s_radar_valid && s_radar_canvas != NULL && !lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_invalidate(s_radar_canvas);
-    }
-}
-
-/* Show `res`, fetched at `at`. Called with the adapter lock held. */
-static void ships_apply(const ais_result_t *res, const fetch_stamp_t *at)
-{
-    memcpy(s_ship_data, res, sizeof(*res));
-    s_radar_valid = true;
-    s_radar_tick = at->tick;
-    ship_info_set(res->total);
-    lv_obj_invalidate(s_radar_canvas);
-}
-
-/* Show `res`, fetched at `at`. Called with the adapter lock held. */
-static void radar_apply(const adsb_result_t *res, const fetch_stamp_t *at)
-{
-    memcpy(s_radar_data, res, sizeof(*res));
-    s_radar_valid = true;
-    s_radar_tick = at->tick;
-
-    char info[64];
-    if (at->when > 0) {
-        struct tm lt;
-        localtime_r(&at->when, &lt);
-        snprintf(info, sizeof(info), "%d fly innen %u km  kl. %02d:%02d",
-                 res->total, (unsigned)s_radar_range_km, lt.tm_hour, lt.tm_min);
-    } else {
-        snprintf(info, sizeof(info), "%d fly innen %u km", res->total, (unsigned)s_radar_range_km);
-    }
-    lv_label_set_text(s_radar_info, info);
-    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
-    lv_obj_invalidate(s_radar_canvas);
-}
-
-static void build_radar(lv_obj_t *root)
-{
-    s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
-    s_ship_data = heap_caps_calloc(1, sizeof(*s_ship_data), MALLOC_CAP_SPIRAM);
-    s_coast_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
-    s_coast_img = (lv_image_dsc_t){
-        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_A8,
-                    .w = COAST_D, .h = COAST_D, .stride = COAST_D },
-        .data = s_coast_px,
-        .data_size = COAST_D * COAST_D,
-    };
-    s_water_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
-    s_water_img = s_coast_img;
-    s_water_seeds = heap_caps_malloc(WATER_SEEDS_MAX * sizeof(*s_water_seeds), MALLOC_CAP_SPIRAM);
-    s_water_img.data = s_water_px;
-    bool any_rain = false;
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        any_rain |= (s_cfg->show[i] & APP_SHOW_RAIN) != 0;
-    }
-    for (int i = 0; i < RAIN_FRAMES; i++) {
-        s_rain_ftime[i] = RAIN_EMPTY;
-    }
-    s_rain_px = any_rain ? heap_caps_calloc((size_t)COAST_D * COAST_D, sizeof(uint32_t), MALLOC_CAP_SPIRAM)
-                         : NULL;
-    s_rain_img = (lv_image_dsc_t){
-        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888,
-                    .w = COAST_D, .h = COAST_D, .stride = COAST_D * 4 },
-        .data = (const uint8_t *)s_rain_px,
-        .data_size = COAST_D * COAST_D * 4,
-    };
-    s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
-    s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_water_px != NULL && s_water_seeds != NULL &&
-           (s_rain_px != NULL || !any_rain) &&
-           s_radar_apt != NULL && s_radar_rwy != NULL);
-
-    /* A screen of its own in the theme's radar palette. Text colour is
-     * inherited by the labels below. */
-    s_rp = (s_cfg->theme == APP_THEME_DARK) ? &RADAR_DARK : &RADAR_LIGHT;
-    lv_obj_set_style_bg_color(root, lv_color_hex(s_rp->bg), 0);
-    lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_color(root, lv_color_hex(s_rp->txt), 0);
-
-    s_radar_canvas = lv_obj_create(root);
-    lv_obj_remove_style_all(s_radar_canvas);
-    lv_obj_set_pos(s_radar_canvas, 0, 0);
-    lv_obj_set_size(s_radar_canvas, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(s_radar_canvas, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_radar_canvas, radar_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-
-    s_radar_title = lv_label_create(root);
-    lv_obj_set_style_text_font(s_radar_title, s_font_large, 0);
-    lv_obj_set_pos(s_radar_title, 12, 4);
-    lv_label_set_text(s_radar_title, "");
-
-    s_radar_info = lv_label_create(root);
-    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
-    lv_label_set_text(s_radar_info, "");
-
-    lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
-    radar_layout_tables();
-    ESP_LOGI(TAG, "Radar table: callsign %d px%s, name %d px", s_ac_col[AC_CALL].w,
-             s_ac_col[AC_TYPE].w ? "" : " (no type column)", s_sh_col[SH_NAME].w);
-
-    for (int l = 1; l <= RAIN_LEVELS; l++) {
-        const uint32_t c = s_rp->rain[l - 1];
-        const float al = (l == 1) ? 0.6f : 0.85f;
-        s_rain_col[l][0] = al * ((c >> 16) & 0xFF);
-        s_rain_col[l][1] = al * ((c >> 8) & 0xFF);
-        s_rain_col[l][2] = al * (c & 0xFF);
-        s_rain_col[l][3] = al;
-    }
-    if (any_rain) {
-        lv_timer_create(rain_anim_timer_cb, RAIN_ANIM_MS, NULL);
-    }
-}
-
-/* Point the radar at location `loc` (adapter lock held): its title, and the
- * airports within range. */
-static void radar_set_location(int loc)
-{
-    s_ship_mode = false;
-    s_rain_mode = false;
-    lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", s_cfg->locations[loc].name);
-    s_radar_range_km = s_cfg->radar_km[loc];
-    coast_mark(loc, s_radar_range_km);
-    radar_load_airports(atof(s_cfg->locations[loc].lat), atof(s_cfg->locations[loc].lon));
-}
-
-/* Point the radar screen at location `loc`'s ship traffic (adapter lock held). */
-static void ships_set_location(int loc)
-{
-    s_ship_mode = true;
-    s_rain_mode = false;
-    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", s_cfg->locations[loc].name);
-    s_radar_range_km = s_cfg->ship_km[loc];
-    coast_mark(loc, s_radar_range_km);
-}
-
-/* Point the radar screen at location `loc`'s rain radar (adapter lock held).
- * The hour of frames still held for it is kept if recent enough (the poll
- * then only fetches what's new); otherwise blank until the first image for
- * it lands. */
-static void rain_set_location(int loc)
-{
-    s_ship_mode = false;
-    s_rain_mode = true;
-    const time_t now = time(NULL);
-    const bool keep = s_rain_valid && loc == s_rain_prep_loc && s_cfg->rain_km[loc] == s_rain_prep_range &&
-                      now > PLAUSIBLE_EPOCH_S && now - s_rain_latest < RAIN_KEEP_S;
-    if (!keep) {
-        s_rain_valid = false;
-        s_rain_pos = -1;
-        s_rain_hold = 0;
-        s_rain_latest = 0;
-        for (int i = 0; i < RAIN_FRAMES; i++) {
-            s_rain_ftime[i] = RAIN_EMPTY;
-        }
-    }
-    lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", s_cfg->locations[loc].name);
-    s_radar_range_km = s_cfg->rain_km[loc];
-    coast_mark(loc, s_radar_range_km);
-}
-
-/* --------------------------------------------------------------------------
- * Departure board: the next departures per line and direction from the
- * location's stops (entur_client), under a large clock. Painted from one draw handler like the radar, which keeps the
- * row count free of widgets.
- * ------------------------------------------------------------------------ */
-
-static lv_color_t dep_text_color(void)
-{
-    return lv_color_hex(s_cfg->theme == APP_THEME_DARK ? 0xDDE6EE : 0x1B2631);
-}
-
-static lv_color_t dep_dim_color(void)
-{
-    return lv_color_hex(s_cfg->theme == APP_THEME_DARK ? 0x8AA0B4 : 0x5D6D7E);
-}
-
-/* Badge colour for lines without one of their own (Ruter's mode colours). */
-static uint32_t dep_mode_colour(const char *mode)
-{
-    if (strcmp(mode, "bus") == 0 || strcmp(mode, "coach") == 0) return 0xE60000;
-    if (strcmp(mode, "tram") == 0) return 0x0B91EF;
-    if (strcmp(mode, "metro") == 0) return 0xEC700C;
-    if (strcmp(mode, "rail") == 0) return 0x003087;
-    if (strcmp(mode, "water") == 0) return 0x682C88;
-    return 0x607D8B;
-}
-
-/* "Nå" (under a minute), "N min" (under 15), otherwise HH:MM - as the web page. */
-static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now)
-{
-    const int64_t mins = (t - (int64_t)now) / 60;
-    if (mins < 1) {
-        snprintf(buf, n, "N\xC3\xA5");
-    } else if (mins < 15) {
-        snprintf(buf, n, "%d min", (int)mins);
-    } else {
-        time_t tt = (time_t)t;
-        struct tm lt;
-        localtime_r(&tt, &lt);
-        snprintf(buf, n, "%02d:%02d", lt.tm_hour, lt.tm_min);
-    }
-}
-
-/* One departure in the time column ending at x_right: red "Innstilt" if
- * cancelled, dimmed if it's only the timetable (no realtime data). */
-static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right, int y, time_t now)
-{
-    char buf[16];
-    lv_color_t color = dep_text_color();
-    if (c->cancelled) {
-        snprintf(buf, sizeof(buf), "Innstilt");
-        color = lv_palette_main(LV_PALETTE_RED);
-    } else {
-        dep_fmt_time(buf, sizeof(buf), c->expected, now);
-        if (!c->realtime) {
-            color = dep_dim_color();
-        }
-    }
-    radar_text(layer, buf, x_right - DEP_TIME_W, y, DEP_TIME_W, LV_TEXT_ALIGN_RIGHT, color);
-}
-
-/* Whether call `c` is still to come (or only just gone) at `now` - the data
- * can be up to a poll old, or much older while fetches fail. */
-static bool dep_call_upcoming(const entur_call_t *c, time_t now)
-{
-    const int64_t t = c->cancelled ? c->aimed : c->expected;
-    return t >= (int64_t)now - DEP_GONE_S;
-}
-
-static void dep_draw_cb(lv_event_t *e)
-{
-    if (!s_dep_valid) {
-        return;
-    }
-    lv_layer_t *layer = lv_event_get_layer(e);
-    const int lh = lv_font_get_line_height(s_font_body);
-    const int row_h = lh + 12;
-    const int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
-    const int x_t2 = EXAMPLE_LCD_H_RES - DEP_X;
-    const int x_t1 = x_t2 - DEP_TIME_W - 12;
-    const int x_dest = DEP_X + DEP_BADGE_W + 14;
-    const time_t now = time(NULL);
-    const lv_color_t c_txt = dep_text_color();
-    const lv_color_t c_dim = dep_dim_color();
-
-    /* Rows with something still to come, to say how many didn't fit. */
-    int rows_left = 0;
-    for (int g = 0; g < s_dep_data->group_count; g++) {
-        const entur_group_t *grp = &s_dep_data->groups[g];
-        for (int c = 0; c < grp->call_count; c++) {
-            if (now <= PLAUSIBLE_EPOCH_S || dep_call_upcoming(&grp->calls[c], now)) {
-                rows_left++;
-                break;
-            }
-        }
-    }
-
-    int y = DEP_BODY_Y;
-    for (int si = 0; si < s_dep_data->stop_count && y + row_h <= bottom; si++) {
-        /* The stop's name as a heading - only needed to tell several apart. */
-        if (s_dep_data->stop_count > 1) {
-            radar_text_fit(layer, s_dep_data->stop_name[si], DEP_X, y + 4, x_t1 - DEP_X, c_dim);
-            y += lh + 6;
-        }
-        bool any = false;
-        for (int g = 0; g < s_dep_data->group_count && y + row_h <= bottom; g++) {
-            const entur_group_t *grp = &s_dep_data->groups[g];
-            if (grp->stop != si) {
-                continue;
-            }
-            /* Only the departures still to come; a row whose departures have all gone
-             * is left out until the next poll brings the next ones. */
-            const entur_call_t *calls[ENTUR_PER_GROUP];
-            int n_calls = 0;
-            for (int c = 0; c < grp->call_count; c++) {
-                if (now <= PLAUSIBLE_EPOCH_S || dep_call_upcoming(&grp->calls[c], now)) {
-                    calls[n_calls++] = &grp->calls[c];
-                }
-            }
-            if (n_calls == 0) {
-                continue;
-            }
-            any = true;
-
-            /* The line number on the line's own colour, as on the web page. */
-            lv_area_t badge = { DEP_X, y + 2, DEP_X + DEP_BADGE_W - 1, y + row_h - 3 };
-            if (radar_area_hits_clip(layer, &badge)) {
-                lv_draw_rect_dsc_t d;
-                lv_draw_rect_dsc_init(&d);
-                d.radius = 6;
-                d.bg_opa = LV_OPA_COVER;
-                d.bg_color = lv_color_hex(grp->has_colour ? grp->colour : dep_mode_colour(grp->mode));
-                lv_draw_rect(layer, &d, &badge);
-            }
-            radar_text(layer, grp->code, DEP_X, y + (row_h - lh) / 2, DEP_BADGE_W, LV_TEXT_ALIGN_CENTER,
-                       lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
-
-            char dest[sizeof(grp->dest) + sizeof(grp->quay) + 8];
-            if (grp->quay[0]) {
-                snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
-            } else {
-                snprintf(dest, sizeof(dest), "%s", grp->dest);
-            }
-            radar_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, x_t1 - DEP_TIME_W - x_dest - 8, c_txt);
-
-            dep_draw_call(layer, calls[0], x_t1, y + (row_h - lh) / 2, now);
-            if (n_calls > 1) {
-                dep_draw_call(layer, calls[1], x_t2, y + (row_h - lh) / 2, now);
-            }
-            y += row_h;
-            rows_left--;
-        }
-        if (!any && y + row_h <= bottom) {
-            radar_text(layer, "Ingen avganger de neste 24 timene.", x_dest, y + (row_h - lh) / 2,
-                       x_t2 - x_dest, LV_TEXT_ALIGN_LEFT, c_dim);
-            y += row_h;
-        }
-        y += 6;
-    }
-    if (rows_left > 0) {
-        char more[64];
-        /* At ENTUR_MAX_GROUPS the fetch itself may have left some out. */
-        snprintf(more, sizeof(more), "+ %s%d %s som ikke f\xC3\xA5r plass",
-                 s_dep_data->group_count >= ENTUR_MAX_GROUPS ? "minst " : "", rows_left,
-                 rows_left == 1 ? "linje" : "linjer");
-        radar_text(layer, more, DEP_X, bottom + 4, x_t1 - DEP_X, LV_TEXT_ALIGN_LEFT, c_dim);
-    }
-}
-
-/* Every second while the board is on show: the clock, and every
- * DEP_REDRAW_S a repaint so "N min" counts down between polls. */
-static void dep_clock_timer_cb(lv_timer_t *t)
-{
-    (void)t;
-    static time_t last_redraw;
-    if (lv_obj_has_flag(s_dep_root, LV_OBJ_FLAG_HIDDEN)) {
-        return;
-    }
-    time_t now = time(NULL);
-    char txt[DEP_CLOCK_CHARS + 1] = "--:--:--";
-    struct tm lt = { 0 };
-    if (now > PLAUSIBLE_EPOCH_S) {
-        localtime_r(&now, &lt);
-        snprintf(txt, sizeof(txt), "%02u:%02u:%02u", (unsigned)lt.tm_hour % 100u, (unsigned)lt.tm_min % 100u,
-                 (unsigned)lt.tm_sec % 100u);
-    }
-    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
-        const char *cur = lv_label_get_text(s_dep_clock[i]);
-        if (cur[0] != txt[i]) {
-            char ch[2] = { txt[i], '\0' };
-            lv_label_set_text(s_dep_clock[i], ch);
-        }
-    }
-    if (now <= PLAUSIBLE_EPOCH_S) {
-        return;
-    }
-    if (s_dep_valid && (now - last_redraw >= DEP_REDRAW_S || lt.tm_sec == 0)) {
-        last_redraw = now;
-        lv_obj_invalidate(s_dep_canvas);
-    }
-}
-
-static void build_departures(lv_obj_t *root)
-{
-    s_dep_data = heap_caps_calloc(1, sizeof(*s_dep_data), MALLOC_CAP_SPIRAM);
-    s_dep_sel = heap_caps_calloc(1, sizeof(*s_dep_sel), MALLOC_CAP_SPIRAM);
-    assert(s_dep_data != NULL && s_dep_sel != NULL);
-
-    s_dep_canvas = lv_obj_create(root);
-    lv_obj_remove_style_all(s_dep_canvas);
-    lv_obj_set_pos(s_dep_canvas, 0, 0);
-    lv_obj_set_size(s_dep_canvas, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(s_dep_canvas, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_dep_canvas, dep_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-
-    s_dep_title = lv_label_create(root);
-    lv_obj_set_style_text_font(s_dep_title, s_font_large, 0);
-    lv_obj_set_pos(s_dep_title, DEP_X, 4);
-    lv_obj_set_width(s_dep_title, 480);
-    lv_label_set_long_mode(s_dep_title, LV_LABEL_LONG_MODE_DOTS);
-    lv_label_set_text(s_dep_title, "");
-
-    /* The clock gets a font of its own, big enough to read across a room. */
-    /* Each digit gets a cell as wide as the widest digit, each colon one as
-     * wide as a colon; the characters are centred in their cells. */
-    const lv_font_t *clock_font = load_font(DEP_CLOCK_PX, true);
-    int digit_w = 0;
-    for (uint32_t c = '0'; c <= '9'; c++) {
-        int w = lv_font_get_glyph_width(clock_font, c, 0);
-        digit_w = w > digit_w ? w : digit_w;
-    }
-    const int colon_w = lv_font_get_glyph_width(clock_font, ':', 0) + 4;
-    lv_obj_t *clock = lv_obj_create(root);
-    lv_obj_remove_style_all(clock);
-    lv_obj_clear_flag(clock, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_text_font(clock, clock_font, 0);
-    lv_obj_set_style_text_align(clock, LV_TEXT_ALIGN_CENTER, 0);
-    int x = 0;
-    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
-        const int w = (i == 2 || i == 5) ? colon_w : digit_w;
-        s_dep_clock[i] = lv_label_create(clock);
-        lv_obj_set_pos(s_dep_clock[i], x, 0);
-        lv_obj_set_width(s_dep_clock[i], w);
-        lv_label_set_text(s_dep_clock[i], (i == 2 || i == 5) ? ":" : "-");
-        x += w;
-    }
-    lv_obj_set_size(clock, x, lv_font_get_line_height(clock_font));
-    lv_obj_align(clock, LV_ALIGN_TOP_RIGHT, -DEP_X, 0);
-
-    s_dep_updated = lv_label_create(root);
-    lv_obj_set_style_text_color(s_dep_updated, dep_dim_color(), 0);
-    lv_obj_align(s_dep_updated, LV_ALIGN_BOTTOM_RIGHT, -DEP_X, -4);
-    lv_label_set_text(s_dep_updated, "");
-
-    lv_timer_create(dep_clock_timer_cb, 1000, NULL);
-}
-
-/* "Oppdatert HH:MM:SS" for data fetched at `at` (adapter lock held). */
-static void dep_updated_set(const fetch_stamp_t *at)
-{
-    if (at->when > 0) {
-        struct tm lt;
-        localtime_r(&at->when, &lt);
-        lv_label_set_text_fmt(s_dep_updated, "Oppdatert %02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
-    } else {
-        lv_label_set_text(s_dep_updated, "");
-    }
-}
-
-/* Point the board at location `loc` (adapter lock held): its title and its
- * selection, and its last departures if they're recent - otherwise blank
- * until the first fetch for it lands. */
-static void dep_set_location(int loc)
-{
-    if (!entur_parse_selection(s_cfg->departures[loc], s_dep_sel)) {
-        s_dep_sel->stop_count = 0;
-    }
-    lv_label_set_text_fmt(s_dep_title, "Avganger %s", s_cfg->locations[loc].name);
-    s_dep_valid = s_dep_cache[loc] != NULL && stamp_fresh(&s_dep_at[loc], DEP_CACHE_MAX_MS);
-    if (s_dep_valid) {
-        memcpy(s_dep_data, s_dep_cache[loc], sizeof(*s_dep_data));
-        dep_updated_set(&s_dep_at[loc]);
-    } else {
-        lv_label_set_text(s_dep_updated, "");
-    }
-    lv_obj_invalidate(s_dep_canvas);
-}
-
-/* Fetch `loc`'s departures into `scratch` and show them if the view is still
- * on it. Returns whether the board has data up. */
-static bool departures_poll(int loc, entur_departures_t *scratch, int for_view)
-{
-    /* s_dep_sel was parsed for `loc` by dep_set_location; copied, as a tap
-     * may re-parse it for another location while the fetch is under way. */
-    static entur_selection_t sel;
-    bool have = false;
-    if (lock_for_view(for_view)) {
-        sel = *s_dep_sel;
-        have = true;
-        if (sel.stop_count == 0) {
-            lv_label_set_text(s_status_label, "Ingen holdeplasser valgt.\nLegg dem inn p\xC3\xA5 oppsettsiden.");
-        }
-        esp_lv_adapter_unlock();
-    }
-    if (!have || sel.stop_count == 0) {
-        return false;
-    }
-    esp_err_t err = entur_client_fetch(&sel, scratch);
-
-    if (!lock_for_view(for_view)) {
-        return false;
-    }
-    if (err == ESP_OK) {
-        memcpy(s_dep_data, scratch, sizeof(*scratch));
-        s_dep_valid = true;
-        stamp_now(&s_dep_at[loc]);
-        if (s_dep_cache[loc] != NULL) {
-            memcpy(s_dep_cache[loc], scratch, sizeof(*scratch));
-        }
-        lv_label_set_text(s_status_label, "");
-        dep_updated_set(&s_dep_at[loc]);
-        lv_obj_invalidate(s_dep_canvas);
-    } else if (!s_dep_valid) {
-        lv_label_set_text(s_status_label, "Kunne ikke hente avganger. Pr\xC3\xB8ver igjen...");
-    } else {
-        lv_label_set_text(s_dep_updated, "Kunne ikke oppdatere - viser siste data");
-    }
-    const bool shown = s_dep_valid;
-    esp_lv_adapter_unlock();
-    return shown;
-}
-
-static void temp_segment(lv_layer_t *layer, float x1, float y1, float x2, float y2,
-                         lv_color_t color)
-{
-    int w = TEMP_LINE_WIDTH;
-    if (!radar_vis(layer, (int)(x1 < x2 ? x1 : x2) - w, (int)(y1 < y2 ? y1 : y2) - w,
-                   (int)(x1 < x2 ? x2 : x1) + w, (int)(y1 < y2 ? y2 : y1) + w)) {
-        return;
-    }
-    lv_draw_line_dsc_t d;
-    lv_draw_line_dsc_init(&d);
-    d.p1.x = (int32_t)x1;
-    d.p1.y = (int32_t)y1;
-    d.p2.x = (int32_t)x2;
-    d.p2.y = (int32_t)y2;
-    d.width = w;
-    d.color = color;
-    d.opa = LV_OPA_COVER;
-    d.round_start = 1;
-    d.round_end = 1;
-    lv_draw_line(layer, &d);
-}
-
-/* Draws the temperature line segment by segment: orange at or above 0 C and
- * blue below. A segment that crosses zero is split at the (linearly
- * interpolated) crossing point, so the colour changes exactly on 0 C. */
-static void temp_line_draw_cb(lv_event_t *e)
-{
-    lv_obj_t *obj = lv_event_get_current_target(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-    lv_area_t area;
-    lv_obj_get_coords(obj, &area);
-
-    for (uint32_t i = 0; i + 1 < s_temp_line_count; i++) {
-        float v1 = s_temp_line_values[i], v2 = s_temp_line_values[i + 1];
-        float x1 = area.x1 + s_temp_line_points[i].x, y1 = area.y1 + s_temp_line_points[i].y;
-        float x2 = area.x1 + s_temp_line_points[i + 1].x, y2 = area.y1 + s_temp_line_points[i + 1].y;
-        bool cold1 = v1 < 0.0f, cold2 = v2 < 0.0f;
-        if (cold1 == cold2) {
-            temp_segment(layer, x1, y1, x2, y2, cold1 ? s_temp_cold_color : s_temp_warm_color);
-            continue;
-        }
-        float t = v1 / (v1 - v2);
-        float xm = x1 + t * (x2 - x1), ym = y1 + t * (y2 - y1);
-        temp_segment(layer, x1, y1, xm, ym, cold1 ? s_temp_cold_color : s_temp_warm_color);
-        temp_segment(layer, xm, ym, x2, y2, cold2 ? s_temp_cold_color : s_temp_warm_color);
-    }
-}
-
-/* Rounded caps and the line width poke slightly outside the chart box. */
-static void temp_line_ext_size_cb(lv_event_t *e)
-{
-    int32_t *s = lv_event_get_param(e);
-    if (*s < TEMP_LINE_WIDTH) {
-        *s = TEMP_LINE_WIDTH;
-    }
-}
-
 static void build_ui(lv_obj_t *screen)
 {
-    const bool dark = (s_cfg->theme == APP_THEME_DARK);
+    const bool dark = (g_cfg->theme == APP_THEME_DARK);
     lv_display_t *disp = lv_obj_get_display(screen);
     lv_display_set_theme(disp, lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
-                                                     lv_palette_main(LV_PALETTE_RED), dark, s_font_body));
+                                                     lv_palette_main(LV_PALETTE_RED), dark, g_font_body));
     lv_theme_apply(screen);
 
-    lv_obj_set_style_text_font(screen, s_font_body, 0);
+    lv_obj_set_style_text_font(screen, g_font_body, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Two full-screen transparent layers, one per view; only one is ever
-     * visible. Every detail widget below is created inside s_detail_root. */
-    s_detail_root = lv_obj_create(screen);
-    lv_obj_remove_style_all(s_detail_root);
-    lv_obj_set_pos(s_detail_root, 0, 0);
-    lv_obj_set_size(s_detail_root, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(s_detail_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-
-    s_overview_root = lv_obj_create(screen);
-    lv_obj_remove_style_all(s_overview_root);
-    lv_obj_set_pos(s_overview_root, 0, 0);
-    lv_obj_set_size(s_overview_root, LV_PCT(100), LV_PCT(100));
-    lv_obj_clear_flag(s_overview_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    /* Centre text in every overview cell by inheritance - avoids a per-label
-     * style property on ~30 widgets, which matters for internal DRAM. */
-    lv_obj_set_style_text_align(s_overview_root, LV_TEXT_ALIGN_CENTER, 0);
-
-    /* If s_view_index was restored (see app_config_save_last_view) to a
-     * specific location's screen, show its name from the first frame rather
-     * than always location 0's - the weather task corrects this itself
-     * moments later regardless, once WiFi is up. */
-    const view_stop_t *initial_stop = &s_stops[s_view_index];
-    int initial_loc = (initial_stop->kind == STOP_OVERVIEW) ? 0 : initial_stop->loc;
-
-    s_location_label = lv_label_create(s_detail_root);
-    lv_obj_set_style_text_font(s_location_label, s_font_large, 0);
-    lv_obj_set_pos(s_location_label, 12, 4);
-    lv_label_set_text(s_location_label, s_cfg->locations[initial_loc].name);
-
-    s_updated_label = lv_label_create(s_detail_root);
-    lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
-    lv_label_set_text(s_updated_label, "");
-
-    /* The selected location's worst active severe weather alert, if any (see
-     * update_alert_banner). Sits centred in the gap between the location name
-     * and the "updated" timestamp: black text on a solid fill of the alert's
-     * own colour, for contrast against the screen background - plain
-     * coloured text there was hard to read. Hidden (not just empty) when
-     * nothing is active, since a background-filled label would otherwise
-     * still show as a blank coloured box. */
-    s_alert_label = lv_label_create(s_detail_root);
-    lv_obj_set_width(s_alert_label, 380);
-    lv_label_set_long_mode(s_alert_label, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_align(s_alert_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(s_alert_label, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(s_alert_label, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_alert_label, 4, 0);
-    lv_obj_set_style_pad_hor(s_alert_label, 10, 0);
-    lv_obj_set_style_pad_ver(s_alert_label, 3, 0);
-    lv_obj_align(s_alert_label, LV_ALIGN_TOP_MID, 0, 6);
-    lv_label_set_text(s_alert_label, "");
-    lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
-
-    lv_obj_t *icon_row = lv_obj_create(s_detail_root);
-    lv_obj_set_pos(icon_row, CHART_X, ICON_ROW_Y);
-    lv_obj_set_size(icon_row, CHART_W, ICON_SIZE);
-    lv_obj_set_style_border_width(icon_row, 0, 0);
-    lv_obj_set_style_pad_all(icon_row, 0, 0);
-    lv_obj_set_style_bg_opa(icon_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_flex_flow(icon_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(icon_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(icon_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    for (int i = 0; i < NUM_HOUR_LABELS; i++) {
-        s_icon_slots[i] = lv_image_create(icon_row);
-        lv_obj_set_size(s_icon_slots[i], ICON_SIZE, ICON_SIZE);
-        lv_image_set_inner_align(s_icon_slots[i], LV_IMAGE_ALIGN_CENTER);
-        lv_obj_add_flag(s_icon_slots[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* Precipitation-max bar chart acts as the single visual chart frame
-     * (background, border, gridlines) for the whole precip+temp area - the
-     * min bars and the temperature line are both overlaid transparently on
-     * top of it (same "frame widget + transparent overlay" trick as the
-     * wind/gust chart pair below). Its bars are the high end of MET's
-     * forecast uncertainty range for that hour, drawn taller and paler
-     * "behind" the min bars in front - see update_ui_with_forecast. */
-    s_precip_max_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_precip_max_chart, CHART_X, CHART_Y);
-    lv_obj_set_size(s_precip_max_chart, CHART_W, CHART_H);
-    lv_obj_set_style_pad_left(s_precip_max_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_precip_max_chart, 4, 0);
-    lv_chart_set_type(s_precip_max_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_div_line_count(s_precip_max_chart, 4, NUM_HOUR_LABELS - 1);
-    lv_chart_set_point_count(s_precip_max_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
-    /* "Paler" than the main bars means lighter on a light background, darker
-     * on a dark one; the same goes for the gust bars below. */
-    s_precip_max_series = lv_chart_add_series(s_precip_max_chart,
-                                              dark ? lv_palette_darken(LV_PALETTE_BLUE, 3)
-                                                   : lv_palette_lighten(LV_PALETTE_BLUE, 3),
-                                              LV_CHART_AXIS_PRIMARY_Y);
-
-    /* Precipitation-min bar chart: the low end of the same range, in front -
-     * its own background/border are transparent so the max chart behind it
-     * shows through above wherever this (shorter, since max >= min) bar
-     * doesn't reach. */
-    s_precip_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_precip_chart, CHART_X, CHART_Y);
-    lv_obj_set_size(s_precip_chart, CHART_W, CHART_H);
-    lv_obj_set_style_pad_left(s_precip_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_precip_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_precip_chart, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_precip_chart, 0, 0);
-    lv_chart_set_type(s_precip_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_point_count(s_precip_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
-    s_precip_series = lv_chart_add_series(s_precip_chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-
-    /* A plain transparent object painted by temp_line_draw_cb rather than an
-     * lv_line, which can only draw in a single colour. The points are set each
-     * refresh in update_ui_with_forecast. */
-    s_temp_warm_color = lv_palette_main(LV_PALETTE_ORANGE);
-    s_temp_cold_color = dark ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
-                             : lv_palette_darken(LV_PALETTE_BLUE, 2);
-    s_temp_line = lv_obj_create(s_detail_root);
-    lv_obj_remove_style_all(s_temp_line);
-    lv_obj_set_pos(s_temp_line, CHART_X, CHART_Y);
-    lv_obj_set_size(s_temp_line, CHART_W, CHART_H);
-    lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(s_temp_line, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_temp_line, temp_line_draw_cb, LV_EVENT_DRAW_MAIN, NULL);
-    lv_obj_add_event_cb(s_temp_line, temp_line_ext_size_cb, LV_EVENT_REFR_EXT_DRAW_SIZE, NULL);
-
-    /* Value markers for temperature and precipitation extrema, positioned
-     * directly on the chart each refresh. Both are pools: how many are used
-     * depends on the forecast (see place_temp_markers / place_precip_markers).
-     * Any left over are kept hidden. */
-    for (int i = 0; i < TEMP_MARKER_POOL; i++) {
-        s_temp_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_temp_markers[i],
-                                    dark ? lv_palette_lighten(LV_PALETTE_ORANGE, 2)
-                                         : lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
-        lv_label_set_text(s_temp_markers[i], "");
-        lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
-        s_precip_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_precip_markers[i],
-                                    dark ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
-                                         : lv_palette_darken(LV_PALETTE_BLUE, 2), 0);
-        lv_label_set_text(s_precip_markers[i], "");
-        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* Wind direction: a row of arrows (one per sampled column) rotated to
-     * point the way the wind blows, sitting just above the wind-speed chart. */
-    lv_obj_t *wind_dir_row = lv_obj_create(s_detail_root);
-    lv_obj_set_pos(wind_dir_row, CHART_X, WIND_DIR_ROW_Y);
-    lv_obj_set_size(wind_dir_row, CHART_W, WIND_ARROW_SIZE);
-    lv_obj_set_style_border_width(wind_dir_row, 0, 0);
-    lv_obj_set_style_pad_all(wind_dir_row, 0, 0);
-    lv_obj_set_style_bg_opa(wind_dir_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_flex_flow(wind_dir_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(wind_dir_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(wind_dir_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    /* One shared style rather than per-arrow local styles (internal DRAM):
-     * the arrow artwork is dark blue, too dim on the dark background. */
-    static lv_style_t arrow_dark;
-    if (dark) {
-        lv_style_init(&arrow_dark);
-        lv_style_set_image_recolor(&arrow_dark, lv_palette_lighten(LV_PALETTE_BLUE, 2));
-        lv_style_set_image_recolor_opa(&arrow_dark, LV_OPA_COVER);
-    }
-    for (int i = 0; i < NUM_HOUR_LABELS; i++) {
-        s_wind_dir_arrows[i] = lv_image_create(wind_dir_row);
-        lv_obj_set_size(s_wind_dir_arrows[i], WIND_ARROW_SIZE, WIND_ARROW_SIZE);
-        lv_image_set_src(s_wind_dir_arrows[i], "F:arrow.png");
-        if (dark) {
-            lv_obj_add_style(s_wind_dir_arrows[i], &arrow_dark, 0);
-        }
-        lv_image_set_inner_align(s_wind_dir_arrows[i], LV_IMAGE_ALIGN_CENTER);
-        lv_image_set_pivot(s_wind_dir_arrows[i], WIND_ARROW_SIZE / 2, WIND_ARROW_SIZE / 2);
-        lv_obj_add_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    /* Wind-gust bar chart (m/s): the plain bars-only layer behind the wind
-     * chart below (see s_gust_chart's declaration). Same position/size/scale
-     * as the wind chart, kept in sync every refresh. */
-    s_gust_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_gust_chart, CHART_X, WIND_CHART_Y);
-    lv_obj_set_size(s_gust_chart, CHART_W, WIND_CHART_H);
-    lv_obj_set_style_pad_left(s_gust_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_gust_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_gust_chart, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_gust_chart, 0, 0);
-    lv_chart_set_type(s_gust_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_point_count(s_gust_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    s_gust_series = lv_chart_add_series(s_gust_chart,
-                                        dark ? lv_palette_darken(LV_PALETTE_TEAL, 3)
-                                             : lv_palette_lighten(LV_PALETTE_TEAL, 3),
-                                        LV_CHART_AXIS_PRIMARY_Y);
-
-    /* Wind-speed bar chart (m/s), same x-scale as the main chart above. Its
-     * own background is transparent so the gust chart behind it shows
-     * through above wherever its (shorter, since gusts are >= sustained
-     * wind) bar doesn't reach. */
-    s_wind_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_wind_chart, CHART_X, WIND_CHART_Y);
-    lv_obj_set_size(s_wind_chart, CHART_W, WIND_CHART_H);
-    lv_obj_set_style_pad_left(s_wind_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_wind_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_wind_chart, LV_OPA_TRANSP, 0);
-    lv_chart_set_type(s_wind_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_div_line_count(s_wind_chart, 2, NUM_HOUR_LABELS - 1);
-    lv_chart_set_point_count(s_wind_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    s_wind_series = lv_chart_add_series(s_wind_chart, lv_palette_main(LV_PALETTE_TEAL),
-                                       LV_CHART_AXIS_PRIMARY_Y);
-
-    /* Wind/gust value markers - see place_wind_markers. Sit near the chart
-     * top, in the wind bar's colour. */
-    for (int i = 0; i < WIND_MARKER_POOL; i++) {
-        s_wind_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_wind_markers[i],
-                                    dark ? lv_palette_lighten(LV_PALETTE_TEAL, 2)
-                                         : lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
-        lv_label_set_text(s_wind_markers[i], "");
-        lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-
-    lv_obj_t *hour_row = lv_obj_create(s_detail_root);
-    lv_obj_set_pos(hour_row, CHART_X, HOUR_ROW_Y);
-    lv_obj_set_size(hour_row, CHART_W, 24);
-    lv_obj_set_style_border_width(hour_row, 0, 0);
-    lv_obj_set_style_pad_all(hour_row, 0, 0);
-    lv_obj_set_style_bg_opa(hour_row, LV_OPA_TRANSP, 0);
-    lv_obj_set_flex_flow(hour_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(hour_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(hour_row, LV_OBJ_FLAG_SCROLLABLE);
-
-    for (int i = 0; i < NUM_HOUR_LABELS; i++) {
-        s_hour_labels[i] = lv_label_create(hour_row);
-        lv_label_set_text(s_hour_labels[i], "");
-    }
-
-    /* The overview table is always a cycling stop (see build_stops). */
-    build_overview(s_overview_root);
-
-    /* The radar screen exists only if some location has it enabled. */
+    /* One container per kind of screen; the radar screen and the departure
+     * board exist only if some location has them. */
+    s_detail_root = weather_build(screen);
+    s_overview_root = overview_build(screen);
     if (s_any_radar) {
-        s_radar_root = lv_obj_create(screen);
-        lv_obj_remove_style_all(s_radar_root);
-        lv_obj_set_pos(s_radar_root, 0, 0);
-        lv_obj_set_size(s_radar_root, LV_PCT(100), LV_PCT(100));
-        lv_obj_clear_flag(s_radar_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        build_radar(s_radar_root);
-        if (initial_stop->kind == STOP_RADAR) {
-            radar_set_location(initial_loc);
-        } else if (initial_stop->kind == STOP_SHIPS) {
-            ships_set_location(initial_loc);
-        }
+        s_radar_root = radar_build(screen);
     }
-
-    /* Likewise the departure board. */
     if (s_any_departures) {
-        s_dep_root = lv_obj_create(screen);
-        lv_obj_remove_style_all(s_dep_root);
-        lv_obj_set_pos(s_dep_root, 0, 0);
-        lv_obj_set_size(s_dep_root, LV_PCT(100), LV_PCT(100));
-        lv_obj_clear_flag(s_dep_root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-        build_departures(s_dep_root);
-        if (initial_stop->kind == STOP_DEPARTURES) {
-            dep_set_location(initial_loc);
-        }
+        s_dep_root = departures_build(screen);
     }
 
-    /* Created after both view layers so it sits on top of whichever is shown:
+    /* Created after the screens so it sits on top of whichever is shown:
      * loading/error text, centered over the screen until data lands. */
-    s_status_label = lv_label_create(screen);
-    lv_obj_align(s_status_label, LV_ALIGN_CENTER, 0, 0);
-    lv_label_set_text(s_status_label, "Kobler til WiFi...");
+    g_status_label = lv_label_create(screen);
+    lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
 
     /* Full-screen tap catcher. In LVGL 9 every lv_obj/lv_chart is clickable by
      * default, so a tap lands on whichever chart or row widget covers that
      * point and never reaches the screen. This overlay is the topmost child,
      * so it catches every tap anywhere on screen. It doubles as the night
-     * dimming overlay (see yr_weather_task): the backlight on this board is
-     * switched on/off through an I2C GPIO expander with no PWM output, so it
-     * can't be dimmed in hardware - a translucent black layer over the
+     * dimming overlay (see nightly_housekeeping): the backlight on this board
+     * is switched on/off through an I2C GPIO expander with no PWM output, so
+     * it can't be dimmed in hardware - a translucent black layer over the
      * content is the closest software equivalent. Transparent (invisible) by
      * default; starts black-with-opacity, so no style is set here. */
     s_tap_layer = lv_obj_create(screen);
@@ -2697,764 +389,16 @@ static void build_ui(lv_obj_t *screen)
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
 
-    /* The software watchdog's sign of life from the LVGL task (wd_start). */
-    lv_timer_create(wd_lvgl_beat_cb, 1000, NULL);
-
     /* Automatic rotation, counting the idle time from boot. */
     s_last_touch_ms = lv_tick_get();
-    if (s_cfg->auto_idle_min > 0) {
+    if (g_cfg->auto_idle_min > 0) {
         lv_timer_create(auto_rotate_timer_cb, 1000, NULL);
     }
 
-    /* Start on whichever screen s_view_index was restored to (the first stop
+    /* Start on whichever screen g_view_index was restored to (the first stop
      * unless another was showing before the previous reboot). */
-    show_view((stop_kind_t)initial_stop->kind);
-}
-
-/* Centers label horizontally on chart_x (absolute) and places it either
- * above or below chart_y (absolute), clamped to stay within the chart's
- * horizontal bounds. */
-static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y, bool above)
-{
-    lv_obj_update_layout(label);
-    int32_t w = lv_obj_get_width(label);
-    int32_t h = lv_obj_get_height(label);
-
-    int32_t x = chart_x - w / 2;
-    if (x < CHART_X) {
-        x = CHART_X;
-    } else if (x > CHART_X + CHART_W - w) {
-        x = CHART_X + CHART_W - w;
-    }
-
-    int32_t y = above ? (chart_y - h - 2) : (chart_y + 2);
-    lv_obj_set_pos(label, x, y);
-}
-
-static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
-static float pt_precip_max(const yr_forecast_point_t *p) { return p->precipitation_max_mm; }
-static float pt_wind(const yr_forecast_point_t *p) { return p->wind_speed_ms; }
-static float pt_wind_gust(const yr_forecast_point_t *p) { return p->wind_speed_of_gust_ms; }
-
-/* A label is about to be placed at points[idx]. Look ahead one whole spacing
- * window (MARKER_MIN_GAP_H hours) and, if a stronger local extremum of the
- * same kind (higher for a max, lower for a min) sits in it, return that index
- * instead. Because the caller then jumps past the returned index, this
- * collapses a cluster of small wiggles - or a lesser peak sitting just before
- * the real one - into a single label on the true peak/trough. */
-static int snap_to_better_extremum(const yr_forecast_t *fc, int idx, bool want_max,
-                                   float (*get)(const yr_forecast_point_t *))
-{
-    int best = idx;
-    float best_val = get(&fc->points[idx]);
-    int64_t limit = fc->points[idx].epoch_utc + (int64_t)MARKER_MIN_GAP_H * 3600;
-
-    for (int j = idx + 1; j < fc->point_count && fc->points[j].epoch_utc <= limit; j++) {
-        float v = get(&fc->points[j]);
-        float prev = get(&fc->points[j - 1]);
-        float next = (j + 1 < fc->point_count) ? get(&fc->points[j + 1]) : v;
-        bool is_max = (v > prev && v >= next);
-        bool is_min = (v < prev && v <= next);
-        if (want_max ? (is_max && v > best_val) : (is_min && v < best_val)) {
-            best = j;
-            best_val = v;
-        }
-    }
-    return best;
-}
-
-/* How far points[idx] stands out as an extremum of the given type: walk out
- * each side (up to MARKER_MIN_GAP_H hours) until the series climbs back above
- * (for a max) or drops back below (for a min) points[idx], tracking the
- * turning point reached on each side; the prominence is the height above the
- * higher bounding valley (a max) or the depth below the lower bounding peak
- * (a min). A shallow wiggle sitting next to a strong opposite extremum scores
- * near zero. */
-static float temp_prominence(const yr_forecast_t *fc, int idx, bool want_max)
-{
-    const float t = fc->points[idx].air_temperature_c;
-    const int64_t lo = fc->points[idx].epoch_utc - (int64_t)MARKER_MIN_GAP_H * 3600;
-    const int64_t hi = fc->points[idx].epoch_utc + (int64_t)MARKER_MIN_GAP_H * 3600;
-    float left = t, right = t;
-
-    for (int j = idx - 1; j >= 0 && fc->points[j].epoch_utc >= lo; j--) {
-        float v = fc->points[j].air_temperature_c;
-        if (want_max ? (v > t) : (v < t)) break;
-        if (want_max ? (v < left) : (v > left)) left = v;
-    }
-    for (int j = idx + 1; j < fc->point_count && fc->points[j].epoch_utc <= hi; j++) {
-        float v = fc->points[j].air_temperature_c;
-        if (want_max ? (v > t) : (v < t)) break;
-        if (want_max ? (v < right) : (v > right)) right = v;
-    }
-    return want_max ? (t - (left > right ? left : right))
-                    : ((left < right ? left : right) - t);
-}
-
-/* Emit one temperature marker at points[m] (above = label over the line, a
- * max; else under it, a min), recording its epoch so later markers can space
- * themselves against it. No-op once the pool is full. */
-static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
-                      int64_t placed_max[], int *n_max,
-                      int64_t placed_min[], int *n_min)
-{
-    if (*used >= TEMP_MARKER_POOL) {
-        return;
-    }
-    lv_obj_t *label = s_temp_markers[(*used)++];
-    lv_label_set_text_fmt(label, "%.1f\xC2\xB0", (double)fc->points[m].air_temperature_c);
-    lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-    place_marker_label(label, CHART_X + s_temp_line_points[m].x,
-                       CHART_Y + s_temp_line_points[m].y, above);
-    if (above) {
-        placed_max[(*n_max)++] = fc->points[m].epoch_utc;
-    } else {
-        placed_min[(*n_min)++] = fc->points[m].epoch_utc;
-    }
-}
-
-/* Place the temperature value markers. The global high and low - and the
- * leftmost "now" point - are labelled first so they are never crowded out by
- * lesser extrema. A left-to-right pass then adds other local extrema, each
- * kept at least MARKER_MIN_GAP_H hours from every already-placed marker OF THE
- * SAME TYPE and required to be prominent enough
- * (temp_prominence >= MARKER_TEMP_MIN_SWING) to be worth a number; each is
- * consolidated onto the strongest same-type extremum in the window ahead
- * (snap_to_better_extremum). Unused pool labels are hidden. */
-static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int temp_max_idx)
-{
-    int used = 0, n_max = 0, n_min = 0;
-    int64_t placed_max[TEMP_MARKER_POOL];
-    int64_t placed_min[TEMP_MARKER_POOL];
-
-    /* 1. Globals and "now" - unconditionally. */
-    temp_emit(fc, temp_max_idx, true, &used, placed_max, &n_max, placed_min, &n_min);
-    if (temp_min_idx != temp_max_idx) {
-        temp_emit(fc, temp_min_idx, false, &used, placed_max, &n_max, placed_min, &n_min);
-    }
-    if (fc->point_count > 1 && temp_max_idx != 0 && temp_min_idx != 0) {
-        bool now_above = fc->points[0].air_temperature_c > fc->points[1].air_temperature_c;
-        temp_emit(fc, 0, now_above, &used, placed_max, &n_max, placed_min, &n_min);
-    }
-
-    /* 2. Other local extrema, spaced per type and filtered by prominence. */
-    for (int i = 1; i < fc->point_count - 1 && used < TEMP_MARKER_POOL; i++) {
-        if (i == temp_max_idx || i == temp_min_idx) {
-            continue;
-        }
-        float prev = fc->points[i - 1].air_temperature_c;
-        float t = fc->points[i].air_temperature_c;
-        float next = fc->points[i + 1].air_temperature_c;
-        bool above = (t > prev && t >= next);
-        bool below = (t < prev && t <= next);
-        if (!above && !below) {
-            continue;
-        }
-
-        int m = snap_to_better_extremum(fc, i, above, pt_temp);
-        int64_t ep = fc->points[m].epoch_utc;
-
-        const int64_t *arr = above ? placed_max : placed_min;
-        int n = above ? n_max : n_min;
-        bool too_close = false;
-        for (int k = 0; k < n; k++) {
-            int64_t d = ep - arr[k];
-            if ((d < 0 ? -d : d) < (int64_t)MARKER_MIN_GAP_H * 3600) {
-                too_close = true;
-                break;
-            }
-        }
-
-        if (!too_close && temp_prominence(fc, m, above) >= MARKER_TEMP_MIN_SWING) {
-            temp_emit(fc, m, above, &used, placed_max, &n_max, placed_min, &n_min);
-        }
-        if (m > i) {
-            i = m; /* skip past the span we consolidated across */
-        }
-    }
-
-    for (int i = used; i < TEMP_MARKER_POOL; i++) {
-        lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-/* Pick up to max_count indices of the highest get() values in the forecast
- * (skipping values <= 0 - calm/dry, or for gust, an hour MET didn't forecast
- * one for at all). Each pick must be more than PEAK_LABEL_MIN_GAP_H hours
- * from every index already picked, so a second, lesser peak sitting right
- * next to a stronger one is treated as the same event and dropped rather
- * than double-labelled - the next pick is then whichever remaining point is
- * genuinely the next-highest and far enough away, or none at all. Returns
- * the count written to out_idx. */
-static int pick_top_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecast_point_t *),
-                          int max_count, int *out_idx)
-{
-    int n = 0;
-    for (int pick = 0; pick < max_count; pick++) {
-        int best = -1;
-        float best_val = 0.0f;
-        for (int i = 0; i < fc->point_count; i++) {
-            float v = get(&fc->points[i]);
-            if (v <= best_val) {
-                continue;
-            }
-            bool too_close = false;
-            for (int k = 0; k < n; k++) {
-                int64_t d = fc->points[i].epoch_utc - fc->points[out_idx[k]].epoch_utc;
-                if ((d < 0 ? -d : d) < (int64_t)PEAK_LABEL_MIN_GAP_H * 3600) {
-                    too_close = true;
-                    break;
-                }
-            }
-            if (too_close) {
-                continue;
-            }
-            best_val = v;
-            best = i;
-        }
-        if (best < 0) {
-            break;
-        }
-        out_idx[n++] = best;
-    }
-    return n;
-}
-
-/* Precipitation value markers: up to the two highest max-precipitation peaks
- * (pick_top_peaks - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a
- * second peak less than 6h from the strongest is dropped rather than shown),
- * each labelled with its range, e.g. "0.5-2.3 mm" (the max chart's own
- * height, since it's always >= the min chart's - see s_precip_max_chart). */
-static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_max)
-{
-    int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
-    int idx[PRECIP_MARKER_POOL];
-    int n = pick_top_peaks(fc, pt_precip_max, PRECIP_MARKER_POOL, idx);
-
-    for (int k = 0; k < n; k++) {
-        int m = idx[k];
-        int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
-        int32_t y = CHART_H - (int32_t)(((float)s_precip_max_chart_data[m] / (float)precip_axis_max) * CHART_H);
-
-        lv_obj_t *label = s_precip_markers[k];
-        lv_label_set_text_fmt(label, "%.1f\xE2\x80\x93%.1f mm", (double)fc->points[m].precipitation_min_mm,
-                              (double)fc->points[m].precipitation_max_mm);
-        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-        place_marker_label(label, CHART_X + x, CHART_Y + y, true);
-    }
-    for (int i = n; i < PRECIP_MARKER_POOL; i++) {
-        lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-/* Wind/gust value markers: up to the two highest gust peaks (pick_top_peaks
- * - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a second peak less
- * than 6h from the strongest is dropped rather than shown), each labelled
- * with its sustained wind speed followed by its gust speed in parentheses,
- * e.g. "12 (18) m/s". Pinned near the chart's top rather than at the bar's
- * own (value-dependent) height, since a bottom-of-chart label was too easy
- * to miss. */
-static void place_wind_markers(const yr_forecast_t *fc)
-{
-    int gust_idx[WIND_MARKER_POOL];
-    int n = pick_top_peaks(fc, pt_wind_gust, WIND_MARKER_POOL, gust_idx);
-
-    for (int k = 0; k < n; k++) {
-        int m = gust_idx[k];
-        int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
-        lv_obj_t *label = s_wind_markers[k];
-        lv_label_set_text_fmt(label, "%.0f (%.0f) m/s", (double)fc->points[m].wind_speed_ms,
-                              (double)fc->points[m].wind_speed_of_gust_ms);
-        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-        place_marker_label(label, CHART_X + x, WIND_CHART_Y, false);
-    }
-    for (int i = n; i < WIND_MARKER_POOL; i++) {
-        lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-/* Format a UTC epoch as "HH:00" local time, rounded to the nearest whole
- * hour, for the x-axis labels. The merged series is non-uniform in time
- * (10-min nowcast steps, then hourly), so an evenly-sampled point rarely
- * lands on the hour - showing its rounded hour keeps the axis readable.
- * Oslo's UTC offset is a whole number of hours, so rounding the epoch is
- * equivalent to rounding the local clock. */
-static void format_hour_label(int64_t epoch, char *out, size_t out_len)
-{
-    time_t rounded = (time_t)(((epoch + 1800) / 3600) * 3600);
-    struct tm lt;
-    localtime_r(&rounded, &lt);
-    snprintf(out, out_len, "%02d:00", lt.tm_hour);
-}
-
-/* Draw forecast `fc`, fetched at wall-clock `fetched` (0 if the clock
- * wasn't synced): "Oppdatert kl." is when the device got it, not when MET
- * issued it, and turns orange once it's WX_STALE_S old - the chart itself
- * looks the same however old the data is. Adapter lock held. */
-static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
-{
-    const yr_forecast_point_t *now = &fc->points[0];
-
-    const time_t wall = time(NULL);
-    if (fetched > 0) {
-        struct tm lt;
-        localtime_r(&fetched, &lt);
-        const bool stale = wall - fetched >= WX_STALE_S;
-        lv_label_set_text_fmt(s_updated_label, "%s kl. %02d:%02d", stale ? "Sist oppdatert" : "Oppdatert",
-                              lt.tm_hour, lt.tm_min);
-        if (stale) {
-            lv_obj_set_style_text_color(s_updated_label, lv_palette_main(LV_PALETTE_ORANGE), 0);
-        } else {
-            lv_obj_remove_local_style_prop(s_updated_label, LV_STYLE_TEXT_COLOR, 0);
-        }
-    } else {
-        lv_label_set_text_fmt(s_updated_label, "Varsel fra kl. %s", fc->updated_hour_minute);
-    }
-
-    int temp_min_idx = 0, temp_max_idx = 0;
-    float temp_min = now->air_temperature_c;
-    float temp_max = now->air_temperature_c;
-    float precip_max = 0.0f; /* the high end of the range - see s_precip_max_chart */
-    float wind_max = 0.0f;
-    float gust_max = 0.0f; /* folded into the shared wind/gust axis range below */
-
-    for (int i = 0; i < fc->point_count; i++) {
-        const yr_forecast_point_t *p = &fc->points[i];
-        if (p->air_temperature_c < temp_min) {
-            temp_min = p->air_temperature_c;
-            temp_min_idx = i;
-        }
-        if (p->air_temperature_c > temp_max) {
-            temp_max = p->air_temperature_c;
-            temp_max_idx = i;
-        }
-        if (p->precipitation_max_mm > precip_max) {
-            precip_max = p->precipitation_max_mm;
-        }
-        if (p->wind_speed_ms > wind_max) {
-            wind_max = p->wind_speed_ms;
-        }
-        if (p->wind_speed_of_gust_ms > gust_max) {
-            gust_max = p->wind_speed_of_gust_ms;
-        }
-
-        /* A dry hour draws no bar at all (LV_CHART_POINT_NONE), rather than a
-         * flat zero-height stub sitting on the axis. */
-        int32_t precip_min_tenths = round_to_int(p->precipitation_min_mm * 10.0f);
-        s_precip_chart_data[i] = (precip_min_tenths > 0) ? precip_min_tenths : LV_CHART_POINT_NONE;
-        int32_t precip_max_tenths = round_to_int(p->precipitation_max_mm * 10.0f);
-        s_precip_max_chart_data[i] = (precip_max_tenths > 0) ? precip_max_tenths : LV_CHART_POINT_NONE;
-
-        s_wind_chart_data[i] = round_to_int(p->wind_speed_ms * 10.0f);
-        /* No bar (rather than a misleadingly flat one) for the far-out points
-         * MET doesn't forecast a gust for at all - see wind_speed_of_gust_ms. */
-        s_gust_chart_data[i] = (p->wind_speed_of_gust_ms > 0.0f)
-                                    ? round_to_int(p->wind_speed_of_gust_ms * 10.0f)
-                                    : LV_CHART_POINT_NONE;
-    }
-
-    int32_t temp_range_min = round_to_int(temp_min) - 1;
-    int32_t temp_range_max = round_to_int(temp_max) + 1;
-    if (temp_range_max <= temp_range_min) {
-        temp_range_max = temp_range_min + 1;
-    }
-
-    /* Precipitation-min/max bar charts: scaled off the max series (>= min
-     * always), same "shared range, both charts kept in sync" scheme as the
-     * wind/gust pair below. */
-    int32_t precip_range_max = round_to_int(precip_max * 10.0f) + 2;
-    if (precip_range_max < 10) {
-        precip_range_max = 10;
-    }
-
-    lv_chart_set_point_count(s_precip_max_chart, fc->point_count);
-    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0,
-                            precip_range_max * PRECIP_AXIS_COMPRESSION);
-    lv_chart_set_series_ext_y_array(s_precip_max_chart, s_precip_max_series, s_precip_max_chart_data);
-    lv_chart_refresh(s_precip_max_chart); /* force redraw - see below */
-
-    lv_chart_set_point_count(s_precip_chart, fc->point_count);
-    lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, precip_range_max * PRECIP_AXIS_COMPRESSION);
-    lv_chart_set_series_ext_y_array(s_precip_chart, s_precip_series, s_precip_chart_data);
-    /* The series shares one static buffer whose contents we overwrite in place;
-     * lv_chart_set_point_count() bails out when the length is unchanged and
-     * set_series_ext_y_array() doesn't invalidate, so between nowcast refreshes
-     * (same point_count) the bars would otherwise never redraw. */
-    lv_chart_refresh(s_precip_chart);
-
-    for (int i = 0; i < fc->point_count; i++) {
-        float v = fc->points[i].air_temperature_c;
-        int32_t x = (fc->point_count > 1) ? (int32_t)i * (CHART_W - 1) / (fc->point_count - 1) : 0;
-        int32_t y = (int32_t)((temp_range_max - v) / (temp_range_max - temp_range_min) * (CHART_H - 1));
-        s_temp_line_points[i].x = x;
-        s_temp_line_points[i].y = y;
-        s_temp_line_values[i] = v;
-    }
-    /* The merged series length varies (nowcast steps + hourly points), and
-     * drawing the full YR_FORECAST_MAX_POINTS array would trail a line back
-     * through the stale/zero tail entries. */
-    s_temp_line_count = fc->point_count > 1 ? (uint32_t)fc->point_count : 0;
-    lv_obj_invalidate(s_temp_line);
-
-    place_temp_markers(fc, temp_min_idx, temp_max_idx);
-    place_precip_markers(fc, precip_range_max);
-
-    /* Wind/gust bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
-     * calm forecast still has a sensible axis. Scaled off whichever of the
-     * two is higher - almost always the gust - so a strong gust forecast
-     * never clips off the top of its own chart. Both charts share this same
-     * range and point count (see s_gust_chart's declaration). */
-    float wind_or_gust_max = (gust_max > wind_max) ? gust_max : wind_max;
-    int32_t wind_range_max = round_to_int(wind_or_gust_max * 10.0f) + 20;
-    if (wind_range_max < 60) {
-        wind_range_max = 60;
-    }
-    lv_chart_set_point_count(s_gust_chart, fc->point_count);
-    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
-    lv_chart_set_series_ext_y_array(s_gust_chart, s_gust_series, s_gust_chart_data);
-    lv_chart_refresh(s_gust_chart); /* force redraw - see the precip chart above */
-
-    lv_chart_set_point_count(s_wind_chart, fc->point_count);
-    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
-    lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
-    lv_chart_refresh(s_wind_chart); /* force redraw - see the precip chart above */
-
-    place_wind_markers(fc);
-
-    char last_label[6] = "";
-    for (int i = 0; i < NUM_HOUR_LABELS; i++) {
-        int idx = (fc->point_count - 1) * i / (NUM_HOUR_LABELS - 1);
-
-        char hour[6];
-        format_hour_label(fc->points[idx].epoch_utc, hour, sizeof(hour));
-        /* Adjacent slots can round to the same hour where the near term is
-         * compressed - blank the duplicate rather than print it twice. */
-        lv_label_set_text(s_hour_labels[i], strcmp(hour, last_label) == 0 ? "" : hour);
-        if (strcmp(hour, last_label) != 0) {
-            snprintf(last_label, sizeof(last_label), "%s", hour);
-        }
-
-        set_weather_icon(s_icon_slots[i], fc->points[idx].symbol_code);
-
-        /* Wind direction arrow: the PNG points north at rotation 0; rotate it
-         * to the direction the wind blows TO (from-direction + 180). LVGL
-         * rotation is in 0.1-degree units, clockwise. */
-        int32_t to_deg = ((int32_t)fc->points[idx].wind_from_deg + 180) % 360;
-        lv_image_set_rotation(s_wind_dir_arrows[i], to_deg * 10);
-        lv_obj_clear_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-/* Linear-interpolate a per-point float field of the hourly forecast at an
- * arbitrary epoch - used to give the finer Nowcast points a temperature and
- * wind speed (the Nowcast itself only carries them for its first step). */
-static float interp_base(const yr_forecast_t *base, int64_t epoch,
-                         float (*get)(const yr_forecast_point_t *))
-{
-    if (base->point_count == 0) {
-        return 0.0f;
-    }
-    if (epoch <= base->points[0].epoch_utc) {
-        return get(&base->points[0]);
-    }
-    for (int i = 1; i < base->point_count; i++) {
-        int64_t e1 = base->points[i].epoch_utc;
-        if (epoch <= e1) {
-            int64_t e0 = base->points[i - 1].epoch_utc;
-            float v0 = get(&base->points[i - 1]);
-            float v1 = get(&base->points[i]);
-            if (e1 == e0) {
-                return v1;
-            }
-            return v0 + (float)(epoch - e0) / (float)(e1 - e0) * (v1 - v0);
-        }
-    }
-    return get(&base->points[base->point_count - 1]);
-}
-
-/* Nearest hourly-forecast point to an epoch (by time), for Nowcast fields
- * that don't interpolate cleanly - the weather symbol, and wind direction
- * (angles wrap at 360). Returns NULL only if base is empty. */
-static const yr_forecast_point_t *nearest_base_point(const yr_forecast_t *base, int64_t epoch)
-{
-    const yr_forecast_point_t *best = NULL;
-    int64_t best_dist = INT64_MAX;
-    for (int i = 0; i < base->point_count; i++) {
-        int64_t d = base->points[i].epoch_utc - epoch;
-        if (d < 0) {
-            d = -d;
-        }
-        if (d < best_dist) {
-            best_dist = d;
-            best = &base->points[i];
-        }
-    }
-    return best;
-}
-
-static bool any_cache_valid(void)
-{
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        if (s_fc_valid[i]) {
-            return true;
-        }
-    }
-    return false;
-}
-
-/* Whether the overview is still waiting on its first forecast. False (nothing
- * to wait for) when no location shows weather at all - e.g. a radar-only
- * setup - so the overview never gets stuck on "Henter oversikt..." forever;
- * the IP/heap footnotes render regardless via update_overview(). */
-static bool overview_loading(void)
-{
-    return s_weather_count > 0 && !any_cache_valid();
-}
-
-static lv_color_t alert_lv_color(met_alert_color_t c)
-{
-    switch (c) {
-    case MET_ALERT_RED:    return lv_palette_main(LV_PALETTE_RED);
-    case MET_ALERT_ORANGE: return lv_palette_main(LV_PALETTE_ORANGE);
-    default:               return lv_palette_main(LV_PALETTE_YELLOW);
-    }
-}
-
-/* The most severe of a location's currently active alerts, or NULL if it has
- * none (either nothing active, or its cache isn't valid yet). */
-static const met_alert_t *alert_worst(int loc)
-{
-    if (!s_alert_valid[loc] || s_alert_cache[loc]->count == 0) {
-        return NULL;
-    }
-    const met_alert_t *worst = &s_alert_cache[loc]->alerts[0];
-    for (int j = 1; j < s_alert_cache[loc]->count; j++) {
-        if (s_alert_cache[loc]->alerts[j].color > worst->color) {
-            worst = &s_alert_cache[loc]->alerts[j];
-        }
-    }
-    return worst;
-}
-
-/* Refresh the selected location's alert banner on the detail screen (top
- * centre, between the location name and the "updated" timestamp). Must be
- * called under the adapter lock. */
-static void update_alert_banner(int loc)
-{
-    const met_alert_t *worst = alert_worst(loc);
-    if (worst == NULL) {
-        lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
-        return;
-    }
-    lv_obj_set_style_bg_color(s_alert_label, alert_lv_color(worst->color), 0);
-    int extra = s_alert_cache[loc]->count - 1;
-    if (extra > 0) {
-        lv_label_set_text_fmt(s_alert_label, "OBS: %s (+%d)", worst->event_name, extra);
-    } else {
-        lv_label_set_text_fmt(s_alert_label, "OBS: %s", worst->event_name);
-    }
-    lv_obj_clear_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
-}
-
-/* Refresh every row's alert badge in the overview table. Part of
- * update_overview() (below) so every call site that repaints the overview
- * keeps the badges current for free. */
-static void update_overview_alerts(void)
-{
-    for (int row = 0; row < s_weather_count; row++) {
-        const met_alert_t *worst = alert_worst(s_wx_loc[row]);
-        if (worst == NULL) {
-            lv_obj_add_flag(s_ov_alert[row], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        lv_obj_set_style_bg_color(s_ov_alert[row], alert_lv_color(worst->color), 0);
-        lv_obj_clear_flag(s_ov_alert[row], LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-/* Repaint the overview table from the per-location caches. Uses the most
- * recent cache's first point as "now" (the device has no wall clock), aligns
- * it to the hour, and for each column samples the nearest hourly point for
- * temperature + weather symbol and sums precipitation over the next OV_STEP_H
- * hours. Missing caches show dashes. Must be called under the adapter lock. */
-static void update_overview(void)
-{
-    update_overview_alerts();
-
-    lv_label_set_text(s_ov_ip_label, wifi_provision_get_ip());
-    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4); /* re-anchor: text width changed */
-
-    lv_label_set_text_fmt(s_ov_heap_label, "%u",
-                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4); /* re-anchor: text width changed */
-
-    int64_t now_epoch = 0;
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        if (s_fc_valid[i] && s_fc_cache[i]->point_count > 0) {
-            int64_t e = s_fc_cache[i]->points[0].epoch_utc;
-            if (e > now_epoch) {
-                now_epoch = e;
-            }
-        }
-    }
-    if (now_epoch == 0) {
-        return;
-    }
-    int64_t t0 = (now_epoch / 3600) * 3600;
-
-    for (int c = 0; c < OV_COLS; c++) {
-        time_t tt = (time_t)(t0 + (int64_t)c * OV_STEP_H * 3600);
-        struct tm lt;
-        localtime_r(&tt, &lt);
-        lv_label_set_text_fmt(s_ov_hdr[c], "kl %02d", lt.tm_hour);
-    }
-
-    for (int row = 0; row < s_weather_count; row++) {
-        const int i = s_wx_loc[row]; /* location shown on this row */
-        lv_label_set_text(s_ov_name[row], s_cfg->locations[i].name);
-
-        const bool ok = s_fc_valid[i] && s_fc_cache[i]->point_count > 0;
-        const yr_forecast_t *fc = ok ? s_fc_cache[i] : NULL;
-
-        for (int c = 0; c < OV_COLS; c++) {
-            lv_obj_t *icon = s_ov_icon[row][c];
-            lv_obj_t *cell = s_ov_cell[row][c];
-
-            if (!ok) {
-                lv_label_set_text(cell, "\xE2\x80\x93"); /* en dash */
-                lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
-                continue;
-            }
-
-            int64_t block_start = t0 + (int64_t)c * OV_STEP_H * 3600;
-            const yr_forecast_point_t *np = nearest_base_point(fc, block_start);
-
-            float psum = 0.0f;
-            for (int k = 0; k < fc->point_count; k++) {
-                int64_t e = fc->points[k].epoch_utc;
-                if (e >= block_start && e < block_start + OV_STEP_H * 3600) {
-                    psum += fc->points[k].precipitation_mm;
-                }
-            }
-
-            if (psum >= 0.05f) {
-                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0\n%.1f mm",
-                                      (double)np->air_temperature_c, (double)psum);
-            } else {
-                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0", (double)np->air_temperature_c);
-            }
-            set_weather_icon(icon, np->symbol_code);
-        }
-    }
-}
-
-/* Build the rendered series: the Nowcast's near-term steps (10-min spacing,
- * radar precipitation as mm/h - directly comparable to the hourly amounts),
- * followed by the hourly forecast points that start after the Nowcast window.
- * `dst` and `base` must be different buffers; `nc` is assumed valid with
- * radar coverage. */
-static void merge_nowcast(yr_forecast_t *dst, const yr_forecast_t *base, const yr_nowcast_t *nc)
-{
-    *dst = *base;
-
-    int64_t last_nc_epoch = base->points[0].epoch_utc;
-    int m = 0;
-
-    for (int i = 0; i < nc->point_count && m < YR_FORECAST_MAX_POINTS; i += NOWCAST_MERGE_STRIDE) {
-        const yr_nowcast_point_t *s = &nc->points[i];
-        yr_forecast_point_t p = { 0 };
-
-        snprintf(p.hour_minute, sizeof(p.hour_minute), "%s", s->hour_minute);
-        p.is_first_of_day = s->is_first_of_day;
-        p.epoch_utc = s->epoch_utc;
-        p.precipitation_mm = s->precipitation_rate;
-        /* The nowcast has no uncertainty range (it's radar-derived, not an
-         * ensemble forecast) - no bar behind this one worth drawing. */
-        p.precipitation_min_mm = s->precipitation_rate;
-        p.precipitation_max_mm = s->precipitation_rate;
-
-        const yr_forecast_point_t *nb = nearest_base_point(base, s->epoch_utc);
-        if (s->has_instant_details) {
-            p.air_temperature_c = s->air_temperature_c;
-            p.wind_speed_ms = s->wind_speed_ms;
-            p.wind_speed_of_gust_ms = s->wind_speed_of_gust_ms;
-            p.wind_from_deg = s->wind_from_deg;
-        } else {
-            p.air_temperature_c = interp_base(base, s->epoch_utc, pt_temp);
-            p.wind_speed_ms = interp_base(base, s->epoch_utc, pt_wind);
-            p.wind_speed_of_gust_ms = interp_base(base, s->epoch_utc, pt_wind_gust);
-            p.wind_from_deg = nb ? nb->wind_from_deg : 0.0f;
-        }
-
-        const char *sym = s->symbol_code[0] ? s->symbol_code
-                                            : (nb ? nb->symbol_code : "");
-        snprintf(p.symbol_code, sizeof(p.symbol_code), "%s", sym);
-
-        dst->points[m++] = p;
-        last_nc_epoch = s->epoch_utc;
-    }
-
-    for (int i = 0; i < base->point_count && m < YR_FORECAST_MAX_POINTS; i++) {
-        if (base->points[i].epoch_utc <= last_nc_epoch) {
-            continue; /* this hour is inside the nowcast window */
-        }
-        dst->points[m++] = base->points[i];
-    }
-
-    dst->point_count = m;
-
-    /* The nowcast is the fresher data - show its issue time. */
-    if (nc->updated_hour_minute[0]) {
-        snprintf(dst->updated_hour_minute, sizeof(dst->updated_hour_minute), "%s",
-                 nc->updated_hour_minute);
-    }
-}
-
-/* Every chart and label in update_ui_with_forecast positions itself by array
- * INDEX (x = i * width / (point_count - 1); the bottom hour labels and the
- * precip/wind lv_chart bars all do the same, and lv_chart's own bar layout
- * can't be told to do otherwise). That's only proportional to elapsed time
- * if the points themselves are evenly time-spaced - true of a plain hourly
- * forecast, but not of a nowcast-merged series, which packs many 5/10-minute
- * steps into the first ~2 hours followed by sparse hourly ones: an hour of
- * near-term nowcast then occupies as many index-slots (and so as much of the
- * x-axis) as several hours further out.
- *
- * Fix: re-sample `src` onto `dst`, the same point count but evenly spaced in
- * TIME from its first to its last point, before anything renders it. This
- * makes uniform index-spacing correct again for every consumer. Continuous
- * fields (temperature, wind speed) are linearly interpolated between the
- * bracketing source points (interp_base); everything else (precipitation,
- * wind direction, symbol) is taken from the nearest source point in time -
- * the same approximations merge_nowcast already makes for the same reason. */
-static void resample_uniform_time(yr_forecast_t *dst, const yr_forecast_t *src)
-{
-    int n = src->point_count;
-    if (n < 2) {
-        *dst = *src;
-        return;
-    }
-    int64_t t0 = src->points[0].epoch_utc;
-    int64_t t1 = src->points[n - 1].epoch_utc;
-    if (t1 <= t0) {
-        *dst = *src;
-        return;
-    }
-
-    yr_forecast_t out = *src; /* carries over valid / updated_hour_minute / etc. */
-    for (int i = 0; i < n; i++) {
-        int64_t target = t0 + (int64_t)i * (t1 - t0) / (n - 1);
-        const yr_forecast_point_t *near = nearest_base_point(src, target);
-
-        yr_forecast_point_t p = *near;
-        p.epoch_utc = target;
-        p.air_temperature_c = interp_base(src, target, pt_temp);
-        p.wind_speed_ms = interp_base(src, target, pt_wind);
-        p.wind_speed_of_gust_ms = interp_base(src, target, pt_wind_gust);
-        out.points[i] = p;
-    }
-    out.point_count = n;
-    *dst = out;
+    view_enter(g_view_index);
+    lv_label_set_text(g_status_label, "Kobler til WiFi...");
 }
 
 /* Shown on the status label while wifi_provision works (connecting, or the
@@ -3462,685 +406,9 @@ static void resample_uniform_time(yr_forecast_t *dst, const yr_forecast_t *src)
 static void provision_status_cb(const char *msg)
 {
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        lv_label_set_text(s_status_label, msg);
+        lv_label_set_text(g_status_label, msg);
         esp_lv_adapter_unlock();
     }
-}
-
-/* One ADS-B poll for the radar of location `loc`, shown only if the screen is
- * still `for_view` when the reply lands. The previous plot is kept on a failed
- * poll (it just keeps dead-reckoning) unless there is none yet. */
-static void radar_poll(int loc, adsb_result_t *scratch, int for_view)
-{
-    double lat = atof(s_cfg->locations[loc].lat);
-    double lon = atof(s_cfg->locations[loc].lon);
-    bool ok = (adsb_client_fetch(lat, lon, (float)s_cfg->radar_km[loc], scratch) == ESP_OK);
-
-    if (!lock_for_view(for_view)) {
-        return;
-    }
-    if (ok) {
-        lv_label_set_text(s_status_label, "");
-        stamp_now(&s_adsb_at[loc]);
-        if (s_adsb_cache[loc] != NULL) {
-            memcpy(s_adsb_cache[loc], scratch, sizeof(*scratch));
-        }
-        radar_apply(scratch, &s_adsb_at[loc]);
-    } else if (!s_radar_valid) {
-        lv_label_set_text(s_status_label, "Kunne ikke hente fly. Pr\xC3\xB8ver igjen...");
-    }
-    esp_lv_adapter_unlock();
-}
-
-/* --------------------------------------------------------------------------
- * Coastline (components/coast.bin, built by scripts/build_coast.py from
- * OpenStreetMap, in the "coast" partition): a grid of tiles, each a list of
- * lines stored as varint steps from point to point (layout in the script). coast_render reads the
- * tiles around a location and draws them, anti-aliased, into s_coast_px once
- * per location and range; the radar draw callback then only blits that image.
- * ------------------------------------------------------------------------ */
-
-typedef struct __attribute__((packed)) {
-    char magic[4];
-    uint16_t rows, cols;
-    int32_t lat_min_e5, lon_min_e5, tile_dlat_e5, tile_dlon_e5, unit_e5;
-} coast_hdr_t;
-
-/* One varint (7 bits per byte, low first); false if it runs past `end`. */
-static bool coast_varint(const uint8_t **p, const uint8_t *end, uint32_t *v)
-{
-    uint32_t r = 0;
-    for (int shift = 0; *p < end && shift < 32; shift += 7) {
-        uint8_t b = *(*p)++;
-        r |= (uint32_t)(b & 0x7F) << shift;
-        if (!(b & 0x80)) {
-            *v = r;
-            return true;
-        }
-    }
-    return false;
-}
-
-static void coast_plot(int x, int y, float cover)
-{
-    if (x < 0 || y < 0 || x >= COAST_D || y >= COAST_D) {
-        return;
-    }
-    int dx = x - RADAR_R, dy = y - RADAR_R;
-    if (dx * dx + dy * dy > RADAR_R * RADAR_R) {
-        return;
-    }
-    int a = (int)(cover * 255.0f + 0.5f);
-    uint8_t *p = &s_coast_px[y * COAST_D + x];
-    if (a > *p) {
-        *p = (uint8_t)a;
-    }
-}
-
-/* Xiaolin Wu's anti-aliased line, in image pixels. */
-static void coast_line(float x0, float y0, float x1, float y1)
-{
-    if ((x0 < 0 && x1 < 0) || (y0 < 0 && y1 < 0) ||
-        (x0 >= COAST_D && x1 >= COAST_D) || (y0 >= COAST_D && y1 >= COAST_D)) {
-        return;
-    }
-    bool steep = fabsf(y1 - y0) > fabsf(x1 - x0);
-    if (steep) {
-        float t = x0; x0 = y0; y0 = t;
-        t = x1; x1 = y1; y1 = t;
-    }
-    if (x0 > x1) {
-        float t = x0; x0 = x1; x1 = t;
-        t = y0; y0 = y1; y1 = t;
-    }
-    float dx = x1 - x0;
-    float grad = dx > 0.0f ? (y1 - y0) / dx : 1.0f;
-    int xs = (int)lroundf(x0), xe = (int)lroundf(x1);
-    float y = y0 + grad * ((float)xs - x0);
-    for (int x = xs; x <= xe; x++, y += grad) {
-        int yi = (int)floorf(y);
-        float f = y - (float)yi;
-        if (steep) {
-            coast_plot(yi, x, 1.0f - f);
-            coast_plot(yi + 1, x, f);
-        } else {
-            coast_plot(x, yi, 1.0f - f);
-            coast_plot(x, yi + 1, f);
-        }
-    }
-}
-
-/* Water mask labels while coast_render works on s_water_px; afterwards it
- * holds 255 for water and 0 for everything else. */
-enum { WATER_UNKNOWN, WATER_SEA, WATER_LAND, WATER_COAST, WATER_COAST_SEA_TMP, WATER_DONE = 0x80, WATER_DONE_SEA = 0xC0 };
-
-static bool coast_in_disc(int x, int y)
-{
-    int dx = x - RADAR_R, dy = y - RADAR_R;
-    return x >= 0 && y >= 0 && x < COAST_D && y < COAST_D && dx * dx + dy * dy <= RADAR_R * RADAR_R;
-}
-
-/* In coast.bin the coastlines run with the water on the left and the land on
- * the right (the reverse of OpenStreetMap's own ways, as checked on screen
- * against the map). coast_seed notes the middle of each coastline segment and the normal
- * pointing to its water side; coast_fill_water uses them once the whole
- * coastline is drawn. */
-static void coast_seed(float x0, float y0, float x1, float y1)
-{
-    float dx = x1 - x0, dy = y1 - y0;
-    float len = sqrtf(dx * dx + dy * dy);
-    float mx = (x0 + x1) / 2.0f, my = (y0 + y1) / 2.0f;
-    if (len < 1.0f || s_water_n_seeds >= WATER_SEEDS_MAX ||
-        !coast_in_disc((int)lroundf(mx), (int)lroundf(my))) {
-        return;
-    }
-    /* On screen (y down), the left of direction (dx, dy) is (dy, -dx). */
-    s_water_seeds[s_water_n_seeds++] = (water_seed_t){ mx, my, dy / len, -dx / len };
-}
-
-/* From a segment's middle, step along `dir` off the line and mark the first
- * pixel clear of it as `v`, unless another line comes first. */
-static void water_mark_side(const water_seed_t *sd, float dir, uint8_t v)
-{
-    for (float t = 0.5f; t <= 4.0f; t += 0.5f) {
-        int x = (int)lroundf(sd->x + dir * sd->nx * t), y = (int)lroundf(sd->y + dir * sd->ny * t);
-        if (!coast_in_disc(x, y)) {
-            return;
-        }
-        uint8_t *w = &s_water_px[y * COAST_D + x];
-        if (*w != WATER_COAST) {
-            if (*w == WATER_UNKNOWN) {
-                *w = v;
-            }
-            return;
-        }
-    }
-}
-
-/* Split the disc into the areas the coastline in s_coast_px separates, and
- * make each area sea or land by a vote of the seed pixels inside it (a few
- * seeds land on the wrong side where the coast bends tightly). An area with no
- * seeds (no coast in view) stays unfilled; coastline pixels take the side most
- * of their neighbours are on. */
-static void coast_fill_water(void)
-{
-    const int n = COAST_D * COAST_D;
-    uint32_t *q = heap_caps_malloc(n * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
-    if (q == NULL) {
-        memset(s_water_px, 0, n);
-        return;
-    }
-    for (int i = 0; i < n; i++) {
-        s_water_px[i] = s_coast_px[i] > 0 ? WATER_COAST : WATER_UNKNOWN;
-    }
-    for (int i = 0; i < s_water_n_seeds; i++) {
-        water_mark_side(&s_water_seeds[i], 1.0f, WATER_SEA);
-        water_mark_side(&s_water_seeds[i], -1.0f, WATER_LAND);
-    }
-    static const int8_t nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
-    for (int start = 0; start < n; start++) {
-        uint8_t v0 = s_water_px[start];
-        if (v0 == WATER_COAST || (v0 & WATER_DONE) || !coast_in_disc(start % COAST_D, start / COAST_D)) {
-            continue;
-        }
-        /* Flood the area, marking it done as it goes; q holds its pixels. */
-        int head = 0, tail = 0, sea = 0, land = 0;
-        q[tail++] = start;
-        s_water_px[start] |= WATER_DONE;
-        while (head < tail) {
-            int i = q[head++];
-            uint8_t v = s_water_px[i] & ~WATER_DONE;
-            sea += (v == WATER_SEA);
-            land += (v == WATER_LAND);
-            int x = i % COAST_D, y = i / COAST_D;
-            for (int k = 0; k < 4; k++) {
-                int nx = x + nb[k][0], ny = y + nb[k][1];
-                if (!coast_in_disc(nx, ny)) {
-                    continue;
-                }
-                uint8_t *w = &s_water_px[ny * COAST_D + nx];
-                if (*w != WATER_COAST && !(*w & WATER_DONE)) {
-                    *w |= WATER_DONE;
-                    q[tail++] = ny * COAST_D + nx;
-                }
-            }
-        }
-        const uint8_t fill = (sea > land) ? WATER_DONE_SEA : WATER_DONE;
-        for (int i = 0; i < tail; i++) {
-            s_water_px[q[i]] = fill;
-        }
-    }
-    free(q);
-    for (int i = 0; i < n; i++) {
-        if (s_water_px[i] != WATER_COAST) {
-            continue;
-        }
-        int x = i % COAST_D, y = i / COAST_D, sea = 0, land = 0;
-        for (int k = 0; k < 4; k++) {
-            int nx = x + nb[k][0], ny = y + nb[k][1];
-            if (coast_in_disc(nx, ny)) {
-                uint8_t w = s_water_px[ny * COAST_D + nx];
-                sea += (w == WATER_DONE_SEA);
-                land += (w == WATER_DONE);
-            }
-        }
-        s_water_px[i] = (sea > land) ? WATER_COAST_SEA_TMP : WATER_COAST;
-    }
-    for (int i = 0; i < n; i++) {
-        uint8_t v = s_water_px[i];
-        s_water_px[i] = (v == WATER_DONE_SEA || v == WATER_COAST_SEA_TMP) ? 255 : 0;
-    }
-}
-
-/* Draw location `loc`'s coastline at `range` km into s_coast_px, unless it's
- * already there. Runs in the weather task; flash reads, so not under the
- * adapter lock except to flip s_coast_valid. */
-static void coast_render(int loc, int range)
-{
-    static const esp_partition_t *part;
-    static coast_hdr_t hdr;
-    if (s_coast_px == NULL || (s_coast_loc == loc && s_coast_km == range && s_coast_valid)) {
-        return;
-    }
-    if (part == NULL) {
-        part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, 0x40, "coast");
-        if (part == NULL || esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK ||
-            memcmp(hdr.magic, "CST2", 4) != 0) {
-            ESP_LOGW(TAG, "No coastline data in the coast partition");
-            s_coast_px = NULL; /* don't try again */
-            return;
-        }
-    }
-
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        s_coast_valid = false;
-        esp_lv_adapter_unlock();
-    }
-    memset(s_coast_px, 0, COAST_D * COAST_D);
-    s_water_n_seeds = 0;
-
-    const double lat0 = atof(s_cfg->locations[loc].lat);
-    const double lon0 = atof(s_cfg->locations[loc].lon);
-    const float km_lat = 110.574f / 1e5f;                                   /* km per 1e-5 deg */
-    const float km_lon = 111.320f * cosf((float)(lat0 * M_PI / 180.0)) / 1e5f;
-    const float px_per_km = (float)RADAR_R / (float)range;
-    const double span_lat = range / 110.574, span_lon = range / (111.320 * cos(lat0 * M_PI / 180.0));
-
-    /* One tile of margin: a line's last point can reach into the next tile. */
-    int r0 = (int)floor(((lat0 - span_lat) * 1e5 - hdr.lat_min_e5) / hdr.tile_dlat_e5) - 1;
-    int r1 = (int)floor(((lat0 + span_lat) * 1e5 - hdr.lat_min_e5) / hdr.tile_dlat_e5) + 1;
-    int c0 = (int)floor(((lon0 - span_lon) * 1e5 - hdr.lon_min_e5) / hdr.tile_dlon_e5) - 1;
-    int c1 = (int)floor(((lon0 + span_lon) * 1e5 - hdr.lon_min_e5) / hdr.tile_dlon_e5) + 1;
-    r0 = r0 < 0 ? 0 : r0;
-    c0 = c0 < 0 ? 0 : c0;
-    r1 = r1 >= hdr.rows ? hdr.rows - 1 : r1;
-    c1 = c1 >= hdr.cols ? hdr.cols - 1 : c1;
-
-    const size_t index_off = sizeof(hdr);
-    const size_t data_off = index_off + 4 * ((size_t)hdr.rows * hdr.cols + 1);
-    uint32_t idx[64];
-    uint8_t *buf = NULL;
-    size_t buf_cap = 0;
-    int32_t *pts = NULL; /* one decoded line: x, y pairs */
-    uint32_t pts_cap = 0;
-    int lines = 0;
-
-    for (int r = r0; r <= r1 && c1 >= c0 && c1 - c0 + 2 <= 64; r++) {
-        int n_idx = c1 - c0 + 2;
-        if (esp_partition_read(part, index_off + 4 * ((size_t)r * hdr.cols + c0), idx, 4 * n_idx) != ESP_OK) {
-            break;
-        }
-        size_t len = idx[n_idx - 1] - idx[0];
-        if (len == 0) {
-            continue;
-        }
-        if (len > buf_cap) {
-            uint8_t *nb = heap_caps_realloc(buf, len, MALLOC_CAP_SPIRAM);
-            if (nb == NULL) {
-                break;
-            }
-            buf = nb;
-            buf_cap = len;
-        }
-        if (esp_partition_read(part, data_off + idx[0], buf, len) != ESP_OK) {
-            break;
-        }
-        for (int c = c0; c <= c1; c++) {
-            const uint8_t *p = buf + (idx[c - c0] - idx[0]);
-            const uint8_t *end = buf + (idx[c - c0 + 1] - idx[0]);
-            /* Tile corner relative to the centre, in 1e-5 degrees. */
-            float tile_dlat = (float)(hdr.lat_min_e5 + (int64_t)r * hdr.tile_dlat_e5 - lat0 * 1e5);
-            float tile_dlon = (float)(hdr.lon_min_e5 + (int64_t)c * hdr.tile_dlon_e5 - lon0 * 1e5);
-            int32_t cur[2] = { 0, 0 }; /* e5 from the tile corner; see coast.bin's layout */
-            uint32_t n;
-            while (p < end && coast_varint(&p, end, &n) && n > 0) {
-                if (n > pts_cap) {
-                    int32_t *np = heap_caps_realloc(pts, 2 * sizeof(int32_t) * n, MALLOC_CAP_SPIRAM);
-                    if (np == NULL) {
-                        break;
-                    }
-                    pts = np;
-                    pts_cap = n;
-                }
-                int32_t lo[2] = { INT32_MAX, INT32_MAX }, hi[2] = { INT32_MIN, INT32_MIN };
-                uint32_t i = 0;
-                bool ok = true;
-                for (; ok && i < n; i++) {
-                    for (int k = 0; k < 2; k++) {
-                        uint32_t z;
-                        if (!coast_varint(&p, end, &z)) {
-                            ok = false;
-                            break;
-                        }
-                        cur[k] += (int32_t)((z >> 1) ^ -(z & 1)) * hdr.unit_e5;
-                        pts[2 * i + k] = cur[k];
-                        lo[k] = cur[k] < lo[k] ? cur[k] : lo[k];
-                        hi[k] = cur[k] > hi[k] ? cur[k] : hi[k];
-                    }
-                }
-                if (!ok) {
-                    break; /* truncated tile */
-                }
-                /* An island a couple of pixels across at this scale is only
-                 * speckle: skip closed rings that small. */
-                if (n >= 3 && pts[0] == pts[2 * (n - 1)] && pts[1] == pts[2 * (n - 1) + 1] &&
-                    (hi[0] - lo[0]) * km_lon * px_per_km < 2.0f &&
-                    (hi[1] - lo[1]) * km_lat * px_per_km < 2.0f) {
-                    continue;
-                }
-                float px = 0, py = 0;
-                for (i = 0; i < n; i++) {
-                    float x = RADAR_R + (tile_dlon + pts[2 * i]) * km_lon * px_per_km;
-                    float y = RADAR_R - (tile_dlat + pts[2 * i + 1]) * km_lat * px_per_km;
-                    if (i > 0) {
-                        coast_line(px, py, x, y);
-                        coast_seed(px, py, x, y);
-                    }
-                    px = x;
-                    py = y;
-                }
-                lines++;
-            }
-        }
-    }
-    free(buf);
-    free(pts);
-    coast_fill_water();
-    ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
-             s_cfg->locations[loc].name, lines, r0, r1, c0, c1);
-
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        s_coast_loc = loc;
-        s_coast_km = range;
-        /* Unless the screen moved on while drawing. */
-        s_coast_valid = (s_radar_loc == loc && s_radar_range_km == range);
-        lv_obj_invalidate(s_radar_canvas);
-        esp_lv_adapter_unlock();
-    }
-}
-
-static void ships_poll(int loc, ais_result_t *scratch, int for_view)
-{
-    double lat = atof(s_cfg->locations[loc].lat);
-    double lon = atof(s_cfg->locations[loc].lon);
-    esp_err_t err = ais_client_fetch(s_cfg->ais_client_id, s_cfg->ais_client_secret,
-                                     lat, lon, (float)s_cfg->ship_km[loc], s_cfg->ship_min_len_m[loc],
-                                     (float)s_cfg->ship_near_km[loc], s_cfg->ship_near_min_len_m[loc],
-                                     scratch);
-
-    if (!lock_for_view(for_view)) {
-        return;
-    }
-    if (err == ESP_OK) {
-        lv_label_set_text(s_status_label, "");
-        stamp_now(&s_ais_at[loc]);
-        if (s_ais_cache[loc] != NULL) {
-            memcpy(s_ais_cache[loc], scratch, sizeof(*scratch));
-        }
-        ships_apply(scratch, &s_ais_at[loc]);
-    } else if (err == ESP_ERR_INVALID_ARG) {
-        lv_label_set_text(s_status_label, "Mangler BarentsWatch-n\xC3\xB8kkel");
-    } else if (err == ESP_ERR_INVALID_STATE) {
-        lv_label_set_text(s_status_label, "Innlogging feilet");
-    } else if (!s_radar_valid) {
-        lv_label_set_text(s_status_label, "Kunne ikke hente skip. Pr\xC3\xB8ver igjen...");
-    }
-    esp_lv_adapter_unlock();
-}
-
-/* --------------------------------------------------------------------------
- * Rain radar: MET's latest radar image of the area around a location
- * (rain_client), redrawn over the radar disc in the theme's rain colours.
- * ------------------------------------------------------------------------ */
-
-/* Keep the frame just fetched into s_rain_spare, taken at `t`, with
- * `latest` the newest image there is. Adapter lock held. */
-static void rain_store(time_t t, time_t latest, int range)
-{
-    s_rain_latest = latest;
-    int slot = rain_slot_for(t);
-    for (int i = 0; slot < 0 && i < RAIN_FRAMES; i++) {
-        /* Free, or fallen out of the hour: the hour has RAIN_FRAMES
-         * positions and `t` is one of them not yet held, so there is one. */
-        const time_t ft = s_rain_ftime[i];
-        if (ft == RAIN_EMPTY || ft > latest || ft < latest - (time_t)(RAIN_FRAMES - 1) * RAIN_STEP_S) {
-            slot = i;
-        }
-    }
-    if (slot < 0) {
-        return;
-    }
-    uint8_t *old = s_rain_frame[slot];
-    s_rain_frame[slot] = s_rain_spare;
-    s_rain_spare = old;
-    s_rain_ftime[slot] = t;
-
-    const int p = RAIN_FRAMES - 1 - (int)((latest - t) / RAIN_STEP_S);
-    if (!s_rain_valid) {
-        rain_show(p, slot); /* the first to land; the animation takes it from here */
-        s_rain_hold = RAIN_HOLD_TICKS;
-    } else if (p == s_rain_pos) {
-        rain_show(p, slot);
-    }
-    lv_label_set_text(s_status_label, "");
-    lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r siste time innen %d km", range);
-    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
-    lv_obj_invalidate(s_radar_canvas);
-}
-
-/* Work out the part of `area` under location `loc`'s disc at `range` km and
- * where the disc lands on it (s_rain_crop, s_rain_gx/gy), and have frame
- * buffers for it. Frames held for another crop are dropped. Only redone when
- * the location, range or area changes. False if out of memory. */
-static bool rain_prepare(int loc, int range, const rain_area_t *area)
-{
-    if (loc == s_rain_prep_loc && range == s_rain_prep_range && area == s_rain_area) {
-        return true;
-    }
-
-    const double lat0 = atof(s_cfg->locations[loc].lat);
-    const double lon0 = atof(s_cfg->locations[loc].lon);
-    const double km_per_px = (double)range / RADAR_R;
-    const double km_lon = 111.320 * cos(lat0 * M_PI / 180.0);
-    static float gx[RAIN_GRID_N][RAIN_GRID_N], gy[RAIN_GRID_N][RAIN_GRID_N];
-    float x_lo = 1e9f, x_hi = -1e9f, y_lo = 1e9f, y_hi = -1e9f;
-    for (int j = 0; j < RAIN_GRID_N; j++) {
-        for (int i = 0; i < RAIN_GRID_N; i++) {
-            double dx = (i * RAIN_GRID - RADAR_R) * km_per_px;
-            double dy = (RADAR_R - j * RAIN_GRID) * km_per_px;
-            rain_client_project(area, lat0 + dy / 110.574, lon0 + dx / km_lon, &gx[j][i], &gy[j][i]);
-            x_lo = fminf(x_lo, gx[j][i]);
-            x_hi = fmaxf(x_hi, gx[j][i]);
-            y_lo = fminf(y_lo, gy[j][i]);
-            y_hi = fmaxf(y_hi, gy[j][i]);
-        }
-    }
-
-    /* A pixel of margin all round for the blending; coarser cells if the
-     * hour of frames wouldn't fit in RAIN_BUDGET. */
-    rain_crop_t c = { .x0 = (int)floorf(x_lo) - 1, .y0 = (int)floorf(y_lo) - 1, .step = 1 };
-    const int px_w = (int)ceilf(x_hi) + 2 - c.x0, px_h = (int)ceilf(y_hi) + 2 - c.y0;
-    for (;; c.step++) {
-        c.w = (uint16_t)((px_w + c.step - 1) / c.step);
-        c.h = (uint16_t)((px_h + c.step - 1) / c.step);
-        if ((size_t)c.w * c.h * (RAIN_FRAMES + 1) <= RAIN_BUDGET) {
-            break;
-        }
-    }
-
-    /* Drop the frames held (nothing reads a buffer once its frame is gone)
-     * and, if they're too small, the buffers too - freed and reallocated
-     * outside the lock, so the screen and taps aren't held up. */
-    const size_t cells = (size_t)c.w * c.h;
-    const bool grow = cells > s_rain_cells;
-    uint8_t *old[RAIN_FRAMES + 1] = { 0 };
-    if (esp_lv_adapter_lock(-1) != ESP_OK) {
-        return false;
-    }
-    s_rain_area = NULL; /* not ready until the end */
-    s_rain_crop = c;
-    for (int j = 0; j < RAIN_GRID_N; j++) {
-        for (int i = 0; i < RAIN_GRID_N; i++) {
-            /* Cell cx's middle is at image pixel x0 + cx * step + (step - 1) / 2. */
-            s_rain_gx[j][i] = (gx[j][i] - c.x0 - (c.step - 1) * 0.5f) / c.step;
-            s_rain_gy[j][i] = (gy[j][i] - c.y0 - (c.step - 1) * 0.5f) / c.step;
-        }
-    }
-    for (int i = 0; i < RAIN_FRAMES; i++) {
-        s_rain_ftime[i] = RAIN_EMPTY;
-    }
-    s_rain_valid = false;
-    s_rain_pos = -1;
-    if (grow) {
-        for (int i = 0; i < RAIN_FRAMES; i++) {
-            old[i] = s_rain_frame[i];
-            s_rain_frame[i] = NULL;
-        }
-        old[RAIN_FRAMES] = s_rain_spare;
-        s_rain_spare = NULL;
-        s_rain_cells = 0;
-    }
-    esp_lv_adapter_unlock();
-
-    bool ok = true;
-    if (grow) {
-        uint8_t *fresh[RAIN_FRAMES + 1];
-        for (int i = 0; i <= RAIN_FRAMES; i++) {
-            heap_caps_free(old[i]);
-        }
-        for (int i = 0; i <= RAIN_FRAMES; i++) {
-            fresh[i] = heap_caps_malloc(cells, MALLOC_CAP_SPIRAM);
-            ok &= (fresh[i] != NULL);
-        }
-        if (!ok) {
-            for (int i = 0; i <= RAIN_FRAMES; i++) {
-                heap_caps_free(fresh[i]);
-            }
-        } else if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            memcpy(s_rain_frame, fresh, sizeof(s_rain_frame));
-            s_rain_spare = fresh[RAIN_FRAMES];
-            s_rain_cells = cells;
-            esp_lv_adapter_unlock();
-        } else {
-            ok = false;
-        }
-    }
-    ESP_LOGI(TAG, "Rain: %s, %ux%u cells of %u px from (%d, %d)%s; PSRAM free %u", area->name, c.w, c.h,
-             c.step, c.x0, c.y0, ok ? "" : ", out of memory",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    if (ok) {
-        s_rain_area = area;
-        s_rain_prep_loc = loc;
-        s_rain_prep_range = range;
-    }
-    return ok; /* else tried again on the next poll */
-}
-
-/* Fetch the rain radar for location `loc`: the latest image, then whatever
- * of the hour before it isn't held yet, newest first. Each frame goes on
- * screen as it lands, as long as the screen is still `for_view`; the
- * previous ones stay up on a failed fetch. True once there is something on
- * screen. */
-static bool rain_poll(int loc, int for_view)
-{
-    const double lat = atof(s_cfg->locations[loc].lat);
-    const double lon = atof(s_cfg->locations[loc].lon);
-    const int range = s_cfg->rain_km[loc];
-    const rain_area_t *area = rain_client_pick_area(lat, lon, (float)range);
-    const bool ready = (area != NULL) && rain_prepare(loc, range, area);
-
-    time_t latest = 0;
-    for (int k = 0; ready && k < RAIN_FRAMES && s_view_index == for_view; k++) {
-        time_t want = 0;
-        if (k > 0) {
-            if (latest <= PLAUSIBLE_EPOCH_S) {
-                break; /* no image time: nothing to count back from */
-            }
-            want = latest - (time_t)k * RAIN_STEP_S;
-            if (rain_slot_for(want) >= 0) {
-                continue;
-            }
-        }
-        time_t taken;
-        esp_err_t err = rain_client_fetch(area, want, &s_rain_crop, s_rain_spare, &taken);
-        if (err != ESP_OK) {
-            if (k == 0) {
-                break;
-            }
-            continue; /* a gap in the hour; the animation skips it */
-        }
-        if (k == 0) {
-            latest = taken;
-            if (latest == s_rain_latest && rain_slot_for(latest) >= 0) {
-                continue; /* no new image since the last poll */
-            }
-        }
-        if (lock_for_view(for_view)) {
-            if (s_radar_loc == loc && s_radar_range_km == range) {
-                rain_store(taken, latest, range);
-            }
-            esp_lv_adapter_unlock();
-        }
-    }
-
-    bool shown = false;
-    if (lock_for_view(for_view)) {
-        if (area == NULL) {
-            lv_label_set_text(s_status_label, "Ingen nedb\xC3\xB8rsradar her");
-        } else if (!s_rain_valid) {
-            lv_label_set_text(s_status_label, "Kunne ikke hente nedb\xC3\xB8r. Pr\xC3\xB8ver igjen...");
-        }
-        shown = s_rain_valid;
-        esp_lv_adapter_unlock();
-    }
-    return shown;
-}
-
-/* --------------------------------------------------------------------------
- * Software watchdog: restart if the LVGL task (everything on screen) or the
- * weather task (all the fetching) stops making progress. A deadlock or a
- * call that never returns would otherwise leave the screen frozen on old
- * data for good: the task watchdog only logs here (ESP_TASK_WDT_PANIC is
- * off), and only notices busy loops, not a blocked task.
- * ------------------------------------------------------------------------ */
-
-#define WD_LVGL_MAX_S       60
-/* One pass of the weather task is at most a 5-minute wait plus its fetches
- * (15 s timeouts; the rain radar's hour of images is the longest run). */
-#define WD_WEATHER_MAX_S    (20 * 60)
-#define WD_TRIP_LVGL        0x57444c56u
-#define WD_TRIP_WEATHER     0x57445754u
-
-/* esp_timer_get_time() of each task's last sign of life; 0 = not watched
- * (the weather task sits in the setup portal indefinitely, legitimately). */
-static volatile int64_t s_wd_lvgl_us;
-static volatile int64_t s_wd_weather_us;
-/* Survives the restart, so the next boot can say why it happened. */
-static RTC_NOINIT_ATTR uint32_t s_wd_tripped;
-
-static void wd_weather_beat(void)
-{
-    s_wd_weather_us = esp_timer_get_time();
-}
-
-static void wd_lvgl_beat_cb(lv_timer_t *t)
-{
-    (void)t;
-    s_wd_lvgl_us = esp_timer_get_time();
-}
-
-static void wd_check_cb(void *arg)
-{
-    (void)arg;
-    const int64_t now = esp_timer_get_time();
-    const int64_t lvgl = s_wd_lvgl_us, weather = s_wd_weather_us;
-    if (lvgl != 0 && now - lvgl > WD_LVGL_MAX_S * 1000000LL) {
-        s_wd_tripped = WD_TRIP_LVGL;
-    } else if (weather != 0 && now - weather > WD_WEATHER_MAX_S * 1000000LL) {
-        s_wd_tripped = WD_TRIP_WEATHER;
-    } else {
-        return;
-    }
-    ESP_LOGE(TAG, "Watchdog: the %s task has stalled - restarting",
-             s_wd_tripped == WD_TRIP_LVGL ? "LVGL" : "weather");
-    esp_restart();
-}
-
-/* Start watching (the LVGL heartbeat timer must already exist), and report
- * whether the watchdog caused this boot. */
-static void wd_start(void)
-{
-    if (esp_reset_reason() == ESP_RST_SW &&
-        (s_wd_tripped == WD_TRIP_LVGL || s_wd_tripped == WD_TRIP_WEATHER)) {
-        ESP_LOGW(TAG, "Restarted by the watchdog: the %s task had stalled",
-                 s_wd_tripped == WD_TRIP_LVGL ? "LVGL" : "weather");
-    }
-    s_wd_tripped = 0;
-    s_wd_lvgl_us = esp_timer_get_time();
-    const esp_timer_create_args_t args = { .callback = wd_check_cb, .name = "watchdog" };
-    esp_timer_handle_t timer;
-    ESP_ERROR_CHECK(esp_timer_create(&args, &timer));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 10 * 1000000LL));
 }
 
 /* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
@@ -4160,206 +428,69 @@ static time_t compute_next_nightly_reboot(time_t now)
     return target;
 }
 
-/* --------------------------------------------------------------------------
- * Screenshot: GET /screen.png on the config web server returns the current
- * screen as a PNG. The image data is stored uncompressed (deflate "stored"
- * blocks, one per row), which needs no compressor and streams row by row;
- * about 1.1 MB for 800 x 480.
- * ------------------------------------------------------------------------ */
-
-/* PSRAM left over for everything else while a screenshot is taken. */
-#define SCREENSHOT_PSRAM_SPARE (640 * 1024)
-
-typedef struct {
-    httpd_req_t *req;
-    uint8_t buf[2048];
-    size_t n;
-    uint32_t crc;   /* of the PNG chunk being written */
-    esp_err_t err;
-} png_out_t;
-
-static void png_put(png_out_t *o, const void *data, size_t len)
+/* The nightly restart and the night dimming, checked on every wake of the
+ * weather task (every few minutes at idle, immediately on a tap) rather
+ * than on timers of their own - a few minutes of drift doesn't matter for
+ * either. */
+static void nightly_housekeeping(void)
 {
-    const uint8_t *p = data;
-    o->crc = esp_rom_crc32_le(o->crc, p, len);
-    while (len > 0 && o->err == ESP_OK) {
-        size_t k = sizeof(o->buf) - o->n;
-        k = k < len ? k : len;
-        memcpy(o->buf + o->n, p, k);
-        o->n += k;
-        p += k;
-        len -= k;
-        if (o->n == sizeof(o->buf)) {
-            o->err = httpd_resp_send_chunk(o->req, (const char *)o->buf, o->n);
-            o->n = 0;
+    static time_t next_nightly_reboot;  /* 0 = not yet scheduled (clock not synced) */
+    static bool night_dim_active;       /* mirrors s_tap_layer's current bg_opa */
+    time_t now_wall = time(NULL);
+    if (now_wall <= PLAUSIBLE_EPOCH_S) {
+        return;
+    }
+    if (next_nightly_reboot == 0) {
+        next_nightly_reboot = compute_next_nightly_reboot(now_wall);
+        struct tm lt;
+        localtime_r(&next_nightly_reboot, &lt);
+        ESP_LOGI(TAG, "Nightly reboot scheduled for %04d-%02d-%02d %02d:%02d local",
+                 lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
+    } else if (now_wall >= next_nightly_reboot) {
+        ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
+        esp_restart();
+    }
+
+    /* Night dimming - see s_tap_layer / NIGHT_DIM_OPA. A window that ends
+     * before it starts wraps past midnight; one that ends where it starts is
+     * empty. */
+    struct tm now_lt;
+    localtime_r(&now_wall, &now_lt);
+    const int now_min = now_lt.tm_hour * 60 + now_lt.tm_min;
+    const int from = g_cfg->dim_start, to = g_cfg->dim_end;
+    bool want_dim = g_cfg->dim_enabled &&
+                    (from <= to ? (now_min >= from && now_min < to) : (now_min >= from || now_min < to));
+    if (want_dim != night_dim_active) {
+        night_dim_active = want_dim;
+        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (want_dim) {
+                lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);
+                lv_obj_set_style_bg_opa(s_tap_layer, NIGHT_DIM_OPA, 0);
+            } else {
+                lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
+            }
+            esp_lv_adapter_unlock();
         }
+        ESP_LOGI(TAG, "Night dimming %s (local time %02d:%02d)",
+                 want_dim ? "on" : "off", now_lt.tm_hour, now_lt.tm_min);
     }
 }
 
-static void png_put_u32(png_out_t *o, uint32_t v)
+/* A full pass, so WiFi, the fetching and the screen all work: keep this
+ * firmware. Until then a freshly updated one is on probation, and a restart
+ * goes back to the previous (see wifi_provision's h_ota). No-op otherwise. */
+static void keep_firmware(void)
 {
-    uint8_t b[4] = { v >> 24, v >> 16, v >> 8, v };
-    png_put(o, b, 4);
-}
-
-static void png_chunk_start(png_out_t *o, const char *type, uint32_t len)
-{
-    png_put_u32(o, len);
-    o->crc = 0;
-    png_put(o, type, 4);
-}
-
-static void png_chunk_end(png_out_t *o)
-{
-    png_put_u32(o, o->crc);
-}
-
-static esp_err_t h_screenshot(httpd_req_t *req)
-{
-    /* The snapshot is a full-screen RGB565 copy (750 KB of PSRAM). Refuse
-     * rather than take it when that would leave too little for the fetches
-     * running meanwhile (a coastline render needs ~600 KB, a forecast parse
-     * ~350 KB). */
-    const size_t snap_bytes = (size_t)EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * 2;
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < snap_bytes ||
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < snap_bytes + SCREENSHOT_PSRAM_SPARE) {
-        httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "Not enough free memory for a screenshot right now\n");
+    static bool done;
+    if (done) {
+        return;
     }
-    lv_draw_buf_t *snap = NULL;
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
-        esp_lv_adapter_unlock();
-    }
-    png_out_t *o = heap_caps_calloc(1, sizeof(*o), MALLOC_CAP_SPIRAM);
-    uint8_t *row = heap_caps_malloc(1 + 3 * (snap ? snap->header.w : 0), MALLOC_CAP_SPIRAM);
-    if (snap == NULL || o == NULL || row == NULL) {
-        if (snap != NULL) {
-            lv_draw_buf_destroy(snap);
-        }
-        free(o);
-        free(row);
-        return httpd_resp_send_500(req);
-    }
-    const uint32_t w = snap->header.w, h = snap->header.h;
-    const uint32_t row_len = 1 + 3 * w; /* filter byte + RGB */
-    o->req = req;
-    httpd_resp_set_type(req, "image/png");
-    httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=\"screen.png\"");
-
-    static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
-    png_put(o, sig, sizeof(sig));
-    png_chunk_start(o, "IHDR", 13);
-    png_put_u32(o, w);
-    png_put_u32(o, h);
-    static const uint8_t ihdr[5] = { 8, 2, 0, 0, 0 }; /* 8-bit RGB, no interlace */
-    png_put(o, ihdr, sizeof(ihdr));
-    png_chunk_end(o);
-
-    png_chunk_start(o, "IDAT", 2 + h * (5 + row_len) + 4);
-    static const uint8_t zhdr[2] = { 0x78, 0x01 };
-    png_put(o, zhdr, sizeof(zhdr));
-    uint32_t a1 = 1, a2 = 0; /* Adler-32 of the raw rows */
-    for (uint32_t y = 0; y < h && o->err == ESP_OK; y++) {
-        const uint8_t *src = snap->data + y * snap->header.stride;
-        row[0] = 0; /* no filter */
-        for (uint32_t x = 0; x < w; x++) { /* RGB565, little-endian */
-            const uint16_t v = (uint16_t)(src[2 * x] | (src[2 * x + 1] << 8));
-            const uint8_t r = (v >> 11) & 0x1F, g = (v >> 5) & 0x3F, b = v & 0x1F;
-            row[1 + 3 * x] = (uint8_t)((r << 3) | (r >> 2));
-            row[2 + 3 * x] = (uint8_t)((g << 2) | (g >> 4));
-            row[3 + 3 * x] = (uint8_t)((b << 3) | (b >> 2));
-        }
-        for (uint32_t i = 0; i < row_len; i++) {
-            a1 = (a1 + row[i]) % 65521;
-            a2 = (a2 + a1) % 65521;
-        }
-        uint8_t bh[5] = { y == h - 1, row_len & 0xFF, row_len >> 8, ~row_len & 0xFF, (~row_len >> 8) & 0xFF };
-        png_put(o, bh, sizeof(bh));
-        png_put(o, row, row_len);
-    }
-    png_put_u32(o, (a2 << 16) | a1);
-    png_chunk_end(o);
-    png_chunk_start(o, "IEND", 0);
-    png_chunk_end(o);
-
-    lv_draw_buf_destroy(snap);
-    free(row);
-    esp_err_t err = o->err;
-    if (err == ESP_OK && o->n > 0) {
-        err = httpd_resp_send_chunk(req, (const char *)o->buf, o->n);
-    }
-    if (err == ESP_OK) {
-        err = httpd_resp_send_chunk(req, NULL, 0);
-    }
-    free(o);
-    return err;
-}
-
-/* Switch to screen `idx` of s_stops (adapter lock held), showing whatever
- * is cached for it straight away - see s_adsb_cache and friends - or a
- * "Henter..." note until the weather task's fetch lands. Called from a tap,
- * the rotation, and the weather task's first pass. */
-static void view_enter(int idx)
-{
-    const view_stop_t *stop = &s_stops[idx];
-    const int loc = stop->loc;
-    show_view((stop_kind_t)stop->kind);
-    switch ((stop_kind_t)stop->kind) {
-    case STOP_OVERVIEW:
-        /* Always render: the IP/heap footnotes must show up right away,
-         * not only once a forecast lands. */
-        update_overview();
-        lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
-        break;
-    case STOP_RADAR:
-        radar_set_location(loc);
-        lv_label_set_text(s_radar_info, "");
-        /* Never another location's aircraft: blank unless this one's are
-         * recent. */
-        s_radar_valid = s_adsb_cache[loc] != NULL && stamp_fresh(&s_adsb_at[loc], RADAR_CACHE_MAX_MS);
-        if (s_radar_valid) {
-            radar_apply(s_adsb_cache[loc], &s_adsb_at[loc]);
-        }
-        lv_obj_invalidate(s_radar_canvas);
-        lv_label_set_text(s_status_label, s_radar_valid ? "" : "Henter fly...");
-        break;
-    case STOP_SHIPS:
-        ships_set_location(loc);
-        lv_label_set_text(s_radar_info, "");
-        s_radar_valid = s_ais_cache[loc] != NULL && stamp_fresh(&s_ais_at[loc], SHIP_CACHE_MAX_MS);
-        if (s_radar_valid) {
-            ships_apply(s_ais_cache[loc], &s_ais_at[loc]);
-        }
-        lv_obj_invalidate(s_radar_canvas);
-        lv_label_set_text(s_status_label, s_radar_valid ? "" : "Henter skip...");
-        break;
-    case STOP_RAIN:
-        s_radar_valid = false; /* nothing to dead-reckon: no periodic redraw */
-        rain_set_location(loc);
-        lv_label_set_text(s_radar_info, "");
-        lv_obj_invalidate(s_radar_canvas);
-        lv_label_set_text(s_status_label, s_rain_valid ? "" : "Henter nedb\xC3\xB8r...");
-        break;
-    case STOP_DEPARTURES:
-        dep_set_location(loc);
-        lv_label_set_text(s_status_label, s_dep_valid ? "" : "Henter avganger...");
-        break;
-    case STOP_WEATHER:
-        lv_label_set_text(s_location_label, s_cfg->locations[loc].name);
-        /* Unlike the forecast, the alert cache carries over as-is from
-         * whatever this location's last fetch found. */
-        update_alert_banner(loc);
-        if (s_wx_shown[loc] != NULL && stamp_fresh(&s_wx_shown_at[loc], WX_CACHE_MAX_MS)) {
-            update_ui_with_forecast(s_wx_shown[loc], s_wx_shown_at[loc].when);
-            lv_label_set_text(s_status_label, "");
-        } else {
-            /* Never another location's chart under this one's name: hidden
-             * until the forecast and nowcast for it land. */
-            lv_obj_add_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text_fmt(s_status_label, "Henter v\xC3\xA6rvarsel for %s...", s_cfg->locations[loc].name);
-        }
-        break;
+    done = true;
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGI(TAG, "New firmware works - keeping it");
+        esp_ota_mark_app_valid_cancel_rollback();
     }
 }
 
@@ -4367,8 +498,8 @@ static void yr_weather_task(void *arg)
 {
     /* Connects in station mode, or blocks forever in the setup portal (and
      * reboots when the form is saved). */
-    wifi_provision_connect(s_cfg, provision_status_cb);
-    wifi_provision_add_get_handler("/screen.png", h_screenshot);
+    wifi_provision_connect(g_cfg, provision_status_cb);
+    wifi_provision_add_get_handler("/screen.png", screenshot_handler);
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
      * a large TLS handshake - the two compete hard for the same scarce
@@ -4384,351 +515,94 @@ static void yr_weather_task(void *arg)
     sntp_cfg.wait_for_sync = false;
     esp_netif_sntp_init(&sntp_cfg);
 
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        lv_label_set_text(s_status_label, "Henter v\xC3\xA6rvarsel...");
-        esp_lv_adapter_unlock();
-    }
-
-    /* All in PSRAM - large, and no reason to compete with mbedtls/TLS for
-     * scarce internal DRAM. `scratch` receives each fetch (yr_client zeroes
-     * its output, so fetching straight into a cache would wipe the last good
-     * copy on a network hiccup); `merged` holds the nowcast-spliced series;
-     * `resampled` is what the detail view actually renders (see
-     * resample_uniform_time); s_fc_cache[i] keeps each location's last good
-     * hourly forecast for the overview. `alert_scratch`/s_alert_cache[i] are
-     * the same scratch-then-copy scheme for the severe weather alerts. */
-    yr_forecast_t *scratch = heap_caps_malloc(sizeof(*scratch), MALLOC_CAP_SPIRAM);
-    yr_forecast_t *merged = heap_caps_malloc(sizeof(*merged), MALLOC_CAP_SPIRAM);
-    yr_forecast_t *resampled = heap_caps_malloc(sizeof(*resampled), MALLOC_CAP_SPIRAM);
-    yr_nowcast_t *nowcast = heap_caps_malloc(sizeof(*nowcast), MALLOC_CAP_SPIRAM);
-    adsb_result_t *adsb_scratch = heap_caps_malloc(sizeof(*adsb_scratch), MALLOC_CAP_SPIRAM);
-    ais_result_t *ais_scratch = heap_caps_malloc(sizeof(*ais_scratch), MALLOC_CAP_SPIRAM);
-    met_alerts_t *alert_scratch = heap_caps_malloc(sizeof(*alert_scratch), MALLOC_CAP_SPIRAM);
-    entur_departures_t *dep_scratch = heap_caps_malloc(sizeof(*dep_scratch), MALLOC_CAP_SPIRAM);
-    bool caches_ok = (scratch != NULL && merged != NULL && resampled != NULL &&
-                      nowcast != NULL && adsb_scratch != NULL && ais_scratch != NULL &&
-                      alert_scratch != NULL && dep_scratch != NULL);
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
-        s_alert_cache[i] = heap_caps_malloc(sizeof(met_alerts_t), MALLOC_CAP_SPIRAM);
-        if (s_fc_cache[i] == NULL || s_alert_cache[i] == NULL) {
-            caches_ok = false;
-        }
-    }
-    if (!caches_ok) {
-        ESP_LOGE(TAG, "Out of memory allocating forecast buffers");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    int active_view = -1;   /* -1 forces a first render; else == s_view_index  */
-    bool overview = false;
-    bool radar = false;
-    bool ships = false;
-    bool rain = false;
-    bool rain_shown = false; /* the rain radar has a picture up */
-    bool departures = false;
-    bool dep_shown = false;  /* the departure board has data up */
-    int sel = 0;            /* selected location index when not on the overview */
-    time_t next_nightly_reboot = 0; /* 0 = not yet scheduled (clock not synced) */
-    bool night_dim_active = false;  /* mirrors s_tap_layer's current bg_opa */
+    int active_view = -1; /* -1 forces a first render; else == g_view_index */
+    int saved_view = app_config_load_last_view();
+    TickType_t view_since = 0; /* when active_view was switched to */
+    bool refetch_sel = false;
 
     while (1) {
         wd_weather_beat();
-        /* Once a day, purely for memory-pressure hygiene. Checked every loop
-         * wake (every few minutes at idle, immediately on a tap) rather than
-         * slept for separately - a few minutes of drift past the target hour
-         * doesn't matter for housekeeping. */
-        time_t now_wall = time(NULL);
-        if (now_wall > PLAUSIBLE_EPOCH_S) {
-            if (next_nightly_reboot == 0) {
-                next_nightly_reboot = compute_next_nightly_reboot(now_wall);
-                struct tm lt;
-                localtime_r(&next_nightly_reboot, &lt);
-                ESP_LOGI(TAG, "Nightly reboot scheduled for %04d-%02d-%02d %02d:%02d local",
-                         lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
-            } else if (now_wall >= next_nightly_reboot) {
-                ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
-                esp_restart();
-            }
+        nightly_housekeeping();
 
-            /* Night dimming - see s_tap_layer / NIGHT_DIM_OPA. Also checked
-             * every wake; a few minutes of drift at the edges is unnoticeable.
-             * A window that ends before it starts wraps past midnight; one
-             * that ends where it starts is empty. */
-            struct tm now_lt;
-            localtime_r(&now_wall, &now_lt);
-            const int now_min = now_lt.tm_hour * 60 + now_lt.tm_min;
-            const int from = s_cfg->dim_start, to = s_cfg->dim_end;
-            bool want_dim = s_cfg->dim_enabled &&
-                            (from <= to ? (now_min >= from && now_min < to)
-                                        : (now_min >= from || now_min < to));
-            if (want_dim != night_dim_active) {
-                night_dim_active = want_dim;
-                if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                    if (want_dim) {
-                        lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);
-                        lv_obj_set_style_bg_opa(s_tap_layer, NIGHT_DIM_OPA, 0);
-                    } else {
-                        lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
-                    }
-                    esp_lv_adapter_unlock();
-                }
-                ESP_LOGI(TAG, "Night dimming %s (local time %02d:%02d)",
-                         want_dim ? "on" : "off", now_lt.tm_hour, now_lt.tm_min);
-            }
-        }
-
-        /* Adopt a view switch from the touch handler. Force-refetch the newly
-         * selected location's forecast below even if its cache isn't
-         * calendar-stale yet: the detail view should only ever show a fully
-         * fresh forecast+nowcast pair for the location just switched to,
-         * never a stale forecast alone or a stale-forecast/fresh-nowcast mix. */
-        int want_view = s_view_index;
-        bool force_sel_refetch = false;
+        /* Adopt a view switch made by a tap or the rotation (view_enter has
+         * already put the screen up). */
+        const int want_view = g_view_index;
+        const view_stop_t *stop = &s_stops[want_view];
         if (want_view != active_view) {
             const bool first = (active_view < 0);
             active_view = want_view;
-            const view_stop_t *stop = &s_stops[want_view];
-            overview = (stop->kind == STOP_OVERVIEW);
-            radar = (stop->kind == STOP_RADAR);
-            ships = (stop->kind == STOP_SHIPS);
-            rain = (stop->kind == STOP_RAIN);
-            rain_shown = false;
-            departures = (stop->kind == STOP_DEPARTURES);
-            dep_shown = false;
-            sel = overview ? 0 : stop->loc;
-            /* The rotation passes by every few seconds: it shows the cached
-             * forecast (kept fresh by the 10-minute refresh) rather than
-             * refetching it each time round. */
-            force_sel_refetch = (stop->kind == STOP_WEATHER) && !s_view_auto;
+            view_since = xTaskGetTickCount();
+            /* A tap to a weather screen refetches its forecast even if the
+             * cache isn't stale yet; the rotation, passing by every few
+             * seconds, shows it as kept fresh by the 10-minute refresh. */
+            refetch_sel = (stop->kind == STOP_WEATHER) && !s_view_auto;
 
-            /* So a reboot of any kind - nightly, power cycle, crash - comes
-             * back showing this same screen instead of the overview. Not
-             * for the rotation's switches, which would rewrite flash every
-             * few seconds. */
-            if (!s_view_auto) {
-                app_config_save_last_view((uint8_t)want_view);
-            }
-
-            /* The radar keeps its HTTPS connection open between polls; drop it
-             * (and its TLS buffers) as soon as the radar isn't on screen. */
-            if (!radar) {
+            /* Each client keeps its HTTPS connection open between polls; drop
+             * those (and their TLS buffers) not needed on this screen. */
+            if (stop->kind != STOP_RADAR) {
                 adsb_client_close();
             }
-            if (!ships) {
+            if (stop->kind != STOP_SHIPS) {
                 ais_client_close();
             }
-            if (!rain) {
+            if (stop->kind != STOP_RAIN) {
                 rain_client_close();
             }
-            if (!departures) {
+            if (stop->kind != STOP_DEPARTURES) {
                 entur_client_close();
             }
 
-            /* A tap or the rotation already switched the screen (view_enter);
-             * only the first pass, after the WiFi connect's own messages,
-             * sets it up from here. Otherwise let LVGL finish drawing the
-             * screen just shown before starting a download: drawing a full
-             * screen and a TLS fetch at once took internal DRAM down to a
-             * few KB, where WiFi's own buffers start failing. */
-            if (first && esp_lv_adapter_lock(-1) == ESP_OK) {
-                if (s_view_index == want_view) {
-                    view_enter(want_view);
+            if (first) {
+                /* Put the screen's own status back after the WiFi connect's. */
+                if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                    if (g_view_index == want_view) {
+                        view_enter(want_view);
+                    }
+                    esp_lv_adapter_unlock();
                 }
-                esp_lv_adapter_unlock();
-            } else if (!first) {
+            } else {
                 vTaskDelay(pdMS_TO_TICKS(VIEW_SETTLE_MS));
-                if (s_view_index != active_view) {
+                if (g_view_index != active_view) {
                     continue;
                 }
             }
         }
 
-        if (radar) {
-            coast_render(sel, s_cfg->radar_km[sel]);
-            radar_poll(sel, adsb_scratch, active_view);
-        } else if (ships) {
-            coast_render(sel, s_cfg->ship_km[sel]);
-            ships_poll(sel, ais_scratch, active_view);
-        } else if (rain) {
-            coast_render(sel, s_cfg->rain_km[sel]);
-            rain_shown = rain_poll(sel, active_view);
-        } else if (departures) {
-            dep_shown = departures_poll(sel, dep_scratch, active_view);
+        uint32_t wait_ms;
+        switch ((stop_kind_t)stop->kind) {
+        case STOP_RADAR:
+        case STOP_SHIPS:
+        case STOP_RAIN:
+            wait_ms = radar_poll(stop->kind, stop->loc, active_view);
+            break;
+        case STOP_DEPARTURES:
+            wait_ms = departures_poll(stop->loc, active_view);
+            break;
+        default:
+            wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);
+            refetch_sel = false;
+            break;
         }
-
-        TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
-
-        /* Refresh any stale or missing location forecast. The selected one is
-         * done first so the detail view updates promptly; the rest keep the
-         * overview warm. N <= 5 and the cadence is 10 min, so this is a fetch
-         * or two per wake at most. Skipped entirely on the radar: it polls
-         * every few seconds and is the only thing that should use the network
-         * there. Whatever went stale is refreshed when a weather screen or the
-         * overview is next shown. */
-        for (int k = 0; !radar && !ships && !rain && !departures && k < s_cfg->location_count; k++) {
-            if (s_view_index != active_view) {
-                break; /* view changed mid-scan - restart the loop */
-            }
-            int i = (sel + k) % s_cfg->location_count;
-            wd_weather_beat();
-            if (!(s_cfg->show[i] & APP_SHOW_WEATHER)) {
-                continue; /* radar-only location: no forecast needed */
-            }
-            bool stale = !s_fc_valid[i] || (i == sel && force_sel_refetch) ||
-                         (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
-            bool alert_stale = !s_alert_valid[i] ||
-                                (now_tk - s_alert_tk[i]) >= pdMS_TO_TICKS(ALERT_REFRESH_INTERVAL_MS);
-            if (!stale && !alert_stale) {
-                continue;
-            }
-
-            double lat = atof(s_cfg->locations[i].lat);
-            double lon = atof(s_cfg->locations[i].lon);
-
-            if (stale) {
-                if (yr_client_fetch_forecast(lat, lon, scratch) == ESP_OK &&
-                    scratch->valid && scratch->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
-                    /* Under the lock: the overview may be drawn from a tap. */
-                    *s_fc_cache[i] = *scratch;
-                    s_fc_valid[i] = true;
-                    s_fc_tk[i] = now_tk;
-                    s_fc_when[i] = (time(NULL) > PLAUSIBLE_EPOCH_S) ? time(NULL) : 0;
-                    esp_lv_adapter_unlock();
-                    ESP_LOGI(TAG, "Forecast[%d] %s: %d pts kl. %s (free int %u)",
-                             i, s_cfg->locations[i].name, s_fc_cache[i]->point_count,
-                             s_fc_cache[i]->updated_hour_minute,
-                             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-                } else {
-                    ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous",
-                             i, s_cfg->locations[i].name);
-                }
-            }
-
-            if (alert_stale) {
-                if (met_alerts_client_fetch(lat, lon, alert_scratch) == ESP_OK && alert_scratch->valid &&
-                    esp_lv_adapter_lock(-1) == ESP_OK) {
-                    *s_alert_cache[i] = *alert_scratch;
-                    s_alert_valid[i] = true;
-                    s_alert_tk[i] = now_tk;
-                    esp_lv_adapter_unlock();
-                    if (alert_scratch->count > 0) {
-                        ESP_LOGI(TAG, "Alerts[%d] %s: %d active", i, s_cfg->locations[i].name,
-                                 alert_scratch->count);
-                    }
-                } else {
-                    ESP_LOGW(TAG, "Alerts[%d] %s failed; keeping previous",
-                             i, s_cfg->locations[i].name);
-                }
-            }
-
-            /* Fill the overview row-by-row (forecast + alert badge) as each
-             * location lands, and keep the selected detail screen's banner
-             * current the moment its own alert fetch lands. */
-            if (lock_for_view(active_view)) {
-                if (overview) {
-                    update_overview();
-                    lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
-                } else if (i == sel) {
-                    update_alert_banner(sel);
-                }
-                esp_lv_adapter_unlock();
-            }
-        }
-
-        if (s_view_index != active_view) {
+        if (g_view_index != active_view) {
             continue;
         }
-
-        if (overview) {
-            if (lock_for_view(active_view)) {
-                update_overview();
-                lv_label_set_text(s_status_label, overview_loading() ? "Henter oversikt..." : "");
-                esp_lv_adapter_unlock();
-            }
-        } else if (radar || ships || rain || departures) {
-            /* Already handled above; nothing weather-related to draw here. */
-        } else {
-            /* Keeps the banner in sync with whatever the fetch loop below
-             * last landed for this location, even on a pass that finds
-             * nothing else to do (e.g. the forecast is still fresh). */
-            if (lock_for_view(active_view)) {
-                update_alert_banner(sel);
-                esp_lv_adapter_unlock();
-            }
-
-            /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
-            double lat = atof(s_cfg->locations[sel].lat);
-            double lon = atof(s_cfg->locations[sel].lon);
-            bool nc_ok = (yr_client_fetch_nowcast(lat, lon, nowcast) == ESP_OK &&
-                          nowcast->valid && nowcast->radar_ok && nowcast->point_count > 0);
-
-            if (s_view_index != active_view) {
-                continue;
-            }
-
-            if (s_fc_valid[sel] && s_fc_cache[sel]->point_count > 0) {
-                const yr_forecast_t *to_render = s_fc_cache[sel];
-                if (nc_ok) {
-                    merge_nowcast(merged, s_fc_cache[sel], nowcast);
-                    to_render = merged;
-                    ESP_LOGI(TAG, "Nowcast merged for %s: %d steps -> %d points",
-                             s_cfg->locations[sel].name, nowcast->point_count,
-                             merged->point_count);
-                }
-                if (to_render->point_count > 0) {
-                    /* Every chart/label below positions by index, so put the
-                     * points on a uniform time grid first (see
-                     * resample_uniform_time) - otherwise the nowcast-merged
-                     * series' densely-sampled first ~2h would visually eat
-                     * as much of the x-axis as several hours further out. */
-                    resample_uniform_time(resampled, to_render);
-                    if (lock_for_view(active_view)) {
-                        lv_label_set_text(s_status_label, "");
-                        update_ui_with_forecast(resampled, s_fc_when[sel]);
-                        lv_obj_clear_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN);
-                        if (s_wx_shown[sel] != NULL) {
-                            *s_wx_shown[sel] = *resampled;
-                            stamp_now(&s_wx_shown_at[sel]);
-                            s_wx_shown_at[sel].when = s_fc_when[sel]; /* the forecast's age, not the drawing's */
-                        }
-                        esp_lv_adapter_unlock();
-                    }
-                }
-            } else if (lock_for_view(active_view)) {
-                lv_label_set_text(s_status_label,
-                                  "Kunne ikke hente v\xC3\xA6rvarsel. Pr\xC3\xB8ver igjen...");
-                esp_lv_adapter_unlock();
-            }
-        }
-
-        /* Poll on the nowcast cadence once something is on screen; retry fast
-         * while still waiting for the first data. A tap notifies us, cutting
-         * the wait short. */
-        bool ready = overview ? !overview_loading() : s_fc_valid[sel];
         wd_weather_beat();
+        keep_firmware();
 
-        /* A full pass, so WiFi, the fetching and the screen all work: keep
-         * this firmware. Until then a freshly updated one is on probation,
-         * and a restart goes back to the previous (see wifi_provision's
-         * h_ota). No-op otherwise. */
-        static bool app_valid;
-        if (!app_valid) {
-            app_valid = true;
-            esp_ota_img_states_t st;
-            if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
-                st == ESP_OTA_IMG_PENDING_VERIFY) {
-                ESP_LOGI(TAG, "New firmware works - keeping it");
-                esp_ota_mark_app_valid_cancel_rollback();
+        /* So a reboot of any kind - nightly, power cycle, crash - comes back
+         * showing the screen last picked by tap instead of the overview. */
+        const TickType_t shown_for = xTaskGetTickCount() - view_since;
+        if (!s_view_auto && active_view != saved_view) {
+            if (shown_for >= pdMS_TO_TICKS(LAST_VIEW_SAVE_MS)) {
+                app_config_save_last_view((uint8_t)active_view);
+                saved_view = active_view;
+            } else if (wait_ms > LAST_VIEW_SAVE_MS) {
+                wait_ms = LAST_VIEW_SAVE_MS; /* come back to save it */
             }
         }
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(radar ? ADSB_POLL_MS
-                                               : ships ? SHIP_POLL_MS
-                                               : rain ? (rain_shown ? RAIN_POLL_MS : RAIN_RETRY_MS)
-                                               : departures ? (dep_shown ? DEP_POLL_MS : DEP_RETRY_MS)
-                                               : (ready ? NOWCAST_REFRESH_INTERVAL_MS
-                                                        : WEATHER_RETRY_INTERVAL_MS)));
+
+        /* A tap or the rotation notifies us, cutting the wait short. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
     }
 }
 
@@ -4766,33 +640,19 @@ void app_main(void)
         nvs_err = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_err);
-    s_cfg = heap_caps_calloc(1, sizeof(*s_cfg), MALLOC_CAP_SPIRAM);
-    assert(s_cfg != NULL);
-    app_config_load(s_cfg);
-    yr_client_set_contact_email(s_cfg->yr_email);
+    g_cfg = heap_caps_calloc(1, sizeof(*g_cfg), MALLOC_CAP_SPIRAM);
+    assert(g_cfg != NULL);
+    app_config_load(g_cfg);
+    yr_client_set_contact_email(g_cfg->yr_email);
 
     /* Resume on whatever screen was showing before this boot (see
      * app_config_save_last_view) rather than always starting at the
      * overview. Clamped in case the location count shrank since. */
     build_stops();
-    for (int i = 0; i < s_cfg->location_count; i++) {
-        const uint8_t show = s_cfg->show[i];
-        if (show & APP_SHOW_WEATHER) {
-            s_wx_shown[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
-        }
-        if (show & APP_SHOW_RADAR) {
-            s_adsb_cache[i] = heap_caps_malloc(sizeof(adsb_result_t), MALLOC_CAP_SPIRAM);
-        }
-        if (show & APP_SHOW_SHIPS) {
-            s_ais_cache[i] = heap_caps_malloc(sizeof(ais_result_t), MALLOC_CAP_SPIRAM);
-        }
-        if (show & APP_SHOW_DEPARTURES) {
-            s_dep_cache[i] = heap_caps_malloc(sizeof(entur_departures_t), MALLOC_CAP_SPIRAM);
-        }
-    }
-    s_view_index = app_config_load_last_view();
-    if (s_view_index >= s_stop_count) {
-        s_view_index = 0;
+    weather_init();
+    g_view_index = app_config_load_last_view();
+    if (g_view_index >= s_stop_count) {
+        g_view_index = 0;
     }
 
     const esp_lv_adapter_rotation_t rotation = ESP_LV_ADAPTER_ROTATE_0;

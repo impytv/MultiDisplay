@@ -10,67 +10,20 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 
+#include "http_util.h"
+
 static const char *TAG = "yr_client";
 
 #define YR_HTTP_TIMEOUT_MS   15000
 #define YR_MAX_RESPONSE_LEN  (512 * 1024) /* safety cap against a runaway server */
 
-/* cJSON's default allocator is plain malloc(), which ESP-IDF only routes to
- * PSRAM for allocations >= 1 KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) - most
- * cJSON parse-tree nodes are far smaller than that, so parsing a big response
- * (the "complete" locationforecast product is ~90 KB of JSON, several times
- * compact's) can otherwise burn through internal DRAM at the same time WiFi
- * needs its own, causing intermittent alloc failures there. Routing cJSON
- * straight to heap_caps_malloc(..., MALLOC_CAP_SPIRAM) sidesteps that size
- * threshold entirely. This is global to the cJSON library, hence the guard. */
-static void *cjson_psram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM); }
-static void cjson_psram_free(void *ptr) { heap_caps_free(ptr); }
-
-static void ensure_cjson_psram_hooks(void)
-{
-    static bool done = false;
-    if (done) {
-        return;
-    }
-    done = true;
-    cJSON_Hooks hooks = { .malloc_fn = cjson_psram_malloc, .free_fn = cjson_psram_free };
-    cJSON_InitHooks(&hooks);
-}
-
-typedef struct {
-    char *buf;
-    size_t len;
-} yr_response_buf_t;
-
-static esp_err_t http_event_handler(esp_http_client_event_t *evt)
-{
-    yr_response_buf_t *resp = (yr_response_buf_t *)evt->user_data;
-
-    if (evt->event_id != HTTP_EVENT_ON_DATA) {
-        return ESP_OK;
-    }
-
-    if (resp->len + evt->data_len + 1 > YR_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-
-    /* Keep this in PSRAM: mbedtls/esp_http_client already compete hard for
-     * scarce internal DRAM while streaming the response, and this buffer
-     * has no need to be internal. */
-    char *new_buf = heap_caps_realloc(resp->buf, resp->len + evt->data_len + 1, MALLOC_CAP_SPIRAM);
-    if (new_buf == NULL) {
-        ESP_LOGE(TAG, "Out of memory growing response buffer to %u bytes",
-                 (unsigned)(resp->len + evt->data_len + 1));
-        return ESP_FAIL;
-    }
-    resp->buf = new_buf;
-    memcpy(resp->buf + resp->len, evt->data, evt->data_len);
-    resp->len += evt->data_len;
-    resp->buf[resp->len] = '\0';
-
-    return ESP_OK;
-}
+/* Fetched with http_util's http_get_body, which sets no
+ * crt_bundle_attach/cacert: esp-tls then configures MBEDTLS_SSL_VERIFY_NONE
+ * (its documented behavior with no CA configured), skipping certificate
+ * verification. Chosen deliberately - the HARICA/GEANT chain behind
+ * api.met.no needs a 4096-bit RSA verify that doesn't reliably fit in this
+ * board's internal RAM once LVGL+FreeType+WiFi have their share, and this is
+ * a read-only fetch of public weather data, not a channel carrying secrets. */
 
 /* Precipitation/symbol are reported for a period following the instant
  * (next_1_hours, falling back to next_6_hours/next_12_hours when the
@@ -118,40 +71,13 @@ static void parse_period_fallback(cJSON *data, float *out_precip_mm, float *out_
     }
 }
 
-/* Seconds since the Unix epoch for an ISO8601 UTC timestamp
- * ("YYYY-MM-DDTHH:MM:SS...", trailing zone ignored); -1 if unparseable.
- *
- * timegm() isn't available in newlib on ESP-IDF and mktime() would apply the
- * local offset to fields that are already UTC, so the epoch is computed with
- * the days-from-civil algorithm (Howard Hinnant) - pure arithmetic, no
- * dependency on the system clock being set. */
-static int64_t iso_utc_to_epoch(const char *iso_utc)
-{
-    struct tm utc = { 0 };
-    if (iso_utc == NULL ||
-        sscanf(iso_utc, "%d-%d-%dT%d:%d:%d",
-               &utc.tm_year, &utc.tm_mon, &utc.tm_mday,
-               &utc.tm_hour, &utc.tm_min, &utc.tm_sec) != 6) {
-        return -1;
-    }
-
-    int y = utc.tm_year;
-    int m = utc.tm_mon;
-    y -= (m <= 2);
-    int era = (y >= 0 ? y : y - 399) / 400;
-    unsigned yoe = (unsigned)(y - era * 400);
-    unsigned doy = (153 * (unsigned)(m + (m > 2 ? -3 : 9)) + 2) / 5 + (unsigned)utc.tm_mday - 1;
-    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    long days = (long)era * 146097 + (long)doe - 719468;
-    return (int64_t)days * 86400 + utc.tm_hour * 3600 + utc.tm_min * 60 + utc.tm_sec;
-}
 
 /* Broken-down local time for an ISO8601 UTC timestamp, honouring the TZ the
  * app set (Europe/Oslo, so CET/CEST incl. DST). Returns false if unparseable. */
 static bool iso_utc_to_local(const char *iso_utc, struct tm *out_local)
 {
-    int64_t epoch = iso_utc_to_epoch(iso_utc);
-    if (epoch < 0) {
+    int64_t epoch = iso8601_to_epoch(iso_utc);
+    if (epoch <= 0) {
         return false;
     }
     time_t t = (time_t)epoch;
@@ -187,7 +113,7 @@ static void extract_hour_minute(const char *time_str, char *out, size_t out_len,
 
 static bool parse_forecast(const char *json, yr_forecast_t *out)
 {
-    ensure_cjson_psram_hooks();
+    json_use_psram();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
@@ -226,7 +152,7 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
         const char *time_str = cJSON_IsString(time) ? time->valuestring : NULL;
         extract_hour_minute(time_str, point->hour_minute, sizeof(point->hour_minute),
                              &point->is_first_of_day);
-        point->epoch_utc = iso_utc_to_epoch(time_str);
+        point->epoch_utc = iso8601_to_epoch(time_str);
 
         cJSON *data = cJSON_GetObjectItemCaseSensitive(entry, "data");
         cJSON *instant = cJSON_GetObjectItemCaseSensitive(data, "instant");
@@ -272,15 +198,7 @@ done:
     return ok;
 }
 
-/* GET url into a freshly heap_caps_malloc'd (PSRAM) NUL-terminated buffer;
- * caller frees *body on success. Returns ESP_OK only on HTTP 200 with a body.
- *
- * No crt_bundle_attach/cacert: esp-tls then configures MBEDTLS_SSL_VERIFY_NONE
- * (its documented behavior with no CA configured), skipping certificate
- * verification. Chosen deliberately - the HARICA/GEANT chain behind
- * api.met.no needs a 4096-bit RSA verify that doesn't reliably fit in this
- * board's internal RAM once LVGL+FreeType+WiFi have their share, and this is
- * a read-only fetch of public weather data, not a channel carrying secrets. */
+/* The User-Agent MET asks for: the app and a contact (see the setup page). */
 static char s_user_agent[96];
 
 void yr_client_set_contact_email(const char *email)
@@ -297,46 +215,6 @@ const char *yr_client_user_agent(void)
     return s_user_agent[0] ? s_user_agent : CONFIG_EXAMPLE_YR_USER_AGENT;
 }
 
-static esp_err_t yr_http_get(const char *url, char **body)
-{
-    *body = NULL;
-
-    yr_response_buf_t resp = { .buf = NULL, .len = 0 };
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event_handler,
-        .user_data = &resp,
-        .timeout_ms = YR_HTTP_TIMEOUT_MS,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) {
-        return ESP_FAIL;
-    }
-
-    esp_http_client_set_header(client, "User-Agent", yr_client_user_agent());
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-        free(resp.buf);
-        return err;
-    }
-    if (status != 200) {
-        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
-        free(resp.buf);
-        return ESP_FAIL;
-    }
-    if (resp.buf == NULL) {
-        return ESP_FAIL;
-    }
-
-    *body = resp.buf;
-    return ESP_OK;
-}
 
 esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
 {
@@ -352,7 +230,7 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = yr_http_get(url, &body);
+    esp_err_t err = http_get_body(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body, TAG);
     if (err != ESP_OK) {
         return err;
     }
@@ -364,7 +242,7 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
 
 static bool parse_nowcast(const char *json, yr_nowcast_t *out)
 {
-    ensure_cjson_psram_hooks();
+    json_use_psram();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse nowcast JSON");
@@ -405,7 +283,7 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
         const char *time_str = cJSON_IsString(time) ? time->valuestring : NULL;
         extract_hour_minute(time_str, point->hour_minute, sizeof(point->hour_minute),
                              &point->is_first_of_day);
-        point->epoch_utc = iso_utc_to_epoch(time_str);
+        point->epoch_utc = iso8601_to_epoch(time_str);
         if (point->epoch_utc < 0) {
             continue;
         }
@@ -474,7 +352,7 @@ esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = yr_http_get(url, &body);
+    esp_err_t err = http_get_body(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body, TAG);
     if (err != ESP_OK) {
         return err;
     }

@@ -12,12 +12,14 @@
 #include "esp_image_format.h"
 #include "esp_mac.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
+#include "mbedtls/base64.h"
 
 static const char *TAG = "wifi_provision";
 
@@ -29,13 +31,24 @@ static const char *TAG = "wifi_provision";
 #define BIT_CONNECTED  BIT0
 #define BIT_GAVE_UP    BIT1
 
+/* Reconnect after a drop: first after RECONNECT_FIRST_MS, doubling up to
+ * RECONNECT_MAX_MS (see wifi_event_handler). */
+#define RECONNECT_FIRST_MS      300
+#define RECONNECT_MAX_MS        10000
+
 static EventGroupHandle_t s_events;
+static esp_timer_handle_t s_reconnect_timer;
 static int s_retries;
 static bool s_stop_reconnect;
 static httpd_handle_t s_httpd;
 static wifi_provision_status_fn s_status;
 static char s_ap_ssid[24];
 static char s_sta_ip[16]; /* "" until the first IP_EVENT_STA_GOT_IP */
+/* The setup page's password ("" = none), and whether BOOT was held at
+ * power-on, which opens the page without it - the way back in when the
+ * password is forgotten. Set by wifi_provision_connect. */
+static char s_web_pass[APP_CONFIG_PASS_MAX];
+static bool s_auth_bypass;
 
 static void status(const char *msg)
 {
@@ -175,10 +188,15 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->wifi_ssid);
     p += snprintf(p, end - p, "\"><datalist id=nets></datalist>");
 
+    /* Saved secrets are never sent back in the page: a blank field keeps
+     * them (see save_form_into). */
     p += snprintf(p, end - p, "<label>WiFi password</label>"
-                  "<input name=pass type=password autocomplete=off value=\"");
-    p = html_escape_append(p, end, cfg->wifi_pass);
-    p += snprintf(p, end - p, "\"><small>Leave blank for an open network</small>");
+                  "<input name=pass type=password autocomplete=new-password placeholder=\"%s\">"
+                  "<small>%s</small>",
+                  cfg->wifi_pass[0] ? "Saved" : "",
+                  cfg->wifi_pass[0] ? "Leave blank to keep the saved one. A new network without "
+                                      "a password: leave it blank."
+                                    : "Leave blank for an open network");
 
     p += snprintf(p, end - p,
                   "<label>Theme</label><select name=theme>"
@@ -245,9 +263,24 @@ static char *build_page(const app_config_t *cfg)
                   "<label>Client ID</label><input name=aisid autocomplete=off value=\"");
     p = html_escape_append(p, end, cfg->ais_client_id);
     p += snprintf(p, end - p, "\"><label>Client secret</label>"
-                  "<input name=aissec type=password autocomplete=off value=\"");
-    p = html_escape_append(p, end, cfg->ais_client_secret);
-    p += snprintf(p, end - p, "\"></fieldset>");
+                  "<input name=aissec type=password autocomplete=new-password placeholder=\"%s\">"
+                  "%s</fieldset>",
+                  cfg->ais_client_secret[0] ? "Saved" : "",
+                  cfg->ais_client_secret[0] ? "<small>Leave blank to keep the saved one.</small>" : "");
+
+    p += snprintf(p, end - p,
+                  "<fieldset><legend>Setup page password</legend>"
+                  "<small>Optional. When set, this page asks for it (any user name will do). It "
+                  "travels unencrypted over the WiFi, so don't reuse an important one. Forgot it? "
+                  "Hold BOOT while powering on to open the setup network without it.</small>"
+                  "<label>New password</label>"
+                  "<input name=webpass type=password autocomplete=new-password placeholder=\"%s\">",
+                  cfg->web_pass[0] ? "Saved - leave blank to keep" : "None");
+    if (cfg->web_pass[0]) {
+        p += snprintf(p, end - p, "<div class=chk><label><input type=checkbox name=webpassoff>"
+                                  "Remove the password</label></div>");
+    }
+    p += snprintf(p, end - p, "</fieldset>");
 
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more "
@@ -356,8 +389,57 @@ static char *build_page(const app_config_t *cfg)
  * HTTP handlers
  * ------------------------------------------------------------------------ */
 
+/* Equal strings, compared in a time that doesn't depend on where they
+ * differ. */
+static bool secret_equal(const char *a, const char *b)
+{
+    const size_t n = strlen(b);
+    if (strlen(a) != n) {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (size_t i = 0; i < n; i++) {
+        diff |= (unsigned char)a[i] ^ (unsigned char)b[i];
+    }
+    return diff == 0;
+}
+
+/* Every page and request checks this first: HTTP Basic authentication with
+ * the setup password and any user name, unless none is set. When refused,
+ * the 401 that makes the browser ask has been sent. */
+static bool authorized(httpd_req_t *req)
+{
+    if (s_web_pass[0] == '\0' || s_auth_bypass) {
+        return true;
+    }
+    char hdr[192];
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
+        unsigned char dec[144];
+        size_t n = 0;
+        if (strncasecmp(hdr, "Basic ", 6) == 0 &&
+            mbedtls_base64_decode(dec, sizeof(dec) - 1, &n, (const unsigned char *)hdr + 6, strlen(hdr + 6)) == 0) {
+            dec[n] = '\0';
+            const char *colon = strchr((const char *)dec, ':');
+            if (colon != NULL && secret_equal(colon + 1, s_web_pass)) {
+                return true;
+            }
+        }
+        ESP_LOGW(TAG, "Wrong setup page password");
+        vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
+    }
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"MultiDisplay\", charset=\"UTF-8\"");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, "<meta charset=utf-8><p>This setup page has a password. Forgot it? Hold BOOT "
+                            "while powering on the display to open the setup network without it.");
+    return false;
+}
+
 static esp_err_t h_root(httpd_req_t *req)
 {
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
     app_config_t *cfg = malloc(sizeof(*cfg));
     if (cfg == NULL) {
         return httpd_resp_send_500(req);
@@ -376,6 +458,9 @@ static esp_err_t h_root(httpd_req_t *req)
 
 static esp_err_t h_scan(httpd_req_t *req)
 {
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
     wifi_scan_config_t sc = { .show_hidden = false };
     httpd_resp_set_type(req, "application/json");
 
@@ -429,6 +514,9 @@ static esp_err_t save_form(httpd_req_t *req, const char *body);
 
 static esp_err_t h_save(httpd_req_t *req)
 {
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
     char *body = malloc(SAVE_BODY_MAX);
     if (body == NULL) {
         return httpd_resp_send_500(req);
@@ -466,6 +554,9 @@ static esp_err_t ota_fail(httpd_req_t *req, const char *http_status, const char 
 
 static esp_err_t h_ota(httpd_req_t *req)
 {
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
     const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
     if (part == NULL) {
         return ota_fail(req, "500 Internal Server Error", "No slot to update into (flash the OTA partition table by USB first)");
@@ -561,8 +652,23 @@ static int parse_hhmm(const char *s)
 static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t *cfg)
 {
     app_config_load(cfg); /* keep the WiFi fields at their current value if omitted */
+    /* A blank password keeps the saved one - the page never shows it - unless
+     * the network changed: then blank means an open network. */
+    char old_ssid[sizeof(cfg->wifi_ssid)];
+    snprintf(old_ssid, sizeof(old_ssid), "%s", cfg->wifi_ssid);
     form_field(body, "ssid", cfg->wifi_ssid, sizeof(cfg->wifi_ssid));
-    form_field(body, "pass", cfg->wifi_pass, sizeof(cfg->wifi_pass));
+    char pass[sizeof(cfg->wifi_pass)];
+    if (form_field(body, "pass", pass, sizeof(pass)) &&
+        (pass[0] != '\0' || strcmp(old_ssid, cfg->wifi_ssid) != 0)) {
+        snprintf(cfg->wifi_pass, sizeof(cfg->wifi_pass), "%s", pass);
+    }
+    /* The setup page's own password: blank keeps it, the checkbox removes it. */
+    char val[4];
+    if (form_field(body, "webpassoff", val, sizeof(val))) {
+        cfg->web_pass[0] = '\0';
+    } else if (form_field(body, "webpass", pass, sizeof(pass)) && pass[0] != '\0') {
+        snprintf(cfg->web_pass, sizeof(cfg->web_pass), "%s", pass);
+    }
     char theme[4];
     if (form_field(body, "theme", theme, sizeof(theme))) {
         cfg->theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
@@ -609,8 +715,14 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
     }
+    /* Likewise a blank secret keeps the saved one, unless the ID is gone. */
     form_field(body, "aisid", cfg->ais_client_id, sizeof(cfg->ais_client_id));
-    form_field(body, "aissec", cfg->ais_client_secret, sizeof(cfg->ais_client_secret));
+    char secret[sizeof(cfg->ais_client_secret)];
+    if (form_field(body, "aissec", secret, sizeof(secret)) && secret[0] != '\0') {
+        snprintf(cfg->ais_client_secret, sizeof(cfg->ais_client_secret), "%s", secret);
+    } else if (cfg->ais_client_id[0] == '\0') {
+        cfg->ais_client_secret[0] = '\0';
+    }
     if (form_field(body, "yremail", cfg->yr_email, sizeof(cfg->yr_email)) &&
         !app_config_email_valid(cfg->yr_email)) {
         cfg->yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
@@ -788,6 +900,9 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
 /* The departure picker script (components/setup_departures.js, embedded). */
 static esp_err_t h_dep_js(httpd_req_t *req)
 {
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
     extern const char dep_js_start[] asm("_binary_setup_departures_js_start");
     httpd_resp_set_type(req, "text/javascript");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -826,6 +941,16 @@ static void start_web_server(void)
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
 }
 
+/* An added handler, behind the same password as the setup page. */
+static esp_err_t h_added(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    esp_err_t (*handler)(httpd_req_t *) = req->user_ctx;
+    return handler(req);
+}
+
 esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
 {
     if (s_httpd == NULL) {
@@ -833,8 +958,8 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
     }
     /* Wildcard URIs match in registration order: move the catch-all last. */
     httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
-    esp_err_t err = httpd_register_uri_handler(s_httpd,
-                                               &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = handler });
+    esp_err_t err = httpd_register_uri_handler(
+        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
     return err;
 }
@@ -897,6 +1022,14 @@ static void dns_task(void *arg)
  * WiFi
  * ------------------------------------------------------------------------ */
 
+static void reconnect_timer_cb(void *arg)
+{
+    (void)arg;
+    if (!s_stop_reconnect) {
+        esp_wifi_connect();
+    }
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
@@ -907,14 +1040,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
             s_retries++;
             ESP_LOGW(TAG, "WiFi disconnected (reason %d), retrying (attempt %d)...",
                      e ? e->reason : -1, s_retries);
-            /* A short backoff before hammering esp_wifi_connect() again - most
-             * useful right after power-on, when the AP itself may still be
-             * booting (e.g. after a power outage) and every immediate retry
-             * fails the same way for seconds at a time. Also keeps a fast
-             * retry storm from adding to the DRAM pressure already tight at
-             * boot (see the buffer_height comment in main.c). */
-            vTaskDelay(pdMS_TO_TICKS(300));
-            esp_wifi_connect();
+            /* Back off before trying again - most useful right after
+             * power-on, when the AP itself may still be booting (e.g. after a
+             * power outage) and every immediate retry fails the same way for
+             * seconds at a time; also keeps a fast retry storm from adding to
+             * the DRAM pressure already tight at boot. From a timer, not a
+             * sleep here, which would hold up the shared event loop. */
+            int shift = s_retries < 6 ? s_retries - 1 : 5;
+            uint64_t delay_ms = (uint64_t)RECONNECT_FIRST_MS << shift;
+            if (delay_ms > RECONNECT_MAX_MS) {
+                delay_ms = RECONNECT_MAX_MS;
+            }
+            esp_timer_stop(s_reconnect_timer);
+            esp_timer_start_once(s_reconnect_timer, delay_ms * 1000);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
@@ -946,6 +1084,8 @@ static bool boot_button_held(void)
 static void net_common_init(void)
 {
     s_events = xEventGroupCreate();
+    const esp_timer_create_args_t rt = { .callback = reconnect_timer_cb, .name = "wifi_reconnect" };
+    ESP_ERROR_CHECK(esp_timer_create(&rt, &s_reconnect_timer));
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -1060,6 +1200,8 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
     net_common_init();
 
     bool force_portal = boot_button_held();
+    snprintf(s_web_pass, sizeof(s_web_pass), "%s", cfg->web_pass);
+    s_auth_bypass = force_portal;
     if (force_portal) {
         ESP_LOGW(TAG, "BOOT held - forcing setup portal");
     }

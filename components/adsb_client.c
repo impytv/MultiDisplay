@@ -10,6 +10,8 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 
+#include "http_util.h"
+
 static const char *TAG = "adsb_client";
 
 #define ADSB_HTTP_TIMEOUT_MS  10000
@@ -17,13 +19,7 @@ static const char *TAG = "adsb_client";
 /* ~500 bytes per aircraft; even a busy 185 km circle stays well inside this. */
 #define ADSB_MAX_RESPONSE_LEN (384 * 1024)
 
-typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-} resp_buf_t;
-
-static resp_buf_t s_resp;
+static http_buf_t s_resp = { .max = ADSB_MAX_RESPONSE_LEN };
 static esp_http_client_handle_t s_client;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -31,29 +27,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
-    if (s_resp.len + evt->data_len + 1 > ADSB_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-    if (s_resp.len + evt->data_len + 1 > s_resp.cap) {
-        size_t new_cap = s_resp.cap ? s_resp.cap * 2 : 16 * 1024;
-        while (new_cap < s_resp.len + evt->data_len + 1) {
-            new_cap *= 2;
-        }
-        /* PSRAM: same reasoning as yr_client - TLS already fights for
-         * internal DRAM while the body streams in. */
-        char *nb = heap_caps_realloc(s_resp.buf, new_cap, MALLOC_CAP_SPIRAM);
-        if (nb == NULL) {
-            ESP_LOGE(TAG, "Out of memory growing response buffer to %u", (unsigned)new_cap);
-            return ESP_FAIL;
-        }
-        s_resp.buf = nb;
-        s_resp.cap = new_cap;
-    }
-    memcpy(s_resp.buf + s_resp.len, evt->data, evt->data_len);
-    s_resp.len += evt->data_len;
-    s_resp.buf[s_resp.len] = '\0';
-    return ESP_OK;
+    return http_buf_append(&s_resp, evt->data, evt->data_len, TAG);
 }
 
 void adsb_client_close(void)
@@ -62,8 +36,7 @@ void adsb_client_close(void)
         esp_http_client_cleanup(s_client);
         s_client = NULL;
     }
-    free(s_resp.buf);
-    s_resp = (resp_buf_t){ 0 };
+    http_buf_free(&s_resp);
 }
 
 /* --------------------------------------------------------------------------
@@ -327,10 +300,7 @@ esp_err_t adsb_client_fetch(double lat, double lon, float radius_km, adsb_result
     snprintf(url, sizeof(url), "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%.1f",
              lat, lon, (double)(radius_km / KM_PER_NM));
 
-    s_resp.len = 0; /* keep the buffer (PSRAM) for reuse between polls */
-    if (s_resp.buf != NULL) {
-        s_resp.buf[0] = '\0';
-    }
+    http_buf_reset(&s_resp);
 
     if (s_client == NULL) {
         /* No cert/CA configured -> esp-tls skips verification, as yr_client

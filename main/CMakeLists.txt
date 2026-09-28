@@ -1,6 +1,12 @@
 idf_component_register(
     SRCS
         "main.c"
+        "weather.c"
+        "radar.c"
+        "departures.c"
+        "draw.c"
+        "screenshot.c"
+        "watchdog.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/wifi_provision.c"
@@ -10,6 +16,7 @@ idf_component_register(
         "../components/met_alerts_client.c"
         "../components/rain_client.c"
         "../components/entur_client.c"
+        "../components/http_util.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -30,6 +37,7 @@ idf_component_register(
         app_update
         bootloader_support
         esp_app_format
+        mbedtls
         esp_partition
         esp_driver_gpio
         lwip

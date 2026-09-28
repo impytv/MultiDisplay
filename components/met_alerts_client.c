@@ -11,110 +11,12 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 
+#include "http_util.h"
+
 static const char *TAG = "met_alerts_client";
 
 #define MET_ALERTS_HTTP_TIMEOUT_MS  15000
 #define MET_ALERTS_MAX_RESPONSE_LEN (128 * 1024) /* safety cap against a runaway server */
-
-/* cJSON's default allocator is plain malloc(), which ESP-IDF only routes to
- * PSRAM for allocations >= 1 KB (CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL) - an
- * alert's polygon geometry can run to hundreds of coordinate pairs, each a
- * small cJSON node well under that, so this can burn through internal DRAM
- * while parsed even though the properties we actually keep are tiny. Routing
- * cJSON straight to heap_caps_malloc(..., MALLOC_CAP_SPIRAM) sidesteps that
- * size threshold (see yr_client.c, which hit this for real with the larger
- * "complete" forecast product). Global to the cJSON library, hence the guard. */
-static void *cjson_psram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM); }
-static void cjson_psram_free(void *ptr) { heap_caps_free(ptr); }
-
-static void ensure_cjson_psram_hooks(void)
-{
-    static bool done = false;
-    if (done) {
-        return;
-    }
-    done = true;
-    cJSON_Hooks hooks = { .malloc_fn = cjson_psram_malloc, .free_fn = cjson_psram_free };
-    cJSON_InitHooks(&hooks);
-}
-
-typedef struct {
-    char *buf;
-    size_t len;
-} met_alerts_response_buf_t;
-
-static esp_err_t http_event_handler(esp_http_client_event_t *evt)
-{
-    met_alerts_response_buf_t *resp = (met_alerts_response_buf_t *)evt->user_data;
-
-    if (evt->event_id != HTTP_EVENT_ON_DATA) {
-        return ESP_OK;
-    }
-
-    if (resp->len + evt->data_len + 1 > MET_ALERTS_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-
-    /* PSRAM: this is a short-lived fetch buffer, no reason to compete with
-     * mbedtls/esp_http_client for scarce internal DRAM (see yr_client.c). */
-    char *new_buf = heap_caps_realloc(resp->buf, resp->len + evt->data_len + 1, MALLOC_CAP_SPIRAM);
-    if (new_buf == NULL) {
-        ESP_LOGE(TAG, "Out of memory growing response buffer to %u bytes",
-                 (unsigned)(resp->len + evt->data_len + 1));
-        return ESP_FAIL;
-    }
-    resp->buf = new_buf;
-    memcpy(resp->buf + resp->len, evt->data, evt->data_len);
-    resp->len += evt->data_len;
-    resp->buf[resp->len] = '\0';
-
-    return ESP_OK;
-}
-
-/* GET url into a freshly heap_caps_malloc'd (PSRAM) NUL-terminated buffer;
- * caller frees *body on success. Returns ESP_OK only on HTTP 200 with a body.
- * No crt_bundle_attach/cacert - see yr_client.c's yr_http_get for why. */
-static esp_err_t met_alerts_http_get(const char *url, char **body)
-{
-    *body = NULL;
-
-    met_alerts_response_buf_t resp = { .buf = NULL, .len = 0 };
-    esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = http_event_handler,
-        .user_data = &resp,
-        .timeout_ms = MET_ALERTS_HTTP_TIMEOUT_MS,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) {
-        return ESP_FAIL;
-    }
-
-    esp_http_client_set_header(client, "User-Agent", yr_client_user_agent());
-
-    esp_err_t err = esp_http_client_perform(client);
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
-        free(resp.buf);
-        return err;
-    }
-    if (status != 200) {
-        ESP_LOGE(TAG, "Unexpected HTTP status %d", status);
-        free(resp.buf);
-        return ESP_FAIL;
-    }
-    if (resp.buf == NULL) {
-        return ESP_FAIL;
-    }
-
-    *body = resp.buf;
-    return ESP_OK;
-}
 
 static met_alert_color_t parse_color(const char *s)
 {
@@ -134,7 +36,7 @@ static met_alert_color_t parse_color(const char *s)
  * now, not an error. */
 static bool parse_alerts(const char *json, met_alerts_t *out)
 {
-    ensure_cjson_psram_hooks();
+    json_use_psram();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
@@ -199,7 +101,8 @@ esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = met_alerts_http_get(url, &body);
+    esp_err_t err = http_get_body(url, yr_client_user_agent(), MET_ALERTS_HTTP_TIMEOUT_MS, MET_ALERTS_MAX_RESPONSE_LEN, &body,
+                                  TAG);
     if (err != ESP_OK) {
         return err;
     }

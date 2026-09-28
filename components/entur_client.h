@@ -11,10 +11,13 @@
  * Which stops and lines to show is one line of text (app_config_t.departures):
  * stops separated by ';', each a stop place ID, optionally followed by '='
  * and a comma-separated list of line IDs. A line ID may end in "/in" or
- * "/out" to keep only that direction. A bare number is short for
- * NSR:StopPlace:<number>, and a stop without lines shows every line, e.g.
+ * "/out" to keep only that direction, or - for lines without one, such as
+ * Vy's trains - in "/v<stop>[+<stop>...]" to keep the departures that call
+ * at one of those stop places (NSR:StopPlace:<stop>) later on. A bare number
+ * is short for NSR:StopPlace:<number>, and a stop without lines shows every
+ * line, e.g.
  *
- *     58366=RUT:Line:31/out,RUT:Line:25;6505
+ *     58366=RUT:Line:31/out,RUT:Line:25;6505;58858=VYG:Line:R31/v502
  *
  * The setup page's departure picker (setup_departures.js) writes it. */
 
@@ -24,12 +27,16 @@
 #define ENTUR_MAX_GROUPS     24  /* line + direction rows over all stops */
 #define ENTUR_PER_GROUP      2   /* departures kept per row */
 
+#define ENTUR_MAX_VIA        3   /* stops naming a "/v" direction */
+
 #define ENTUR_DIR_IN  0x01
 #define ENTUR_DIR_OUT 0x02
 
 typedef struct {
     char id[ENTUR_ID_MAX];
-    uint8_t dirs; /* ENTUR_DIR_* mask; 0 = both */
+    uint8_t dirs;      /* ENTUR_DIR_* mask; 0 = both */
+    uint8_t via_count; /* > 0: only departures calling at one of via[] later */
+    uint32_t via[ENTUR_MAX_VIA]; /* NSR:StopPlace numbers */
 } entur_line_sel_t;
 
 typedef struct {

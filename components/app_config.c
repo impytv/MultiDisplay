@@ -199,6 +199,7 @@ esp_err_t app_config_load(app_config_t *out)
     load_str(h, "aisid", out->ais_client_id, sizeof(out->ais_client_id));
     load_str(h, "aissec", out->ais_client_secret, sizeof(out->ais_client_secret));
     load_str(h, "yremail", out->yr_email, sizeof(out->yr_email));
+    load_str(h, "webpass", out->web_pass, sizeof(out->web_pass));
     if (!app_config_email_valid(out->yr_email)) {
         out->yr_email[0] = '\0';
     }
@@ -214,13 +215,13 @@ esp_err_t app_config_load(app_config_t *out)
     sanitize_view_settings(out);
 
     ESP_LOGI(TAG, "loaded: ssid='%s', %u location(s), first='%s' (%s, %s), %s theme, "
-             "fonts %u px%s / %u px%s, BarentsWatch credentials %s, yr contact '%s'",
+             "fonts %u px%s / %u px%s, BarentsWatch credentials %s, yr contact '%s', setup password %s",
              out->wifi_ssid, out->location_count, out->locations[0].name,
              out->locations[0].lat, out->locations[0].lon,
              out->theme == APP_THEME_DARK ? "dark" : "light",
              out->title_px, out->title_bold ? " bold" : "", out->text_px, out->text_bold ? " bold" : "",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
-             out->yr_email);
+             out->yr_email, out->web_pass[0] ? "set" : "none");
     ESP_LOGI(TAG, "auto rotation: after %u min idle, %u s per screen, overview %s",
              out->auto_idle_min, out->auto_dwell_s, out->auto_overview ? "included" : "not included");
     for (int i = 0; i < out->location_count; i++) {
@@ -273,6 +274,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
+    if (err == ESP_OK) err = nvs_set_str(h, "webpass", cfg->web_pass);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimstart", cfg->dim_start);

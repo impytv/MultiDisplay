@@ -12,6 +12,8 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+
+#include "http_util.h"
 #include "png.h"
 
 static const char *TAG = "rain_client";
@@ -123,8 +125,7 @@ static uint8_t rain_level(int r, int g, int b)
 }
 
 typedef struct {
-    uint8_t *buf;
-    size_t len, cap;
+    http_buf_t body;
     time_t time;
 } rain_resp_t;
 
@@ -152,30 +153,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
-    if (resp->len + evt->data_len > RAIN_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-    if (resp->len + evt->data_len > resp->cap) {
-        /* Doubling, not a chunk at a time: fewer copies, and PSRAM left in
-         * big pieces rather than chopped up. */
-        size_t cap = resp->cap ? resp->cap * 2 : 64 * 1024;
-        while (cap < resp->len + evt->data_len) {
-            cap *= 2;
-        }
-        uint8_t *nb = heap_caps_realloc(resp->buf, cap, MALLOC_CAP_SPIRAM);
-        if (nb == NULL) {
-            ESP_LOGE(TAG, "Out of memory growing response buffer to %u (PSRAM free %u, largest %u)",
-                     (unsigned)cap, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
-                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
-            return ESP_FAIL;
-        }
-        resp->buf = nb;
-        resp->cap = cap;
-    }
-    memcpy(resp->buf + resp->len, evt->data, evt->data_len);
-    resp->len += evt->data_len;
-    return ESP_OK;
+    return http_buf_append(&resp->body, evt->data, evt->data_len, TAG);
 }
 
 typedef struct {
@@ -292,7 +270,7 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
                  t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
     }
 
-    s_resp = (rain_resp_t){ 0 };
+    s_resp = (rain_resp_t){ .body = { .max = RAIN_MAX_RESPONSE_LEN } };
     if (s_client == NULL) {
         esp_http_client_config_t config = {
             .url = url,
@@ -314,21 +292,21 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
     int status = esp_http_client_get_status_code(s_client);
     rain_resp_t resp = s_resp;
     s_resp = (rain_resp_t){ 0 };
-    if (err != ESP_OK || status != 200 || resp.buf == NULL) {
+    if (err != ESP_OK || status != 200 || resp.body.buf == NULL) {
         ESP_LOGE(TAG, "%s: HTTP %s, status %d", area->name, esp_err_to_name(err), status);
-        heap_caps_free(resp.buf);
+        http_buf_free(&resp.body);
         if (err != ESP_OK || status != 404) {
             rain_client_close(); /* may be half-dead: start clean next time */
         }
         return err != ESP_OK ? err : (status == 404 ? ESP_ERR_NOT_FOUND : ESP_FAIL);
     }
 
-    err = decode_levels(area, crop, resp.buf, resp.len, level);
-    heap_caps_free(resp.buf);
+    err = decode_levels(area, crop, (const uint8_t *)resp.body.buf, resp.body.len, level);
+    http_buf_free(&resp.body); /* not kept: PSRAM is short with the frames held */
     if (err != ESP_OK) {
         return err;
     }
     *taken = resp.time ? resp.time : when;
-    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.len, (long long)*taken);
+    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.body.len, (long long)*taken);
     return ESP_OK;
 }

@@ -44,6 +44,8 @@ After the first USB flash, new firmware can go over WiFi. Upload
 
 ```bash
 curl --data-binary @build/multi_display.bin http://DEVICE-IP/ota
+# with a setup page password:
+curl -u x:PASSWORD --data-binary @build/multi_display.bin http://DEVICE-IP/ota
 ```
 
 The display restarts on the new firmware. If that firmware doesn't get
@@ -198,19 +200,23 @@ The stops and lines go in the location's **Departures (stops and lines)**
 field as one line of text:
 
 ```
-58366=RUT:Line:31/out,RUT:Line:25;6505
+58366=RUT:Line:31/out,RUT:Line:25;6505;58858=VYG:Line:R31/v502
 ```
 
 Stops are separated by `;`. Each is a stop place ID (a bare number means
 `NSR:StopPlace:<number>`), optionally followed by `=` and the line IDs to
 show, comma-separated; a line ID ending in `/in` or `/out` shows only that
-direction, and a stop without lines shows all of them. At most 4 stops and 8
-lines per stop.
+direction, and a stop without lines shows all of them. Trains (Vy) have no
+in/out direction in Entur's data, so their direction is `/v<stop>`: only the
+departures that call at that stop place later on (`/v502`, Hakadal, keeps
+the northbound trains at Nittedal; `+` joins more than one). At most 4 stops
+and 8 lines per stop.
 
 You rarely need to write it by hand: below the field the setup page has a
 departure picker (`components/setup_departures.js`, served as `/dep.js`). Search for a stop (nearest the location's coordinates
 first), tick lines (none = all) and, for a line, a direction (none = both);
-the field fills in as you go. The picker calls Entur from the browser, so it
+the field fills in as you go. For trains the picker works out the directions
+from the order of the stops and names them by where the trains go. The picker calls Entur from the browser, so it
 needs internet and doesn't work on the device's own setup WiFi.
 
 ### Setup portal (WiFi + locations)
@@ -233,8 +239,15 @@ network, and restarts normally once it's back:
    skip it. Press **Save** — the device reboots and connects.
 
 Once connected, the same page is reachable at the device's IP on your LAN
-(shown in the router's client list, or the serial log: `Got IP: …`) for
-later edits.
+(shown on the overview screen, in the router's client list, or the serial
+log: `Got IP: …`) for later edits.
+
+The page can have a password (**Setup page password**; none by default).
+The browser then asks for it, with any user name; it covers the page, the
+screenshot and firmware updates (`curl -u x:PASSWORD …`). It travels
+unencrypted, so don't reuse an important one. Holding BOOT while powering on
+opens the setup network without it. Saved passwords and secrets are never
+shown in the page: leave a field blank to keep what's saved.
 
 ### Build-time seed defaults
 

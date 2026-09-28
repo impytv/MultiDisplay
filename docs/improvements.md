@@ -93,12 +93,23 @@ planned order is 1, then 2 + 6, then 3, 7 and 10.
   *Done: `ota_0`/`ota_1` (fonts and coast kept their offsets), upload on the
   setup page or `POST /ota`, only this project's images accepted, rollback
   unless the new firmware completes a full pass of the weather task.*
-- [ ] **11. `main.c` is 4,500 lines.** Split per screen (weather, radar,
+- [x] **11. `main.c` is 4,500 lines.** Split per screen (weather, radar,
   rain/coast, departures). The six API clients duplicate the cJSON hooks,
   response buffer and time parsing (`yr_client.c` has its own
-  days-from-civil beside `civil_time.h`, and reallocs per chunk).
-- [ ] **12. Setup page security.** No authentication, and it echoes the WiFi
+  days-from-civil beside `civil_time.h`, and reallocs per chunk). *Done:
+  `main/` has `main.c` (start-up, screen cycle, fetch loop), `weather.c`,
+  `radar.c`, `departures.c`, `draw.c`, `screenshot.c` and `watchdog.c`, with
+  `app.h` for what they share; `components/http_util.c` has the response
+  buffer, the one-shot GET, cJSON in PSRAM and ISO 8601 parsing for all six
+  clients.*
+- [x] **12. Setup page security.** No authentication, and it echoes the WiFi
   password and BarentsWatch secret into the HTML for anyone on the LAN.
-- [ ] **13. Minor.** The WiFi disconnect handler blocks the default event loop
+  *Done: an optional password (HTTP Basic, any user name) on every page,
+  the screenshot and OTA; BOOT at power-on bypasses it. Secrets are no
+  longer sent in the page - a blank field keeps the saved one.*
+- [x] **13. Minor.** The WiFi disconnect handler blocks the default event loop
   with `vTaskDelay`; every tap writes the current view to NVS; Entur retries a
-  request that timed out (30 s total).
+  request that timed out (30 s total). *Done: reconnects from a timer with
+  backoff (0.3 s doubling to 10 s); the last view is saved once shown for
+  10 s; Entur and BarentsWatch retry only a quick failure on a reused
+  connection (`http_retry_worthwhile`).*

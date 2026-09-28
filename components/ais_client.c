@@ -5,12 +5,14 @@
 #include <time.h>
 
 #include "ais_client.h"
-#include "civil_time.h"
 
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+
+#include "http_util.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -28,13 +30,7 @@ static const char *TAG = "ais_client";
  * few minutes). */
 #define AIS_SINCE_S           (15 * 60)
 
-typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-} resp_buf_t;
-
-static resp_buf_t s_resp;
+static http_buf_t s_resp = { .max = AIS_MAX_RESPONSE_LEN };
 static esp_http_client_handle_t s_client;
 static char *s_token;           /* PSRAM; "" when none */
 static TickType_t s_token_expiry;
@@ -44,35 +40,12 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
-    if (s_resp.len + evt->data_len + 1 > AIS_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-    if (s_resp.len + evt->data_len + 1 > s_resp.cap) {
-        size_t new_cap = s_resp.cap ? s_resp.cap * 2 : 16 * 1024;
-        while (new_cap < s_resp.len + evt->data_len + 1) {
-            new_cap *= 2;
-        }
-        char *nb = heap_caps_realloc(s_resp.buf, new_cap, MALLOC_CAP_SPIRAM);
-        if (nb == NULL) {
-            ESP_LOGE(TAG, "Out of memory growing response buffer to %u", (unsigned)new_cap);
-            return ESP_FAIL;
-        }
-        s_resp.buf = nb;
-        s_resp.cap = new_cap;
-    }
-    memcpy(s_resp.buf + s_resp.len, evt->data, evt->data_len);
-    s_resp.len += evt->data_len;
-    s_resp.buf[s_resp.len] = '\0';
-    return ESP_OK;
+    return http_buf_append(&s_resp, evt->data, evt->data_len, TAG);
 }
 
 static void resp_reset(void)
 {
-    s_resp.len = 0;
-    if (s_resp.buf != NULL) {
-        s_resp.buf[0] = '\0';
-    }
+    http_buf_reset(&s_resp);
 }
 
 void ais_client_close(void)
@@ -81,8 +54,7 @@ void ais_client_close(void)
         esp_http_client_cleanup(s_client);
         s_client = NULL;
     }
-    free(s_resp.buf);
-    s_resp = (resp_buf_t){ 0 };
+    http_buf_free(&s_resp);
 }
 
 const char *ais_category_label(uint8_t category)
@@ -186,7 +158,7 @@ static bool is_number_start(char c)
     return c == '-' || c == '+' || c == '.' || (c >= '0' && c <= '9');
 }
 
-/* "2024-05-01T12:34:56[.fff][Z|+hh:mm]" -> epoch seconds, or 0. */
+/* The ISO 8601 time in s[0..n) -> epoch seconds, or 0. */
 static time_t parse_iso8601(const char *s, size_t n)
 {
     char tmp[40];
@@ -195,21 +167,7 @@ static time_t parse_iso8601(const char *s, size_t n)
     }
     memcpy(tmp, s, n);
     tmp[n] = '\0';
-    int y, mo, d, h, mi, se;
-    if (sscanf(tmp, "%d-%d-%dT%d:%d:%d", &y, &mo, &d, &h, &mi, &se) != 6) {
-        return 0;
-    }
-    int64_t t = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
-    const char *tz = tmp + 19;
-    while (*tz == '.' || (*tz >= '0' && *tz <= '9')) {
-        tz++;
-    }
-    int oh, om;
-    if ((*tz == '+' || *tz == '-') && sscanf(tz + 1, "%d:%d", &oh, &om) == 2) {
-        int off = oh * 3600 + om * 60;
-        t -= (*tz == '+') ? off : -off;
-    }
-    return (time_t)t;
+    return (time_t)iso8601_to_epoch(tmp);
 }
 
 typedef struct {
@@ -526,10 +484,12 @@ static bool token_valid(void)
  * Latest positions
  * ------------------------------------------------------------------------ */
 
-/* One POST of the area query; returns the HTTP status, or -1 on transport error. */
-static int post_latest(const char *body, int body_len)
+/* One POST of the area query; returns the HTTP status, or -1 on transport error.
+ * `*reused` says whether it went over a kept-alive connection. */
+static int post_latest(const char *body, int body_len, bool *reused)
 {
     resp_reset();
+    *reused = (s_client != NULL);
     if (s_client == NULL) {
         esp_http_client_config_t cfg = {
             .url = AIS_LATEST_URL,
@@ -606,13 +566,15 @@ esp_err_t ais_client_fetch(const char *client_id, const char *client_secret,
                 return err == ESP_ERR_INVALID_STATE ? err : ESP_FAIL;
             }
         }
-        status = post_latest(body, body_len);
+        bool reused;
+        const int64_t started = esp_timer_get_time();
+        status = post_latest(body, body_len, &reused);
         if (status == 401 || status == 403) {
             s_token[0] = '\0'; /* expired or revoked early: get a new one */
             continue;
         }
-        if (status == -1 && attempt == 0) {
-            continue; /* kept-alive connection dropped by the server: reconnect once */
+        if (status == -1 && attempt == 0 && http_retry_worthwhile(reused, started)) {
+            continue; /* kept-alive connection dropped by the server */
         }
         break;
     }

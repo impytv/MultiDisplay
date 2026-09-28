@@ -141,6 +141,8 @@ typedef struct {
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
     /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */
     char yr_email[APP_CONFIG_EMAIL_MAX];
+    /* The setup page's password; empty = none (see wifi_provision.c). */
+    char web_pass[APP_CONFIG_PASS_MAX];
 } app_config_t;
 
 /**

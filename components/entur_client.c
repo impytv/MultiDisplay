@@ -5,13 +5,15 @@
 #include <strings.h>
 
 #include "entur_client.h"
-#include "civil_time.h"
 
 #include "cJSON.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+
+#include "http_util.h"
 
 static const char *TAG = "entur_client";
 
@@ -24,21 +26,6 @@ static const char *TAG = "entur_client";
 /* ~450 bytes per call; at most ENTUR_MAX_STOPS * ENTUR_MAX_CALLS calls. */
 #define ENTUR_MAX_RESPONSE_LEN (512 * 1024)
 
-/* cJSON in PSRAM - the response is hundreds of small nodes (see
- * met_alerts_client.c). Global to the cJSON library, hence the guard. */
-static void *cjson_psram_malloc(size_t sz) { return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM); }
-static void cjson_psram_free(void *ptr) { heap_caps_free(ptr); }
-
-static void ensure_cjson_psram_hooks(void)
-{
-    static bool done = false;
-    if (done) {
-        return;
-    }
-    done = true;
-    cJSON_Hooks hooks = { .malloc_fn = cjson_psram_malloc, .free_fn = cjson_psram_free };
-    cJSON_InitHooks(&hooks);
-}
 
 /* --------------------------------------------------------------------------
  * Selection text
@@ -77,6 +64,36 @@ static const char *find_in(const char *s, const char *e, char c)
     return p ? p : e;
 }
 
+/* The direction after a line ID's '/': "in", "out", or "v<stop>[+<stop>]". */
+static void parse_direction(const char *s, const char *e, entur_line_sel_t *line)
+{
+    while (s < e && isspace((unsigned char)*s)) s++;
+    while (e > s && isspace((unsigned char)e[-1])) e--;
+    char dir[48];
+    size_t n = (size_t)(e - s);
+    if (n == 0 || n >= sizeof(dir)) {
+        return;
+    }
+    memcpy(dir, s, n);
+    dir[n] = '\0';
+    if (strcasecmp(dir, "in") == 0 || strcasecmp(dir, "inbound") == 0) {
+        line->dirs = ENTUR_DIR_IN;
+    } else if (strcasecmp(dir, "out") == 0 || strcasecmp(dir, "outbound") == 0) {
+        line->dirs = ENTUR_DIR_OUT;
+    } else if (dir[0] == 'v' || dir[0] == 'V') {
+        const char *p = dir + 1;
+        while (isdigit((unsigned char)*p) && line->via_count < ENTUR_MAX_VIA) {
+            char *end;
+            line->via[line->via_count++] = (uint32_t)strtoul(p, &end, 10);
+            p = (*end == '+') ? end + 1 : end;
+        }
+        if (*p != '\0') {
+            ESP_LOGW(TAG, "%s: bad direction '%s'", line->id, dir);
+            line->via_count = 0;
+        }
+    }
+}
+
 bool entur_parse_selection(const char *text, entur_selection_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -111,14 +128,7 @@ bool entur_parse_selection(const char *text, entur_selection_t *out)
                 entur_line_sel_t line = { 0 };
                 if (take_id(l, slash, line.id, sizeof(line.id))) {
                     if (slash < l_end) {
-                        char dir[8];
-                        if (take_id(slash + 1, l_end, dir, sizeof(dir))) {
-                            if (strcasecmp(dir, "in") == 0 || strcasecmp(dir, "inbound") == 0) {
-                                line.dirs = ENTUR_DIR_IN;
-                            } else if (strcasecmp(dir, "out") == 0 || strcasecmp(dir, "outbound") == 0) {
-                                line.dirs = ENTUR_DIR_OUT;
-                            }
-                        }
+                        parse_direction(slash + 1, l_end, &line);
                     }
                     if (st->line_count < ENTUR_MAX_LINES) {
                         st->lines[st->line_count++] = line;
@@ -143,13 +153,7 @@ bool entur_parse_selection(const char *text, entur_selection_t *out)
  * HTTP
  * ------------------------------------------------------------------------ */
 
-typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-} resp_buf_t;
-
-static resp_buf_t s_resp;
+static http_buf_t s_resp = { .max = ENTUR_MAX_RESPONSE_LEN };
 static esp_http_client_handle_t s_client;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -157,27 +161,7 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
-    if (s_resp.len + evt->data_len + 1 > ENTUR_MAX_RESPONSE_LEN) {
-        ESP_LOGE(TAG, "Response too large, aborting");
-        return ESP_FAIL;
-    }
-    if (s_resp.len + evt->data_len + 1 > s_resp.cap) {
-        size_t new_cap = s_resp.cap ? s_resp.cap * 2 : 16 * 1024;
-        while (new_cap < s_resp.len + evt->data_len + 1) {
-            new_cap *= 2;
-        }
-        char *nb = heap_caps_realloc(s_resp.buf, new_cap, MALLOC_CAP_SPIRAM);
-        if (nb == NULL) {
-            ESP_LOGE(TAG, "Out of memory growing response buffer to %u", (unsigned)new_cap);
-            return ESP_FAIL;
-        }
-        s_resp.buf = nb;
-        s_resp.cap = new_cap;
-    }
-    memcpy(s_resp.buf + s_resp.len, evt->data, evt->data_len);
-    s_resp.len += evt->data_len;
-    s_resp.buf[s_resp.len] = '\0';
-    return ESP_OK;
+    return http_buf_append(&s_resp, evt->data, evt->data_len, TAG);
 }
 
 void entur_client_close(void)
@@ -188,13 +172,12 @@ void entur_client_close(void)
     }
 }
 
-/* One POST of `body`; returns the HTTP status, or -1 on transport error. */
-static int post_query(const char *body)
+/* One POST of `body`; returns the HTTP status, or -1 on transport error.
+ * `*reused` says whether it went over a kept-alive connection. */
+static int post_query(const char *body, bool *reused)
 {
-    s_resp.len = 0;
-    if (s_resp.buf != NULL) {
-        s_resp.buf[0] = '\0';
-    }
+    http_buf_reset(&s_resp);
+    *reused = (s_client != NULL);
     if (s_client == NULL) {
         esp_http_client_config_t cfg = {
             .url = ENTUR_JP_URL,
@@ -225,11 +208,22 @@ static int post_query(const char *body)
  * Query and response
  * ------------------------------------------------------------------------ */
 
+/* %s: the journey's stops, when a "/v" direction needs them. */
 #define CALL_FIELDS                                                               \
     "realtime cancellation aimedDepartureTime expectedDepartureTime "             \
-    "destinationDisplay{frontText} quay{publicCode} "                             \
-    "serviceJourney{directionType line{id publicCode transportMode "              \
+    "destinationDisplay{frontText} quay{id publicCode} "                          \
+    "serviceJourney{directionType%s line{id publicCode transportMode "            \
     "presentation{colour textColour}}}"
+
+static bool stop_has_via(const entur_stop_sel_t *st)
+{
+    for (int l = 0; l < st->line_count; l++) {
+        if (st->lines[l].via_count > 0) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /* The GraphQL text: one aliased stopPlace per stop (s0, s1, ...). NULL if it
  * doesn't fit. */
@@ -262,7 +256,7 @@ static char *build_query(const entur_selection_t *sel)
             }
         }
         if (n < cap) {
-            n += snprintf(q + n, cap - n, "){" CALL_FIELDS "}}");
+            n += snprintf(q + n, cap - n, "){" CALL_FIELDS "}}", stop_has_via(st) ? " quays{id stopPlace{id}}" : "");
         }
     }
     if (n < cap) {
@@ -276,27 +270,6 @@ static char *build_query(const entur_selection_t *sel)
     return q;
 }
 
-/* ISO 8601 with offset ("2026-09-27T20:31:00+02:00" or "...Z") to epoch
- * seconds; 0 if it doesn't parse. */
-static int64_t parse_time(const char *s)
-{
-    int y, mo, d, h, mi, se, n = 0;
-    if (s == NULL || sscanf(s, "%d-%d-%dT%d:%d:%d%n", &y, &mo, &d, &h, &mi, &se, &n) != 6) {
-        return 0;
-    }
-    const char *z = s + n;
-    if (*z == '.') { /* fractional seconds */
-        z++;
-        while (isdigit((unsigned char)*z)) z++;
-    }
-    int off = 0;
-    if (*z == '+' || *z == '-') {
-        int oh = 0, om = 0;
-        sscanf(z + 1, "%d:%d", &oh, &om);
-        off = (oh * 60 + om) * 60 * (*z == '-' ? -1 : 1);
-    }
-    return days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - off;
-}
 
 static const char *str_at(const cJSON *obj, const char *key)
 {
@@ -348,11 +321,41 @@ typedef struct {
     char dir[40];
 } group_key_t;
 
+/* Whether journey `sj`, at the quay `quay_id`, calls at one of `line`'s
+ * via stops later on. */
+static bool goes_via(const entur_line_sel_t *line, const cJSON *sj, const char *quay_id)
+{
+    const cJSON *quays = cJSON_GetObjectItemCaseSensitive(sj, "quays");
+    bool passed = false; /* got to this stop */
+    const cJSON *q;
+    cJSON_ArrayForEach(q, quays)
+    {
+        if (!passed) {
+            const char *id = str_at(q, "id");
+            passed = (id != NULL && quay_id != NULL && strcmp(id, quay_id) == 0);
+            continue;
+        }
+        const char *sp = str_at(cJSON_GetObjectItemCaseSensitive(q, "stopPlace"), "id");
+        const char *num = sp ? strrchr(sp, ':') : NULL;
+        const uint32_t n = num ? (uint32_t)strtoul(num + 1, NULL, 10) : 0;
+        for (int v = 0; v < line->via_count; v++) {
+            if (line->via[v] == n) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /* Keep the call unless its line is listed with other directions only. */
-static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, const char *dir_type)
+static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, const char *dir_type,
+                             const cJSON *sj, const char *quay_id)
 {
     for (int i = 0; i < st->line_count; i++) {
         if (strcmp(st->lines[i].id, line_id) == 0) {
+            if (st->lines[i].via_count > 0) {
+                return goes_via(&st->lines[i], sj, quay_id);
+            }
             if (st->lines[i].dirs == 0) {
                 return true;
             }
@@ -379,11 +382,19 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
             continue;
         }
         const char *dir_type = str_at(sj, "directionType");
-        if (!direction_wanted(st, line_id, dir_type)) {
+        const char *quay_id = str_at(cJSON_GetObjectItemCaseSensitive(call, "quay"), "id");
+        if (!direction_wanted(st, line_id, dir_type, sj, quay_id)) {
             continue;
         }
         const char *front = str_at(cJSON_GetObjectItemCaseSensitive(call, "destinationDisplay"), "frontText");
-        const char *dir = (dir_type && strcmp(dir_type, "unknown") != 0) ? dir_type : (front ? front : "");
+        /* One row per direction; without one, per destination - except
+         * when a "/v" direction was picked, which is one way already. */
+        bool via = false;
+        for (int l = 0; l < st->line_count; l++) {
+            via |= (st->lines[l].via_count > 0 && strcmp(st->lines[l].id, line_id) == 0);
+        }
+        const char *dir = via ? "via"
+                        : (dir_type && strcmp(dir_type, "unknown") != 0) ? dir_type : (front ? front : "");
 
         int g;
         for (g = 0; g < out->group_count; g++) {
@@ -420,8 +431,8 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
             continue;
         }
         entur_call_t *c = &grp->calls[grp->call_count++];
-        c->expected = parse_time(str_at(call, "expectedDepartureTime"));
-        c->aimed = parse_time(str_at(call, "aimedDepartureTime"));
+        c->expected = iso8601_to_epoch(str_at(call, "expectedDepartureTime"));
+        c->aimed = iso8601_to_epoch(str_at(call, "aimedDepartureTime"));
         c->realtime = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(call, "realtime"));
         c->cancelled = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(call, "cancellation"));
     }
@@ -429,7 +440,7 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
 
 static bool parse_response(const char *json, const entur_selection_t *sel, entur_departures_t *out)
 {
-    ensure_cjson_psram_hooks();
+    json_use_psram();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");
@@ -480,7 +491,7 @@ esp_err_t entur_client_fetch(const entur_selection_t *sel, entur_departures_t *o
     if (query == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    ensure_cjson_psram_hooks();
+    json_use_psram();
     cJSON *req = cJSON_CreateObject();
     cJSON_AddStringToObject(req, "query", query);
     char *body = cJSON_PrintUnformatted(req);
@@ -490,9 +501,11 @@ esp_err_t entur_client_fetch(const entur_selection_t *sel, entur_departures_t *o
         return ESP_ERR_NO_MEM;
     }
 
-    int status = post_query(body);
-    if (status == -1) {
-        status = post_query(body); /* kept-alive connection dropped by the server: reconnect once */
+    bool reused;
+    const int64_t started = esp_timer_get_time();
+    int status = post_query(body, &reused);
+    if (status == -1 && http_retry_worthwhile(reused, started)) {
+        status = post_query(body, &reused); /* kept-alive connection dropped by the server */
     }
     cJSON_free(body);
     if (status != 200 || s_resp.buf == NULL) {

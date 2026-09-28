@@ -78,7 +78,50 @@
 
   var LINES_QUERY = 'query($id:String!){stopPlace(id:$id){id name quays{' +
     'lines{id publicCode name transportMode presentation{colour textColour}}' +
-    'journeyPatterns{directionType line{id} quays{name}}}}}';
+    'id journeyPatterns{directionType line{id} quays{id name stopPlace{id}}}}}}';
+
+  // Trains (Vy at least) come with no inbound/outbound. Their directions are
+  // told apart by where they go next instead: patterns whose stops after
+  // this one overlap go the same way. Each way is then named by a stop all
+  // its patterns call at later on ("v" + its number, e.g. "v502"), which is
+  // what the display checks each departure for. Up to 3 stops if no single
+  // one is common to all of them.
+  function viaDirections(patterns) {
+    var groups = patterns.map(function (pt, n) { return n; });
+    function root(n) { while (groups[n] !== n) n = groups[n] = groups[groups[n]]; return n; }
+    var firstWith = {};
+    patterns.forEach(function (pt, n) {
+      pt.after.forEach(function (stop) {
+        if (stop in firstWith) groups[root(n)] = root(firstWith[stop]);
+        else firstWith[stop] = n;
+      });
+    });
+    var byRoot = {};
+    patterns.forEach(function (pt, n) { (byRoot[root(n)] = byRoot[root(n)] || []).push(pt); });
+    return Object.keys(byRoot).map(function (r) {
+      var group = byRoot[r], left = group.slice(), refs = [];
+      while (left.length && refs.length < 3) {
+        var score = {};
+        left.forEach(function (pt) {
+          pt.after.forEach(function (stop, k) {
+            var sc = score[stop] = score[stop] || { n: 0, pos: 0 };
+            sc.n++; sc.pos += k;
+          });
+        });
+        var best = Object.keys(score).sort(function (a, b) {
+          return score[b].n - score[a].n || score[a].pos / score[a].n - score[b].pos / score[b].n;
+        })[0];
+        refs.push(best);
+        left = left.filter(function (pt) { return pt.after.indexOf(best) < 0; });
+      }
+      var dests = {};
+      group.forEach(function (pt) { if (pt.dest) dests[pt.dest] = true; });
+      return { type: 'v' + refs.map(function (id) { return id.replace(/^NSR:StopPlace:/, ''); }).join('+'),
+               destinations: Object.keys(dests).sort(function (a, b) { return a.localeCompare(b, 'no'); }) };
+    });
+  }
+
+  function shortName(name) { return name.replace(/ (stasjon|holdeplass)$/i, ''); }
 
   function compareLines(a, b) {
     return (a.publicCode || '').localeCompare(b.publicCode || '', 'no', { numeric: true });
@@ -95,12 +138,17 @@
         if (j.errors && j.errors.length) throw new Error(j.errors[0].message);
         var sp = j.data.stopPlace;
         if (!sp) throw new Error('Fant ikke holdeplass ' + stopId);
-        var byId = {}, dirs = {};
+        var byId = {}, dirs = {}, unknown = {};
         sp.quays.forEach(function (quay) {
           quay.lines.forEach(function (l) { byId[l.id] = l; });
           quay.journeyPatterns.forEach(function (jp) {
-            if (jp.directionType !== 'inbound' && jp.directionType !== 'outbound') return;
-            var dest = jp.quays.length ? jp.quays[jp.quays.length - 1].name : null;
+            var dest = jp.quays.length ? shortName(jp.quays[jp.quays.length - 1].name) : null;
+            if (jp.directionType !== 'inbound' && jp.directionType !== 'outbound') {
+              var at = jp.quays.map(function (q) { return q.id; }).indexOf(quay.id);
+              var after = jp.quays.slice(at + 1).map(function (q) { return q.stopPlace.id; });
+              if (at >= 0 && after.length) (unknown[jp.line.id] = unknown[jp.line.id] || []).push({ after: after, dest: dest });
+              return;
+            }
             var d = dirs[jp.line.id] = dirs[jp.line.id] || {};
             d[jp.directionType] = d[jp.directionType] || {};
             if (dest) d[jp.directionType][dest] = true;
@@ -108,11 +156,11 @@
         });
         var lines = Object.keys(byId).map(function (id) {
           var d = dirs[id] || {};
-          return Object.assign({}, byId[id], {
-            directions: Object.keys(d).sort().map(function (t) {
-              return { type: t, destinations: Object.keys(d[t]).sort(function (a, b) { return a.localeCompare(b, 'no'); }) };
-            }),
+          var directions = Object.keys(d).sort().map(function (t) {
+            return { type: t, destinations: Object.keys(d[t]).sort(function (a, b) { return a.localeCompare(b, 'no'); }) };
           });
+          if (directions.length < 2 && unknown[id]) directions = viaDirections(unknown[id]);
+          return Object.assign({}, byId[id], { directions: directions });
         }).sort(compareLines);
         return { name: sp.name, lines: lines };
       });
@@ -140,7 +188,8 @@
           var dir = (parts[1] || '').trim().toLowerCase();
           return { id: parts[0].trim(),
                    directions: dir === 'in' || dir === 'inbound' ? ['inbound']
-                             : dir === 'out' || dir === 'outbound' ? ['outbound'] : [] };
+                             : dir === 'out' || dir === 'outbound' ? ['outbound']
+                             : /^v\d+(\+\d+)*$/.test(dir) ? [dir] : [] };
         });
       return { stopId: id, name: null, lines: lines };
     });
@@ -150,7 +199,9 @@
     return sel.map(function (stop) {
       var id = stop.stopId.replace(/^NSR:StopPlace:/, '');
       var lines = stop.lines.map(function (l) {
-        return l.directions.length === 1 ? l.id + '/' + (l.directions[0] === 'inbound' ? 'in' : 'out') : l.id;
+        var d = l.directions[0];
+        return l.directions.length !== 1 ? l.id
+             : l.id + '/' + (d === 'inbound' ? 'in' : d === 'outbound' ? 'out' : d);
       });
       return lines.length ? id + '=' + lines.join(',') : id;
     }).join(';');
