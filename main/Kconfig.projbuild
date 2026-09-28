@@ -54,4 +54,19 @@ menu "MultiDisplay Configuration"
             A contact email entered on the setup page overrides this.
             See https://developer.yr.no/doc/TermsOfService/
 
+    config MULTIDISPLAY_OTA_DEFAULT_URL
+        string "Firmware update manifest URL (default)"
+        default "http://192.168.0.119:8070/manifest.json"
+        help
+            Where the display looks for new firmware (see
+            docs/auto-update-plan.md), until another URL is saved on the
+            setup page. manifest-test.json next to it is the test channel.
+
+    config MULTIDISPLAY_BOARD
+        string "Board name, for firmware updates"
+        default "esp32s3-lcd-4.3"
+        help
+            An update's manifest must name this board, so firmware for other
+            hardware sharing the project name is never installed.
+
 endmenu

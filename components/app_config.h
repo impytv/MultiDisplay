@@ -66,6 +66,10 @@
 /* Contact email put in the User-Agent sent to api.met.no (yr). */
 #define APP_CONFIG_EMAIL_MAX 64
 
+/* Firmware updates: the manifest URL the updater checks (see
+ * main/updater.c). */
+#define APP_CONFIG_OTA_URL_MAX 201
+
 /* Colour theme for every screen: app_config_t.theme. */
 #define APP_THEME_LIGHT 0
 #define APP_THEME_DARK  1
@@ -145,6 +149,11 @@ typedef struct {
     char yr_email[APP_CONFIG_EMAIL_MAX];
     /* The setup page's password; empty = none (see wifi_provision.c). */
     char web_pass[APP_CONFIG_PASS_MAX];
+    /* Firmware updates: install new firmware from ota_url automatically, at
+     * night (off unless ticked on the setup page). ota_url is also what
+     * "Check now" on the setup page checks. */
+    uint8_t ota_auto;
+    char ota_url[APP_CONFIG_OTA_URL_MAX];
 } app_config_t;
 
 /**

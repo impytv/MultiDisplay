@@ -16,3 +16,7 @@ sdkconfig.old
 
 # Editor/IDE state (machine-specific absolute paths)
 .vscode/
+
+# Firmware signing key (docs/auto-update-plan.md). Stays on the build
+# machine only: anyone holding it can make firmware the displays accept.
+keys/

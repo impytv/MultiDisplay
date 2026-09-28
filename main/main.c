@@ -28,6 +28,7 @@
 #include "rain_client.h"
 #include "screenshot.h"
 #include "watchdog.h"
+#include "updater.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
 #include "wifi_provision.h"
@@ -505,6 +506,7 @@ static void yr_weather_task(void *arg)
      * reboots when the form is saved). */
     wifi_provision_connect(g_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", screenshot_handler);
+    updater_start(xTaskGetCurrentTaskHandle());
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
      * a large TLS handshake - the two compete hard for the same scarce
@@ -593,6 +595,15 @@ static void yr_weather_task(void *arg)
         }
         wd_weather_beat();
         keep_firmware();
+
+        /* Firmware updates: a check or install that is due or was asked for
+         * on the setup page. The current screen puts its status back after. */
+        if (updater_poll(&wait_ms) && esp_lv_adapter_lock(-1) == ESP_OK) {
+            if (g_view_index == active_view) {
+                view_enter(active_view);
+            }
+            esp_lv_adapter_unlock();
+        }
 
         /* So a reboot of any kind - nightly, power cycle, crash - comes back
          * showing the screen last picked by tap instead of the overview. */

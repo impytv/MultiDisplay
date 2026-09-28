@@ -7,6 +7,7 @@ idf_component_register(
         "draw.c"
         "screenshot.c"
         "watchdog.c"
+        "updater.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/wifi_provision.c"
@@ -17,6 +18,7 @@ idf_component_register(
         "../components/rain_client.c"
         "../components/entur_client.c"
         "../components/http_util.c"
+        "../components/ota_writer.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -39,6 +41,7 @@ idf_component_register(
         esp_app_format
         mbedtls
         esp_partition
+        spi_flash
         esp_driver_gpio
         lwip
         esp-tls

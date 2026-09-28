@@ -161,3 +161,15 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # and with the assert handler aborting that restarted the device. A real
 # NULL dereference still panics and restarts.
 # CONFIG_LV_USE_ASSERT_NULL is not set
+
+# Signed firmware updates without hardware Secure Boot (no eFuses burnt, the
+# board can always be re-flashed over USB). The build signs the app with
+# keys/ota_signing_key.pem (RSA-3072, kept out of git), and esp_ota_end()
+# refuses any update - the setup page upload and the automatic updater alike
+# - not signed with the same key as the running firmware. See
+# docs/auto-update-plan.md.
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="keys/ota_signing_key.pem"

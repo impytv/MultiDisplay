@@ -20,6 +20,7 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "mbedtls/base64.h"
+#include "ota_writer.h"
 
 static const char *TAG = "wifi_provision";
 
@@ -156,6 +157,21 @@ static const char PAGE_TAIL[] =
     "x.upload.onprogress=e=>fws.textContent='Uploading '+Math.round(100*e.loaded/e.total)+' %';"
     "x.onload=()=>{fws.textContent=x.responseText;fwb.disabled=x.status==200};"
     "x.onerror=()=>{fws.textContent='Upload failed';fwb.disabled=false};x.send(f)}</script>"
+    /* Firmware updates: the status from main/updater.c, polled while a
+     * check or install runs. */
+    "<script>function E(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}"
+    "function U(){fetch('/ota/status').then(r=>r.json()).then(s=>{"
+    "let t='Running '+s.running+'. ';"
+    "if(s.busy)t+=s.progress>=0?'Installing '+s.available.version+': '+s.progress+' %':'Checking...';"
+    "else if(s.checked)t+='Last check '+s.checked+': '+s.result;else t+='Not checked yet.';"
+    "otast.innerHTML='<small>'+E(t)+'</small>';"
+    "let a=s.available;otanew.innerHTML=a?'<p style=\\'margin:.4rem 0 0\\'><b>'+E(a.version)+'</b>'+"
+    "(a.released?' ('+E(a.released)+')':'')+(a.notes?': '+E(a.notes):'')+'</p>':'';"
+    "otains.hidden=!a||s.busy;otachk.disabled=s.busy;if(s.busy)setTimeout(U,1500)})"
+    ".catch(e=>{otast.innerHTML='<small>Not available in setup mode.</small>';otachk.disabled=true})}"
+    "function P(u){otachk.disabled=true;otains.hidden=true;fetch(u,{method:'POST'}).then(()=>setTimeout(U,800))}"
+    "otachk.onclick=()=>P('/ota/check');otains.onclick=()=>{if(confirm('Install now? The display restarts.'))"
+    "P('/ota/install')};U()</script>"
     "<script>fetch('/scan').then(r=>r.json()).then(l=>{let d=document.getElementById('nets');"
     "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>"
     /* Move a location up or down: swap every field with the neighbour's
@@ -173,7 +189,7 @@ static const char PAGE_TAIL[] =
 /* Build the full page into a heap buffer (caller frees). */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 24576;
+    const size_t cap = 32768;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -282,6 +298,24 @@ static char *build_page(const app_config_t *cfg)
                                   "Remove the password</label></div>");
     }
     p += snprintf(p, end - p, "</fieldset>");
+
+    /* Firmware updates (main/updater.c): the settings are saved with the
+     * form; the status line and the buttons talk to /ota/status, /ota/check
+     * and /ota/install (see PAGE_TAIL), which only exist once connected. */
+    p += snprintf(p, end - p,
+                  "<fieldset><legend>Firmware updates</legend>"
+                  "<div class=chk><label><input type=checkbox name=otaauto value=1%s>"
+                  "Install new firmware automatically</label></div>"
+                  "<label>Update address</label><input name=otaurl type=url autocomplete=off value=\"",
+                  cfg->ota_auto ? " checked" : "");
+    p = html_escape_append(p, end, cfg->ota_url);
+    p += snprintf(p, end - p,
+                  "\"><small>The manifest.json of the update site; manifest-test.json there for test "
+                  "releases. New firmware is installed at night, between 03:30 and 05:00. Only firmware "
+                  "signed with the project's key is accepted.</small>"
+                  "<p id=otast style='margin:.6rem 0 0'><small>Checking...</small></p><div id=otanew></div>"
+                  "<div class=row><div><button type=button id=otachk>Check now</button></div>"
+                  "<div><button type=button id=otains hidden>Install now</button></div></div></fieldset>");
 
     p += snprintf(p, end - p,
                   "<p style='margin:1.4rem 0 .2rem'><small>One or more "
@@ -505,6 +539,15 @@ static esp_err_t h_scan(httpd_req_t *req)
 static void reboot_task(void *arg)
 {
     (void)arg;
+    /* A restart asked for on this page isn't a failing firmware: it booted,
+     * connected and served the page. Keep it, or a save soon after an update
+     * - before main.c's keep_firmware() - would go back to the old one. */
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        ESP_LOGI(TAG, "Restart from the setup page - keeping this firmware");
+        esp_ota_mark_app_valid_cancel_rollback();
+    }
     vTaskDelay(pdMS_TO_TICKS(1500));
     esp_restart();
 }
@@ -542,12 +585,14 @@ static esp_err_t h_save(httpd_req_t *req)
  *     curl --data-binary @build/multi_display.bin http://<ip>/ota
  * It goes into the app slot not running and is booted into; the bootloader
  * returns to the running firmware if the new one doesn't mark itself valid
- * (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, see main.c). */
+ * (CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE, see main.c). ota_writer checks it
+ * is this project's firmware, signed with our key. Any version is accepted,
+ * older ones too: this is how a bad release is undone by hand. */
 #define OTA_CHUNK 4096
 
 static esp_err_t ota_fail(httpd_req_t *req, const char *http_status, const char *msg)
 {
-    ESP_LOGE(TAG, "Firmware update: %s", msg);
+    ESP_LOGE(TAG, "Firmware upload: %s", msg);
     status("Programvareoppdatering feilet");
     httpd_resp_set_status(req, http_status);
     return httpd_resp_sendstr(req, msg);
@@ -558,77 +603,39 @@ static esp_err_t h_ota(httpd_req_t *req)
     if (!authorized(req)) {
         return ESP_OK;
     }
-    const esp_partition_t *part = esp_ota_get_next_update_partition(NULL);
-    if (part == NULL) {
-        return ota_fail(req, "500 Internal Server Error", "No slot to update into (flash the OTA partition table by USB first)");
-    }
-    if (req->content_len < sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t) ||
-        req->content_len > part->size) {
-        return ota_fail(req, "400 Bad Request", "That doesn't look like a firmware image of the right size");
-    }
     uint8_t *buf = malloc(OTA_CHUNK);
-    if (buf == NULL) {
+    ota_writer_t *w = malloc(sizeof(*w));
+    if (buf == NULL || w == NULL) {
+        free(buf);
+        free(w);
         return ota_fail(req, "500 Internal Server Error", "Out of memory");
     }
-    ESP_LOGI(TAG, "Firmware update: %u bytes into %s", (unsigned)req->content_len, part->label);
-    status("Oppdaterer programvare...");
-
-    esp_ota_handle_t ota = 0;
-    const char *err = NULL;
+    const char *err = ota_writer_start(w, req->content_len);
+    if (err == NULL) {
+        ESP_LOGI(TAG, "Firmware upload: %u bytes", (unsigned)req->content_len);
+        status("Oppdaterer programvare...");
+    }
     size_t done = 0;
+    int timeouts = 0;
     while (err == NULL && done < req->content_len) {
-        /* Whole chunks, so the first one holds the app description. */
-        size_t n = 0;
-        const size_t want = (req->content_len - done < OTA_CHUNK) ? req->content_len - done : OTA_CHUNK;
-        int timeouts = 0;
-        while (n < want) {
-            int r = httpd_req_recv(req, (char *)buf + n, want - n);
-            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 5) {
-                continue;
-            }
-            if (r <= 0) {
-                err = "Upload interrupted";
-                break;
-            }
-            n += (size_t)r;
+        int r = httpd_req_recv(req, (char *)buf, OTA_CHUNK);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 5) {
+            continue;
         }
-        if (err != NULL) {
+        if (r <= 0) {
+            err = "Upload interrupted";
+            ota_writer_abort(w);
             break;
         }
-        if (done == 0) {
-            /* Refuse anything that isn't this project's firmware. */
-            const esp_app_desc_t *d =
-                (const esp_app_desc_t *)(buf + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t));
-            if (buf[0] != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD ||
-                strncmp(d->project_name, esp_app_get_description()->project_name, sizeof(d->project_name)) != 0) {
-                err = "Not a MultiDisplay firmware image";
-                break;
-            }
-            ESP_LOGI(TAG, "Firmware update: version %.32s, built %.16s %.16s", d->version, d->date, d->time);
-            if (esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &ota) != ESP_OK) {
-                err = "Couldn't start writing the update";
-                break;
-            }
-        }
-        if (esp_ota_write(ota, buf, n) != ESP_OK) {
-            err = "Writing the update failed";
-            break;
-        }
-        done += n;
+        err = ota_writer_write(w, buf, (size_t)r);
+        done += (size_t)r;
+    }
+    if (err == NULL) {
+        err = ota_writer_finish(w, NULL);
     }
     free(buf);
-    if (err == NULL) {
-        if (esp_ota_end(ota) != ESP_OK) {
-            err = "The uploaded image is damaged or incomplete";
-        } else if (esp_ota_set_boot_partition(part) != ESP_OK) {
-            err = "Couldn't select the new firmware";
-        }
-        ota = 0;
-    }
+    free(w);
     if (err != NULL) {
-        if (ota != 0) {
-            esp_ota_abort(ota);
-        }
         return ota_fail(req, "400 Bad Request", err);
     }
     ESP_LOGI(TAG, "Firmware update written - restarting");
@@ -716,6 +723,16 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
         cfg->auto_night_pause = form_field(body, "autonight", val, sizeof(val)) ? 1 : 0;
+    }
+    /* Firmware updates: the address is always sent, the checkbox only when
+     * ticked. Blank turns checking off; anything but http(s) is refused. */
+    char url[APP_CONFIG_OTA_URL_MAX];
+    if (form_field(body, "otaurl", url, sizeof(url))) {
+        char val[4];
+        cfg->ota_auto = form_field(body, "otaauto", val, sizeof(val)) ? 1 : 0;
+        if (url[0] == '\0' || strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
+            snprintf(cfg->ota_url, sizeof(cfg->ota_url), "%s", url);
+        }
     }
     /* Likewise a blank secret keeps the saved one, unless the ID is gone. */
     form_field(body, "aisid", cfg->ais_client_id, sizeof(cfg->ais_client_id));
@@ -926,7 +943,7 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     /* The POST body and the app_config_t are on the heap (see h_save). */
     config.stack_size = 6144;
-    config.max_uri_handlers = 10;
+    config.max_uri_handlers = 12;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -964,6 +981,15 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
         s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
     return err;
+}
+
+esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return httpd_register_uri_handler(
+        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_POST, .handler = h_added, .user_ctx = handler });
 }
 
 /* --------------------------------------------------------------------------

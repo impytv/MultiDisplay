@@ -23,6 +23,16 @@ so the same firmware image runs on either board unmodified.
 
 ## Build
 
+The firmware is signed, so a build needs the signing key in
+`keys/ota_signing_key.pem`. It is kept out of git: anyone holding it can
+make firmware the displays accept. Copy it from the build machine, or make a
+new one for a new set of displays (those then need one USB flash to learn
+it):
+
+```bash
+espsecure.py generate_signing_key --version 2 --scheme rsa3072 keys/ota_signing_key.pem
+```
+
 ```bash
 idf.py set-target esp32s3
 idf.py build
@@ -50,9 +60,52 @@ curl -u x:PASSWORD --data-binary @build/multi_display.bin http://DEVICE-IP/ota
 
 The display restarts on the new firmware. If that firmware doesn't get
 through one full round of fetching and drawing, the next restart goes back
-to the previous one. Only firmware built from this project is accepted.
-Changes to the partition table, the bootloader, the fonts or the coastline
-still need USB.
+to the previous one. Only firmware built from this project and signed with
+the project's key is accepted, but any version: this is also how to go back
+to an older release. Changes to the partition table, the bootloader, the
+fonts or the coastline still need USB, and so does a display whose firmware
+was signed with a key that has since been lost.
+
+### Automatic updates
+
+The display can fetch new firmware by itself from an update site on the
+home network (see `docs/auto-update-plan.md` for the design).
+
+- **On the display:** the setup page's **Firmware updates** section has the
+  update address (default `http://192.168.0.119:8070/manifest.json`) and
+  **Install new firmware automatically** (off by default). When ticked, a
+  newer release is installed at night between 03:30 and 05:00. **Check
+  now** shows what the site offers, with its release notes, and **Install
+  now** installs it straight away, ticked or not.
+- **What is refused:** a manifest for another project or board, a version
+  that isn't newer than the running one, an image whose version, size or
+  SHA-256 differs from the manifest, and any image not signed with the
+  project's key. A release that went back to the previous firmware after
+  installing isn't installed automatically again; a newer one is.
+- **Test releases:** point a display at `manifest-test.json` instead to get
+  releases before the others.
+
+The site is static files served by nginx on the Raspberry Pi. Once:
+
+```bash
+sudo apt install nginx
+sudo mkdir -p /srv/multidisplay && sudo chown $USER: /srv/multidisplay
+sudo cp server/nginx-multidisplay.conf /etc/nginx/sites-available/multidisplay
+sudo ln -s /etc/nginx/sites-available/multidisplay /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+To publish, raise the version in `version.txt`, commit, and run:
+
+```bash
+scripts/publish_firmware.py --channel test --notes "What changed"
+scripts/publish_firmware.py --promote 1.1.0      # the test release -> stable
+scripts/publish_firmware.py --channel stable --notes "What changed"   # straight to stable
+```
+
+It builds, checks the signature, copies the image to
+`/srv/multidisplay/firmware/`, writes the manifest and the site's index
+page, and tags the commit (`git push origin v1.1.0` to share the tag).
 
 ## Notes
 

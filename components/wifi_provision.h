@@ -40,4 +40,7 @@ const char *wifi_provision_get_ip(void);
  */
 esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
+/* The same for POST `uri`. */
+esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
+
 #endif
