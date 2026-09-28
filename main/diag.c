@@ -31,6 +31,7 @@
 #include "freertos/semphr.h"
 
 #include "app.h"
+#include "clock.h"
 #include "diag.h"
 #include "watchdog.h"
 #include "wifi_provision.h"
@@ -314,6 +315,17 @@ static esp_err_t h_status(httpd_req_t *req)
         cJSON_AddNumberToObject(o, "wifi_dbm", ap.rssi);
     }
     cJSON_AddStringToObject(o, "ip", wifi_provision_get_ip());
+    const char *src;
+    const time_t set_at = clock_set_at(&src);
+    char clock[48] = "ikke stilt";
+    if (set_at != 0) {
+        char t[24];
+        when_text(t, sizeof(t), set_at, 1);
+        snprintf(clock, sizeof(clock), "stilt %s via %s", t, src);
+    } else if (clock_is_set()) {
+        snprintf(clock, sizeof(clock), "stilt");
+    }
+    cJSON_AddStringToObject(o, "klokke", clock);
     cJSON *mem = cJSON_AddObjectToObject(o, "minne");
     cJSON_AddNumberToObject(mem, "intern_ledig", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(mem, "intern_lavest", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));

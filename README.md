@@ -107,6 +107,15 @@ It builds, checks the signature, copies the image to
 `/srv/multidisplay/firmware/`, writes the manifest and the site's index
 page, and tags the commit (`git push origin v1.1.0` to share the tag).
 
+### Tests
+
+`make -C test/host` builds and runs the host tests: the firmware's own
+parsers and helpers (settings, backup, Entur, ADS-B, HTTP dates, form
+parsing, sun times, versions) compiled with gcc against stub ESP-IDF headers,
+under AddressSanitizer and UBSan. GitHub Actions runs them and builds the
+firmware on every push (`.github/workflows/ci.yml`); that build is signed
+with a throwaway key, so displays won't accept it.
+
 ## Notes
 
 - A software watchdog restarts the device if the screen stops updating for a
@@ -126,6 +135,16 @@ page, and tags the commit (`git push origin v1.1.0` to share the tag).
     before 1.1.0 needs `idf.py -p PORT partition-table-flash` once (it only
     adds a partition at the end).
 - The display announces itself as **`multidisplay.local`**.
+- **Clock:** set by NTP - the router's server if its DHCP answer names one,
+  then pool.ntp.org and time.cloudflare.com - or, until NTP answers, from
+  the Date of the first response from MET. "Klokken er ikke stilt" shows
+  bottom left if it still isn't set ten minutes after start.
+- **Settings backup:** under **Sikkerhetskopi** on the setup page, download
+  the settings as a file (everything except the WiFi network and the
+  passwords/secrets) and restore it, e.g. onto a new board. Restoring keeps
+  the display's own WiFi and secrets and restarts it. Also
+  `curl -O http://DEVICE-IP/config.json` and
+  `curl --data-binary @multidisplay-innstillinger.json http://DEVICE-IP/config.json`.
 - **Offline:** "Ingen WiFi" or "Ingen internett" shows bottom left while the
   display is off the network or every fetch has failed for two minutes. A
   screen showing older data after a failed fetch has its info line in

@@ -27,6 +27,10 @@ typedef void (*wifi_provision_status_fn)(const char *msg);
  */
 esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_fn status);
 
+/* Have wifi_provision_connect call `fn` once the network stack is up, just
+ * before connecting (e.g. to start SNTP, which must see the DHCP answer). */
+void wifi_provision_before_connect(void (*fn)(void));
+
 /**
  * The station's current IP address as a string (e.g. "192.168.0.77"), or ""
  * if it has never associated. Safe to call from any task - set once from the

@@ -187,6 +187,27 @@ bool app_config_is_provisioned(void);
 esp_err_t app_config_erase(void);
 
 /**
+ * Bring every setting into its allowed range (as app_config_load does).
+ */
+void app_config_sanitize(app_config_t *cfg);
+
+/**
+ * The settings as JSON, for a backup (caller frees). The WiFi network and
+ * every secret - WiFi password, BarentsWatch secret, setup password - are
+ * left out. NULL if out of memory.
+ */
+char *app_config_to_json(const app_config_t *cfg);
+
+/**
+ * Apply a backup made by app_config_to_json on top of `cfg` (normally the
+ * current settings, whose WiFi and secrets are then kept). Settings missing
+ * from the JSON keep their value. False, with a Norwegian reason in `err`,
+ * if it isn't such a backup or a location is invalid; `cfg` is then
+ * unchanged.
+ */
+bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t err_len);
+
+/**
  * Validate a latitude / longitude string: must parse fully as a number and
  * lie within [-90, 90] / [-180, 180].
  */

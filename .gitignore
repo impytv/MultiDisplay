@@ -20,3 +20,6 @@ sdkconfig.old
 # Firmware signing key (docs/auto-update-plan.md). Stays on the build
 # machine only: anyone holding it can make firmware the displays accept.
 keys/
+
+# Host test binary (test/host)
+test/host/host_tests

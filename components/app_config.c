@@ -358,6 +358,11 @@ esp_err_t app_config_erase(void)
     return err;
 }
 
+void app_config_sanitize(app_config_t *cfg)
+{
+    sanitize_view_settings(cfg);
+}
+
 bool app_config_coord_valid(const char *text, bool is_latitude)
 {
     if (text == NULL || text[0] == '\0') {

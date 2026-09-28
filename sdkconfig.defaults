@@ -190,3 +190,9 @@ CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
 # Large static arrays marked EXT_RAM_BSS_ATTR (route cache, rain grid,
 # chart data, ...) go to PSRAM, leaving internal DRAM for WiFi and TLS.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# The clock (main/clock.c): the router's NTP server if DHCP names one, plus
+# two public pools; no random start-up delay.
+CONFIG_LWIP_SNTP_MAX_SERVERS=3
+CONFIG_LWIP_DHCP_GET_NTP_SRV=y
+# CONFIG_LWIP_SNTP_STARTUP_DELAY is not set

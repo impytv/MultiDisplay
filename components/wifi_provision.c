@@ -21,6 +21,8 @@
 #include "lwip/inet.h"
 #include "mbedtls/base64.h"
 #include "ota_writer.h"
+#include "form_util.h"
+#include "cJSON.h"
 #include "mdns.h"
 
 static const char *TAG = "wifi_provision";
@@ -63,51 +65,6 @@ static void status(const char *msg)
 /* --------------------------------------------------------------------------
  * Small text helpers
  * ------------------------------------------------------------------------ */
-
-static void url_decode(char *s)
-{
-    char *w = s;
-    for (char *r = s; *r; r++) {
-        if (*r == '+') {
-            *w++ = ' ';
-        } else if (*r == '%' && r[1] && r[2]) {
-            int hi = r[1], lo = r[2];
-            hi = (hi <= '9') ? hi - '0' : (hi | 0x20) - 'a' + 10;
-            lo = (lo <= '9') ? lo - '0' : (lo | 0x20) - 'a' + 10;
-            *w++ = (char)((hi << 4) | lo);
-            r += 2;
-        } else {
-            *w++ = *r;
-        }
-    }
-    *w = '\0';
-}
-
-/* Extract application/x-www-form-urlencoded field `key` from `body` into
- * `dst` (URL-decoded, NUL-terminated, truncated to dst_len). */
-static bool form_field(const char *body, const char *key, char *dst, size_t dst_len)
-{
-    size_t klen = strlen(key);
-    const char *p = body;
-    while (p && *p) {
-        const char *amp = strchr(p, '&');
-        const char *eq = strchr(p, '=');
-        if (eq && (!amp || eq < amp) && (size_t)(eq - p) == klen && strncmp(p, key, klen) == 0) {
-            const char *val = eq + 1;
-            size_t vlen = amp ? (size_t)(amp - val) : strlen(val);
-            if (vlen >= dst_len) {
-                vlen = dst_len - 1;
-            }
-            memcpy(dst, val, vlen);
-            dst[vlen] = '\0';
-            url_decode(dst);
-            return true;
-        }
-        p = amp ? amp + 1 : NULL;
-    }
-    dst[0] = '\0';
-    return false;
-}
 
 /* Append `src` to `dst` (bounded by dst_end), HTML-escaping " & < >. */
 static char *html_escape_append(char *dst, char *dst_end, const char *src)
@@ -157,6 +114,12 @@ static const char PAGE_TAIL[] =
     "Eldre versjoner godtas ogs&aring;.</small>"
     "<input type=file id=fw accept=.bin style='margin-top:.6rem'>"
     "<button type=button id=fwb>Last opp og start p&aring; nytt</button><small id=fws></small></fieldset>"
+    /* Settings backup: /config.json down, and back up to restore it. */
+    "<fieldset><legend>Sikkerhetskopi</legend><small>Alle innstillingene unntatt WiFi og passord/"
+    "hemmeligheter, som en fil. Gjenoppretting beholder skjermens WiFi og passord, og starter "
+    "den p&aring; nytt.</small><p><a href=/config.json download>Last ned innstillingene</a></p>"
+    "<input type=file id=cfgf accept=.json><button type=button id=cfgb>Gjenopprett</button>"
+    "<small id=cfgs></small></fieldset>"
     /* Health (main/diag.c): /status, /log and /coredump. */
     "<fieldset><legend>Driftsstatus</legend><div id=diag><small>Henter...</small></div>"
     "<p><small><a href=/log target=_blank>Logg</a> &middot; <a href=/screen.png target=_blank>Skjermbilde</a>"
@@ -171,7 +134,7 @@ static const char PAGE_TAIL[] =
     "function D(){fetch('/status').then(r=>r.json()).then(s=>{let u=s.oppetid_s,t=u>=86400?Math.floor(u/86400)+' d ':'';"
     "t+=Math.floor(u%86400/3600)+' t '+Math.floor(u%3600/60)+' min';"
     "let h='<small>Versjon '+E(s.versjon)+', oppe i '+t+'. Sist startet av: '+E(s.omstart)+'.';"
-    "if(s.wifi_dbm!==undefined)h+=' WiFi '+s.wifi_dbm+' dBm.';"
+    "if(s.wifi_dbm!==undefined)h+=' WiFi '+s.wifi_dbm+' dBm.';h+=' Klokka: '+E(s.klokke)+'.';"
     "h+=' Minne: '+Math.round(s.minne.intern_ledig/1024)+' KB internt (lavest '+Math.round(s.minne.intern_lavest/1024)+"
     "'), '+Math.round(s.minne.psram_ledig/1024)+' KB PSRAM.';"
     "if(s.krasjdump)h+=' <b>Krasjdump lagret'+(s.krasjgrunn?': '+E(s.krasjgrunn):'')+'.</b>';h+='</small>';"
@@ -179,6 +142,9 @@ static const char PAGE_TAIL[] =
     "(v.feiler?', feil '+E(v.sist_feil)+' ('+E(v.feil)+')':'')+'</small>'});"
     "diag.innerHTML=h;cdl.hidden=!s.krasjdump}).catch(e=>{diag.innerHTML='<small>Ikke tilgjengelig i oppsettmodus.</small>'})}"
     "cde.onclick=e=>{e.preventDefault();fetch('/coredump/erase',{method:'POST'}).then(D)};D();"
+    "cfgb.onclick=()=>{let f=cfgf.files[0];if(!f)return;cfgb.disabled=true;cfgs.textContent='Gjenoppretter...';"
+    "fetch('/config.json',{method:'POST',body:f}).then(r=>r.text().then(t=>{cfgs.textContent=t;cfgb.disabled=r.ok}))"
+    ".catch(e=>{cfgs.textContent='Feilet';cfgb.disabled=false})};"
     /* Firmware updates: the status from main/updater.c, polled while a
      * check or install runs. */
     "function U(){fetch('/ota/status').then(r=>r.json()).then(s=>{"
@@ -990,6 +956,75 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
     return err;
 }
 
+/* GET /config.json: the settings as a backup file, without the WiFi network
+ * and the secrets (app_config_json.c). */
+static esp_err_t h_config_get(httpd_req_t *req)
+{
+    if (!authorized(req)) {
+        return ESP_OK;
+    }
+    app_config_t *cfg = malloc(sizeof(*cfg));
+    if (cfg == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    app_config_load(cfg);
+    char *json = app_config_to_json(cfg);
+    free(cfg);
+    if (json == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"multidisplay-innstillinger.json\"");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    return err;
+}
+
+/* POST /config.json: restore such a backup over the current settings (the
+ * WiFi and secrets stay), save and restart. */
+static esp_err_t h_config_put(httpd_req_t *req)
+{
+    if (!authorized(req) || !same_origin(req)) {
+        return ESP_OK;
+    }
+    if (req->content_len <= 0 || req->content_len >= SAVE_BODY_MAX) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Filen er tom eller for stor.");
+    }
+    char *body = malloc(SAVE_BODY_MAX);
+    app_config_t *cfg = malloc(sizeof(*cfg));
+    if (body == NULL || cfg == NULL) {
+        free(body);
+        free(cfg);
+        return httpd_resp_send_500(req);
+    }
+    int total = 0;
+    while (total < req->content_len) {
+        int r = httpd_req_recv(req, body + total, req->content_len - total);
+        if (r <= 0) {
+            free(body);
+            free(cfg);
+            return httpd_resp_send_500(req);
+        }
+        total += r;
+    }
+    body[total] = '\0';
+    app_config_load(cfg);
+    char why[96];
+    const bool ok = app_config_from_json(body, cfg, why, sizeof(why)) && app_config_save(cfg) == ESP_OK;
+    free(body);
+    free(cfg);
+    if (!ok) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, why);
+    }
+    ESP_LOGI(TAG, "Settings restored from a backup - restarting");
+    httpd_resp_sendstr(req, "Innstillingene er gjenopprettet. Starter p\xC3\xA5 nytt...");
+    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    return ESP_OK;
+}
+
 /* The departure picker script (components/setup_departures.js, embedded). */
 static esp_err_t h_dep_js(httpd_req_t *req)
 {
@@ -1030,6 +1065,10 @@ static void start_web_server(void)
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/ota", .method = HTTP_POST, .handler = h_ota });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/scan", .method = HTTP_GET, .handler = h_scan });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js });
+    httpd_register_uri_handler(s_httpd,
+                               &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_GET, .handler = h_config_get });
+    httpd_register_uri_handler(s_httpd,
+                               &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_POST, .handler = h_config_put });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/", .method = HTTP_GET, .handler = h_root });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
 }
@@ -1185,6 +1224,13 @@ static bool boot_button_held(void)
     return true;
 }
 
+static void (*s_before_connect)(void);
+
+void wifi_provision_before_connect(void (*fn)(void))
+{
+    s_before_connect = fn;
+}
+
 static void net_common_init(void)
 {
     s_events = xEventGroupCreate();
@@ -1204,6 +1250,9 @@ static void net_common_init(void)
     uint8_t mac[6] = { 0 };
     esp_wifi_get_mac(WIFI_IF_AP, mac);
     snprintf(s_ap_ssid, sizeof(s_ap_ssid), "MultiDisplay-%02X%02X", mac[4], mac[5]);
+    if (s_before_connect != NULL) {
+        s_before_connect();
+    }
 }
 
 static bool sta_try_connect(const app_config_t *cfg)

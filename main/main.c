@@ -11,8 +11,8 @@
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
 #include "esp_mmap_assets.h"
-#include "esp_netif_sntp.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "esp_rom_sys.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -30,6 +30,7 @@
 #include "watchdog.h"
 #include "updater.h"
 #include "diag.h"
+#include "clock.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
 #include "wifi_provision.h"
@@ -57,6 +58,9 @@ static const char *TAG = "main";
 /* With the screen switched off at night instead (g_cfg->night_off), a touch
  * lights it for this long. */
 #define NIGHT_WAKE_MS         60000
+
+/* Warn on screen if the clock still isn't set this long after boot. */
+#define CLOCK_WARN_US         (10 * 60 * 1000000LL)
 
 /* How long the weather task lets a screen just switched to draw before it
  * starts fetching for it: drawing a full screen and a TLS fetch at once took
@@ -492,12 +496,16 @@ static void night_timer_cb(lv_timer_t *t)
         s_backlight_on = false;
     }
     const diag_net_t net = diag_net_state();
-    if (net == DIAG_ONLINE) {
-        lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
-    } else {
+    if (net != DIAG_ONLINE) {
         lv_label_set_text(s_offline_label, net == DIAG_NO_WIFI ? LV_SYMBOL_WIFI " Ingen WiFi"
                                                                 : LV_SYMBOL_WARNING " Ingen internett");
         lv_obj_clear_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+    } else if (!clock_is_set() && esp_timer_get_time() > CLOCK_WARN_US) {
+        /* Built-in font: no "ø", hence the plain spelling. */
+        lv_label_set_text(s_offline_label, LV_SYMBOL_WARNING " Klokken er ikke stilt");
+        lv_obj_clear_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -565,6 +573,9 @@ static void yr_weather_task(void *arg)
 {
     /* Connects in station mode, or blocks forever in the setup portal (and
      * reboots when the form is saved). */
+    /* The clock (clock.c) starts in the background as WiFi connects; until
+     * it's set, the loop below treats the time of day as unknown. */
+    wifi_provision_before_connect(clock_start);
     wifi_provision_connect(g_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", screenshot_handler);
     diag_start();
@@ -575,14 +586,6 @@ static void yr_weather_task(void *arg)
      * internal DRAM in the first moment after association. */
     vTaskDelay(pdMS_TO_TICKS(3000));
 
-    /* Sync the wall clock purely so the nightly reboot below can be scheduled
-     * by real time-of-day. Fire-and-forget: esp_netif_sntp_init() just starts
-     * lwip's SNTP client in the background (wait_for_sync=false), and the
-     * loop further down treats a still-unsynced clock (reading near the 1970
-     * epoch) as "not yet known" and skips scheduling until it catches up. */
-    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-    sntp_cfg.wait_for_sync = false;
-    esp_netif_sntp_init(&sntp_cfg);
 
     int active_view = -1; /* -1 forces a first render; else == g_view_index */
     int saved_view = app_config_load_last_view();

@@ -165,11 +165,11 @@ to 52 KB).
   fit in internal RAM; since #15 mbedTLS allocates from PSRAM, so
   `esp_crt_bundle_attach` (already used by Entur and BarentsWatch) may now
   work for all of them. Try it and drop `CONFIG_ESP_TLS_INSECURE`.
-- [ ] **23. The clock depends on pool.ntp.org alone.** Add the router
+- [x] **23. The clock depends on pool.ntp.org alone.** Add the router
   (DHCP option 42, `CONFIG_LWIP_DHCP_GET_NTP_SRV`) and a second pool as
   fallbacks. Until the clock syncs, dimming, the nightly restart and the
   update window don't run; show "Klokken er ikke stilt" if still unsynced
-  after 10 minutes.
+  after 10 minutes. *Done (1.2.0): SNTP asks the router's NTP server if DHCP names one, then pool.ntp.org and time.cloudflare.com, with no start-up delay; until NTP answers, the Date header of the first MET response sets the clock. "Klokken er ikke stilt" bottom left if it still isn't set after 10 minutes; `/status` says when and how it was set.*
 - [x] **24. No visible sign of being offline.** When WiFi is down or every
   fetch fails, screens keep old data with only the weather's orange stamp.
   A small WiFi-off icon in a corner while disconnected, and each screen's
@@ -185,15 +185,15 @@ to 52 KB).
   `/ota/install`. Refuse POSTs whose `Origin`/`Referer` isn't the display
   itself. Updates are safe through signing, but a changed WiFi network needs
   the BOOT button to undo. *Done: POSTs whose `Origin` (or `Referer`) names another host get 403; curl without either still works.*
-- [ ] **27. Settings can't be backed up.** Five locations with departure
+- [x] **27. Settings can't be backed up.** Five locations with departure
   selections take a while to enter. `/config.json` to download (secrets
   left out) and an upload field to restore, also useful when replacing the
-  board.
-- [ ] **28. Host tests for the parsers.** `version_cmp`, `resolve_url`,
+  board. *Done (1.2.0): **Sikkerhetskopi** on the setup page downloads `/config.json` (everything but the WiFi network and the secrets) and restores one with POST `/config.json`: checked as a whole, applied over the current settings (the display's WiFi and secrets stay; the BarentsWatch secret is dropped if the client ID changes), saved and restarted.*
+- [x] **28. Host tests for the parsers.** `version_cmp`, `resolve_url`,
   `iso8601_to_epoch`, Entur's `parse_direction`/`goes_via`, the form field
   decoding and the manifest checks are pure C; build them for the `linux`
   target (or plain gcc) with a few recorded API responses, and run them in a
-  GitHub Action that also does `idf.py build` (with a throwaway signing key).
+  GitHub Action that also does `idf.py build` (with a throwaway signing key). *Done (1.2.0): `test/host` builds the firmware's own sources (version and URL helpers, form parsing, HTTP dates and buffers, sun times, Entur selection/response/query, the ADS-B parser, route lookups, settings save/load and backup) against stub ESP-IDF headers, with AddressSanitizer and UBSan: `make -C test/host`. `.github/workflows/ci.yml` runs them and builds the firmware (signed with a throwaway key) on every push. Writing them found that the form parser cut values while still URL-encoded - a name with æøå was cut short and could end in a broken escape; fixed.*
 - [x] **29. Build warnings.** `sdkconfig.defaults` still sets
   `LV_MEM_CUSTOM` and `LV_COLOR_SCREEN_TRANSP`, which LVGL 9 no longer has. *Done.*
 - [x] **30. Night: dim or off.** The backlight can't dim in hardware, but

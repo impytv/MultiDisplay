@@ -40,6 +40,7 @@
 #include "ota_writer.h"
 #include "rain_client.h"
 #include "updater.h"
+#include "version_util.h"
 #include "watchdog.h"
 #include "wifi_provision.h"
 
@@ -87,71 +88,6 @@ static int s_night_done_yday = -1; /* the night whose window has had its check *
 /* --------------------------------------------------------------------------
  * Helpers
  * ------------------------------------------------------------------------ */
-
-/* "1.10.2" (anything after a '-' ignored) into major/minor/patch; false if
- * it doesn't start with a number. */
-static bool parse_version(const char *s, int v[3])
-{
-    v[0] = v[1] = v[2] = 0;
-    return s != NULL && sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) >= 1;
-}
-
-/* <0, 0, >0 as a is older than, the same as, newer than b; unparsable
- * versions are never newer. */
-static int version_cmp(const char *a, const char *b)
-{
-    int va[3], vb[3];
-    if (!parse_version(a, va)) {
-        return -1;
-    }
-    if (!parse_version(b, vb)) {
-        return 1;
-    }
-    for (int i = 0; i < 3; i++) {
-        if (va[i] != vb[i]) {
-            return va[i] < vb[i] ? -1 : 1;
-        }
-    }
-    return 0;
-}
-
-/* The image URL, which the manifest may give relative to itself. */
-static void resolve_url(const char *manifest_url, const char *ref, char *out, size_t out_len)
-{
-    if (strstr(ref, "://") != NULL) {
-        snprintf(out, out_len, "%s", ref);
-        return;
-    }
-    const char *host = strstr(manifest_url, "://");
-    host = host ? host + 3 : manifest_url;
-    const char *end;
-    if (ref[0] == '/') {
-        end = strchr(host, '/'); /* scheme and host only */
-        if (end == NULL) {
-            end = manifest_url + strlen(manifest_url);
-        }
-    } else {
-        end = strrchr(host, '/'); /* the manifest's folder */
-        end = end ? end + 1 : manifest_url + strlen(manifest_url);
-    }
-    snprintf(out, out_len, "%.*s%s%s", (int)(end - manifest_url), manifest_url,
-             (ref[0] != '/' && end[-1] != '/') ? "/" : "", ref);
-}
-
-static bool parse_hex32(const char *hex, uint8_t out[32])
-{
-    if (hex == NULL || strlen(hex) != 64) {
-        return false;
-    }
-    for (int i = 0; i < 32; i++) {
-        unsigned b;
-        if (sscanf(hex + 2 * i, "%2x", &b) != 1) {
-            return false;
-        }
-        out[i] = (uint8_t)b;
-    }
-    return true;
-}
 
 static void set_result(const char *fmt, const char *arg)
 {
@@ -216,17 +152,17 @@ static const char *fetch_manifest(offer_t *o)
         err = "manifestet gjelder et annet prosjekt";
     } else if (board == NULL || strcmp(board, CONFIG_MULTIDISPLAY_BOARD) != 0) {
         err = "manifestet gjelder et annet kort";
-    } else if (version == NULL || strlen(version) >= sizeof(o->version) || !parse_version(version, v)) {
+    } else if (version == NULL || strlen(version) >= sizeof(o->version) || !version_parse(version, v)) {
         err = "manifestet har ingen gyldig versjon";
     } else if (url == NULL || url[0] == '\0' || !cJSON_IsNumber(size) || size->valuedouble <= 0 ||
-               !parse_hex32(sha, o->sha256)) {
+               !hex_to_bytes32(sha, o->sha256)) {
         err = "manifestet mangler filens adresse, st\xC3\xB8" "rrelse eller SHA-256";
     } else {
         snprintf(o->version, sizeof(o->version), "%s", version);
         snprintf(o->released, sizeof(o->released), "%s",
                  cJSON_GetStringValue(cJSON_GetObjectItem(root, "released")) ?: "");
         snprintf(o->notes, sizeof(o->notes), "%s", cJSON_GetStringValue(cJSON_GetObjectItem(root, "notes")) ?: "");
-        resolve_url(g_cfg->ota_url, url, o->url, sizeof(o->url));
+        url_resolve(g_cfg->ota_url, url, o->url, sizeof(o->url));
         o->size = (uint32_t)size->valuedouble;
     }
     cJSON_Delete(root);
@@ -346,7 +282,7 @@ static bool run_check(bool install, bool automatic)
         s_have_offer = false;
         xSemaphoreGive(s_lock);
         set_result("feilet: %s", err);
-    } else if (version_cmp(o->version, running) <= 0) {
+    } else if (version_compare(o->version, running) <= 0) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_have_offer = false;
         xSemaphoreGive(s_lock);

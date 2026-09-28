@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "esp_err.h"
 
@@ -52,6 +53,11 @@ typedef struct {
  * Otherwise as http_get_body, and `cache` describes the new body. */
 esp_err_t http_get_body_cached(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
                                const char *tag, http_cache_t *cache, bool ignore_expires);
+
+/* When the clock was set from a response's Date header (see
+ * http_get_body_cached): only while it wasn't set yet, so NTP stays in
+ * charge once it answers. 0 = never. */
+time_t http_clock_set_at(void);
 
 /* Epoch seconds for an HTTP date ("Mon, 28 Sep 2026 15:12:31 GMT"), 0 if it
  * doesn't parse. */

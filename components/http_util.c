@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "cJSON.h"
@@ -126,9 +127,37 @@ typedef struct {
     http_cache_t *cache; /* where Last-Modified/Expires go, or NULL */
 } get_ctx_t;
 
+/* The clock counts as set from this date on (as main's PLAUSIBLE_EPOCH_S). */
+#define CLOCK_PLAUSIBLE_S 1672531200
+static time_t s_clock_from_http;
+
+time_t http_clock_set_at(void)
+{
+    return s_clock_from_http;
+}
+
+/* Until NTP has answered, a response's Date sets the clock. */
+static void clock_from_date(const char *value)
+{
+    if (time(NULL) > CLOCK_PLAUSIBLE_S) {
+        return;
+    }
+    const int64_t t = http_date_to_epoch(value);
+    if (t > CLOCK_PLAUSIBLE_S) {
+        struct timeval tv = { .tv_sec = (time_t)t };
+        settimeofday(&tv, NULL);
+        s_clock_from_http = (time_t)t;
+        ESP_LOGI("http_util", "Clock set from an HTTP Date header");
+    }
+}
+
 static esp_err_t get_body_handler(esp_http_client_event_t *evt)
 {
     get_ctx_t *ctx = evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && strcasecmp(evt->header_key, "Date") == 0) {
+        clock_from_date(evt->header_value);
+        return ESP_OK;
+    }
     if (evt->event_id == HTTP_EVENT_ON_HEADER && ctx->cache != NULL) {
         if (strcasecmp(evt->header_key, "Last-Modified") == 0) {
             snprintf(ctx->cache->last_modified, sizeof(ctx->cache->last_modified), "%s", evt->header_value);
