@@ -132,11 +132,13 @@ typedef struct {
     uint8_t text_px;
     uint8_t text_bold;
     /* Automatic rotation (see APP_CONFIG_AUTO_*): minutes without a touch
-     * before it starts (0 = off), seconds per screen, and whether the
-     * overview is one of its screens. */
+     * before it starts (0 = off), seconds per screen, whether the overview
+     * is one of its screens, and whether it pauses while the screen is
+     * dimmed for the night (on unless unticked on the setup page). */
     uint16_t auto_idle_min;
     uint16_t auto_dwell_s;
     uint8_t auto_overview;
+    uint8_t auto_night_pause;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
     /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */

@@ -238,7 +238,8 @@ static char *build_page(const app_config_t *cfg)
                   "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
                   "<div><label>Per screen (s)</label>"
                   "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
-                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Include the overview</label></div>"
+                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Include the overview</label>"
+                  "<label><input type=checkbox name=autonight value=1%s>Pause while dimmed at night</label></div>"
                   "<small>After this many minutes without a touch the display moves on "
                   "to the next screen ticked under <i>Rotate</i> below (and the overview, "
                   "if included), staying on each for the time given. A touch stops it "
@@ -246,7 +247,7 @@ static char *build_page(const app_config_t *cfg)
                   "turns it off.</small></fieldset>",
                   APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
                   APP_CONFIG_AUTO_DWELL_S_MIN, APP_CONFIG_AUTO_DWELL_S_MAX, cfg->auto_dwell_s,
-                  cfg->auto_overview ? " checked" : "");
+                  cfg->auto_overview ? " checked" : "", cfg->auto_night_pause ? " checked" : "");
 
     p += snprintf(p, end - p,
                   "<label>Contact email for yr</label>"
@@ -714,6 +715,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
             cfg->auto_dwell_s = (uint16_t)v;
         }
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
+        cfg->auto_night_pause = form_field(body, "autonight", val, sizeof(val)) ? 1 : 0;
     }
     /* Likewise a blank secret keeps the saved one, unless the ID is gone. */
     form_field(body, "aisid", cfg->ais_client_id, sizeof(cfg->ais_client_id));

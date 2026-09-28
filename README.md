@@ -57,7 +57,8 @@ still need USB.
 ## Notes
 
 - A software watchdog restarts the device if the screen stops updating for a
-  minute or the fetching stalls for 20 minutes; the next boot logs which.
+  minute, the fetching stalls for 20 minutes, or memory stays low for a
+  minute; the next boot logs which. The memory figures are logged hourly.
 
 - The example keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.
 - The default panel resolution is `800x480`.
@@ -184,7 +185,9 @@ location's **Rotate** row (plus the overview, if **Include the overview**
 is ticked), in the normal screen order, and moves on every **Per screen
 (s)** seconds. A touch stops it until the display has been left alone that
 long again. 0 minutes (the default) turns it off, and nothing is ticked by
-default. Screens the rotation shows aren't remembered across a restart
+default. With **Pause while dimmed at night** (on by default) it stands
+still, and only that one screen fetches, while the night dimming is on.
+Screens the rotation shows aren't remembered across a restart
 (only tapped-to ones are), to spare the flash.
 
 ### Public transport departures

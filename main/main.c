@@ -100,6 +100,7 @@ static lv_obj_t *s_overview_root; /* all locations' weather */
 static lv_obj_t *s_radar_root;    /* aircraft, ships or rain; only if some location has one */
 static lv_obj_t *s_dep_root;      /* departures; only if some location has them */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
+static volatile bool s_night_dim; /* s_tap_layer is dimming the screen (see nightly_housekeeping) */
 
 bool lock_for_view(int for_view)
 {
@@ -318,12 +319,17 @@ static bool stop_in_rotation(int i)
 
 /* Once a second: after auto_idle_min minutes without a touch, move on to the
  * next screen in the rotation, then again every auto_dwell_s seconds until
- * the next touch. Runs in the LVGL context, like screen_touch_cb. */
+ * the next touch - except while the screen is dimmed for the night, if so
+ * set. Runs in the LVGL context, like screen_touch_cb. */
 static void auto_rotate_timer_cb(lv_timer_t *t)
 {
     (void)t;
     const uint32_t now = lv_tick_get();
     if (now - s_last_touch_ms < (uint32_t)g_cfg->auto_idle_min * 60000u) {
+        return;
+    }
+    /* Nobody's watching at night: stay put (and fetch for one screen only). */
+    if (s_night_dim && g_cfg->auto_night_pause) {
         return;
     }
     if (s_auto_running && now - s_auto_switch_ms < (uint32_t)g_cfg->auto_dwell_s * 1000u) {
@@ -435,7 +441,6 @@ static time_t compute_next_nightly_reboot(time_t now)
 static void nightly_housekeeping(void)
 {
     static time_t next_nightly_reboot;  /* 0 = not yet scheduled (clock not synced) */
-    static bool night_dim_active;       /* mirrors s_tap_layer's current bg_opa */
     time_t now_wall = time(NULL);
     if (now_wall <= PLAUSIBLE_EPOCH_S) {
         return;
@@ -460,8 +465,8 @@ static void nightly_housekeeping(void)
     const int from = g_cfg->dim_start, to = g_cfg->dim_end;
     bool want_dim = g_cfg->dim_enabled &&
                     (from <= to ? (now_min >= from && now_min < to) : (now_min >= from || now_min < to));
-    if (want_dim != night_dim_active) {
-        night_dim_active = want_dim;
+    if (want_dim != s_night_dim) {
+        s_night_dim = want_dim;
         if (esp_lv_adapter_lock(-1) == ESP_OK) {
             if (want_dim) {
                 lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);

@@ -30,8 +30,12 @@ planned order is 1, then 2 + 6, then 3, 7 and 10.
   more than 30 s gone are left out; a software watchdog restarts the device
   if the LVGL task stalls for 60 s or the weather task for 20 min, and the
   next boot logs which.*
-- [ ] **4. The nightly reboot masks leaks.** Log the minimum free internal heap
+- [x] **4. The nightly reboot masks leaks.** Log the minimum free internal heap
   and restart on a low threshold instead of relying only on the 02:00 reboot.
+  *Done: the watchdog restarts when internal DRAM stays under 16 KB (or no
+  4 KB block is left) or PSRAM under 300 KB for a minute, logs the memory
+  figures - with the lowest since boot - every hour, and the next boot says
+  why it restarted. The nightly restart stays.*
 
 ## User experience
 
@@ -53,10 +57,24 @@ planned order is 1, then 2 + 6, then 3, 7 and 10.
   the next two per line and destination; "+ N linjer som ikke får plass"
   under the rows ("minst" when the 24-row limit was hit).*
 - [ ] **8. Navigation.** Up to 26 screens with only next/previous taps, no
-  indication of position or of the rotation running. Page dots, a rotation
-  marker and long-press to the overview would help.
-- [ ] **9. Rotation at night.** Rotation (and its fetching) continues while the
-  screen is dimmed; an option to pause it at night.
+  indication of position or of the rotation running. Kept as it is for now;
+  ideas, roughly from least to most change:
+  - A thin progress bar or "3/14" in a corner for a few seconds after each
+    switch, then gone - position without permanent clutter.
+  - A small marker (e.g. ⟳) while the automatic rotation is running, so a
+    screen that changes by itself doesn't look like a fault.
+  - Long-press anywhere to go back to the overview; a double tap to jump to
+    the next location's first screen instead of the next screen.
+  - Swipe up/down to move between locations and left/right between one
+    location's screens (weather, radar, departures, ...), with a tap still
+    stepping forward.
+  - The overview as a menu: tap a location's row to go to its weather, and
+    small icons in the row for its other screens.
+  - A "home" screen setting: the screen to return to after the idle time
+    when the rotation is off, instead of staying wherever it was left.
+- [x] **9. Rotation at night.** Rotation (and its fetching) continues while the
+  screen is dimmed; an option to pause it at night. *Done: "Pause while
+  dimmed at night" on the setup page, on by default.*
 
 ## Found while testing
 

@@ -74,6 +74,7 @@ static void sanitize_view_settings(app_config_t *c)
         c->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
     }
     c->auto_overview = c->auto_overview ? 1 : 0;
+    c->auto_night_pause = c->auto_night_pause ? 1 : 0;
     c->title_bold = c->title_bold ? 1 : 0;
     c->text_bold = c->text_bold ? 1 : 0;
 }
@@ -92,6 +93,7 @@ static void seed_defaults(app_config_t *out)
     out->title_px = APP_CONFIG_TITLE_PX_DEFAULT;
     out->text_px = APP_CONFIG_TEXT_PX_DEFAULT;
     out->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
+    out->auto_night_pause = 1;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
@@ -189,6 +191,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u16(h, "autoidle", &out->auto_idle_min); /* off if never saved */
     nvs_get_u16(h, "autodwell", &out->auto_dwell_s);
     nvs_get_u8(h, "autoov", &out->auto_overview);
+    nvs_get_u8(h, "autonight", &out->auto_night_pause); /* keeps the default (on) if never saved */
     len = sizeof(out->departures); /* no departure boards if never saved */
     if (nvs_get_blob(h, "deps", out->departures, &len) != ESP_OK || len != sizeof(out->departures)) {
         memset(out->departures, 0, sizeof(out->departures));
@@ -222,8 +225,9 @@ esp_err_t app_config_load(app_config_t *out)
              out->title_px, out->title_bold ? " bold" : "", out->text_px, out->text_bold ? " bold" : "",
              (out->ais_client_id[0] && out->ais_client_secret[0]) ? "set" : "missing",
              out->yr_email, out->web_pass[0] ? "set" : "none");
-    ESP_LOGI(TAG, "auto rotation: after %u min idle, %u s per screen, overview %s",
-             out->auto_idle_min, out->auto_dwell_s, out->auto_overview ? "included" : "not included");
+    ESP_LOGI(TAG, "auto rotation: after %u min idle, %u s per screen, overview %s, %s at night",
+             out->auto_idle_min, out->auto_dwell_s, out->auto_overview ? "included" : "not included",
+             out->auto_night_pause ? "paused" : "running");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
                  "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%02x",
@@ -271,6 +275,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u16(h, "autoidle", cfg->auto_idle_min);
     if (err == ESP_OK) err = nvs_set_u16(h, "autodwell", cfg->auto_dwell_s);
     if (err == ESP_OK) err = nvs_set_u8(h, "autoov", cfg->auto_overview ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "autonight", cfg->auto_night_pause ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "aisid", cfg->ais_client_id);
     if (err == ESP_OK) err = nvs_set_str(h, "aissec", cfg->ais_client_secret);
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
