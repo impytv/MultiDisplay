@@ -1,0 +1,818 @@
+{
+ "meta": {
+  "reftime": "2026-09-28T12:00:00Z",
+  "location": {
+   "name": "Sentrum 1  - Rode 4",
+   "areaclass": "grunnkrets",
+   "longitude": "10.75000",
+   "latitude": "59.91000",
+   "path": "Oslo/Oslo/Sentrum 1/Sentrum 1  - Rode 4",
+   "areacode": "03010104",
+   "superareacode": "03010100"
+  },
+  "superlocation": {
+   "name": "Sentrum 1",
+   "areaclass": "delomrade",
+   "longitude": "10.74327",
+   "latitude": "59.90733",
+   "path": "Oslo/Oslo/Sentrum 1",
+   "areacode": "03010100",
+   "superareacode": "0301"
+  },
+  "sublocations": []
+ },
+ "data": {
+  "time": [
+   {
+    "from": "2026-09-28T18:00:00Z",
+    "to": "2026-09-28T18:00:00Z",
+    "variables": {
+     "AQI": {
+      "value": 1.8153963088989258,
+      "units": "1"
+     },
+     "no2_concentration": {
+      "value": 19.465721130371094,
+      "units": "ug/m3"
+     },
+     "AQI_no2": {
+      "value": 1.1946572065353394,
+      "units": "1"
+     },
+     "no2_nonlocal_fraction": {
+      "value": 36.0,
+      "units": "%"
+     },
+     "no2_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_exhaust": {
+      "value": 24.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_shipping": {
+      "value": 38.0,
+      "units": "%"
+     },
+     "no2_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_concentration": {
+      "value": 8.852617263793945,
+      "units": "ug/m3"
+     },
+     "AQI_pm10": {
+      "value": 1.1475436687469482,
+      "units": "1"
+     },
+     "pm10_nonlocal_fraction": {
+      "value": 95.0,
+      "units": "%"
+     },
+     "pm10_nonlocal_fraction_seasalt": {
+      "value": 1.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_nonexhaust": {
+      "value": 1.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_shipping": {
+      "value": 2.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_concentration": {
+      "value": 7.968860626220703,
+      "units": "ug/m3"
+     },
+     "AQI_pm25": {
+      "value": 1.265628695487976,
+      "units": "1"
+     },
+     "pm25_nonlocal_fraction": {
+      "value": 97.0,
+      "units": "%"
+     },
+     "pm25_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_shipping": {
+      "value": 2.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_concentration": {
+      "value": 81.53962707519531,
+      "units": "ug/m3"
+     },
+     "AQI_o3": {
+      "value": 1.8153963088989258,
+      "units": "1"
+     },
+     "o3_nonlocal_fraction": {
+      "value": 100.0,
+      "units": "%"
+     },
+     "o3_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_shipping": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     }
+    },
+    "reason": {
+     "variables": [],
+     "sources": []
+    }
+   },
+   {
+    "from": "2026-09-28T19:00:00Z",
+    "to": "2026-09-28T19:00:00Z",
+    "variables": {
+     "AQI": {
+      "value": 1.8104485273361206,
+      "units": "1"
+     },
+     "no2_concentration": {
+      "value": 20.813655853271484,
+      "units": "ug/m3"
+     },
+     "AQI_no2": {
+      "value": 1.2081365585327148,
+      "units": "1"
+     },
+     "no2_nonlocal_fraction": {
+      "value": 30.0,
+      "units": "%"
+     },
+     "no2_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_exhaust": {
+      "value": 20.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_shipping": {
+      "value": 48.0,
+      "units": "%"
+     },
+     "no2_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_concentration": {
+      "value": 8.266462326049805,
+      "units": "ug/m3"
+     },
+     "AQI_pm10": {
+      "value": 1.1377743482589722,
+      "units": "1"
+     },
+     "pm10_nonlocal_fraction": {
+      "value": 92.0,
+      "units": "%"
+     },
+     "pm10_nonlocal_fraction_seasalt": {
+      "value": 2.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_nonexhaust": {
+      "value": 1.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_shipping": {
+      "value": 3.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_concentration": {
+      "value": 7.349371433258057,
+      "units": "ug/m3"
+     },
+     "AQI_pm25": {
+      "value": 1.2449790239334106,
+      "units": "1"
+     },
+     "pm25_nonlocal_fraction": {
+      "value": 95.0,
+      "units": "%"
+     },
+     "pm25_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_shipping": {
+      "value": 4.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_concentration": {
+      "value": 81.04484558105469,
+      "units": "ug/m3"
+     },
+     "AQI_o3": {
+      "value": 1.8104485273361206,
+      "units": "1"
+     },
+     "o3_nonlocal_fraction": {
+      "value": 100.0,
+      "units": "%"
+     },
+     "o3_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_shipping": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     }
+    },
+    "reason": {
+     "variables": [],
+     "sources": []
+    }
+   },
+   {
+    "from": "2026-09-28T20:00:00Z",
+    "to": "2026-09-28T20:00:00Z",
+    "variables": {
+     "AQI": {
+      "value": 1.695737361907959,
+      "units": "1"
+     },
+     "no2_concentration": {
+      "value": 41.116798400878906,
+      "units": "ug/m3"
+     },
+     "AQI_no2": {
+      "value": 1.4111679792404175,
+      "units": "1"
+     },
+     "no2_nonlocal_fraction": {
+      "value": 22.0,
+      "units": "%"
+     },
+     "no2_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_exhaust": {
+      "value": 21.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_shipping": {
+      "value": 55.0,
+      "units": "%"
+     },
+     "no2_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_concentration": {
+      "value": 9.212529182434082,
+      "units": "ug/m3"
+     },
+     "AQI_pm10": {
+      "value": 1.153542160987854,
+      "units": "1"
+     },
+     "pm10_nonlocal_fraction": {
+      "value": 87.0,
+      "units": "%"
+     },
+     "pm10_nonlocal_fraction_seasalt": {
+      "value": 1.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_nonexhaust": {
+      "value": 2.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_shipping": {
+      "value": 8.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_concentration": {
+      "value": 8.208109855651855,
+      "units": "ug/m3"
+     },
+     "AQI_pm25": {
+      "value": 1.2736036777496338,
+      "units": "1"
+     },
+     "pm25_nonlocal_fraction": {
+      "value": 89.0,
+      "units": "%"
+     },
+     "pm25_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_shipping": {
+      "value": 9.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_concentration": {
+      "value": 69.57373809814453,
+      "units": "ug/m3"
+     },
+     "AQI_o3": {
+      "value": 1.695737361907959,
+      "units": "1"
+     },
+     "o3_nonlocal_fraction": {
+      "value": 100.0,
+      "units": "%"
+     },
+     "o3_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_shipping": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     }
+    },
+    "reason": {
+     "variables": [],
+     "sources": []
+    }
+   },
+   {
+    "from": "2026-09-28T21:00:00Z",
+    "to": "2026-09-28T21:00:00Z",
+    "variables": {
+     "AQI": {
+      "value": 1.5251972675323486,
+      "units": "1"
+     },
+     "no2_concentration": {
+      "value": 52.51972579956055,
+      "units": "ug/m3"
+     },
+     "AQI_no2": {
+      "value": 1.5251972675323486,
+      "units": "1"
+     },
+     "no2_nonlocal_fraction": {
+      "value": 21.0,
+      "units": "%"
+     },
+     "no2_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_exhaust": {
+      "value": 16.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_shipping": {
+      "value": 62.0,
+      "units": "%"
+     },
+     "no2_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_concentration": {
+      "value": 9.41688060760498,
+      "units": "ug/m3"
+     },
+     "AQI_pm10": {
+      "value": 1.1569479703903198,
+      "units": "1"
+     },
+     "pm10_nonlocal_fraction": {
+      "value": 80.0,
+      "units": "%"
+     },
+     "pm10_nonlocal_fraction_seasalt": {
+      "value": 1.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_nonexhaust": {
+      "value": 3.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_shipping": {
+      "value": 14.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_concentration": {
+      "value": 8.573580741882324,
+      "units": "ug/m3"
+     },
+     "AQI_pm25": {
+      "value": 1.2857860326766968,
+      "units": "1"
+     },
+     "pm25_nonlocal_fraction": {
+      "value": 82.0,
+      "units": "%"
+     },
+     "pm25_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_shipping": {
+      "value": 15.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_concentration": {
+      "value": 51.25044250488281,
+      "units": "ug/m3"
+     },
+     "AQI_o3": {
+      "value": 1.5125044584274292,
+      "units": "1"
+     },
+     "o3_nonlocal_fraction": {
+      "value": 100.0,
+      "units": "%"
+     },
+     "o3_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_shipping": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     }
+    },
+    "reason": {
+     "variables": [],
+     "sources": []
+    }
+   },
+   {
+    "from": "2026-09-28T22:00:00Z",
+    "to": "2026-09-28T22:00:00Z",
+    "variables": {
+     "AQI": {
+      "value": 1.4834851026535034,
+      "units": "1"
+     },
+     "no2_concentration": {
+      "value": 48.348506927490234,
+      "units": "ug/m3"
+     },
+     "AQI_no2": {
+      "value": 1.4834851026535034,
+      "units": "1"
+     },
+     "no2_nonlocal_fraction": {
+      "value": 42.0,
+      "units": "%"
+     },
+     "no2_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_exhaust": {
+      "value": 12.0,
+      "units": "%"
+     },
+     "no2_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_shipping": {
+      "value": 45.0,
+      "units": "%"
+     },
+     "no2_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "no2_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_concentration": {
+      "value": 9.681231498718262,
+      "units": "ug/m3"
+     },
+     "AQI_pm10": {
+      "value": 1.1613538265228271,
+      "units": "1"
+     },
+     "pm10_nonlocal_fraction": {
+      "value": 89.0,
+      "units": "%"
+     },
+     "pm10_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_traffic_nonexhaust": {
+      "value": 2.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_shipping": {
+      "value": 8.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm10_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_concentration": {
+      "value": 8.935563087463379,
+      "units": "ug/m3"
+     },
+     "AQI_pm25": {
+      "value": 1.2978521585464478,
+      "units": "1"
+     },
+     "pm25_nonlocal_fraction": {
+      "value": 90.0,
+      "units": "%"
+     },
+     "pm25_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_shipping": {
+      "value": 9.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "pm25_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_concentration": {
+      "value": 42.0253791809082,
+      "units": "ug/m3"
+     },
+     "AQI_o3": {
+      "value": 1.4202537536621094,
+      "units": "1"
+     },
+     "o3_nonlocal_fraction": {
+      "value": 100.0,
+      "units": "%"
+     },
+     "o3_nonlocal_fraction_seasalt": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_exhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_traffic_nonexhaust": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_shipping": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_heating": {
+      "value": 0.0,
+      "units": "%"
+     },
+     "o3_local_fraction_industry": {
+      "value": 0.0,
+      "units": "%"
+     }
+    },
+    "reason": {
+     "variables": [],
+     "sources": []
+    }
+   }
+  ]
+ }
+}

@@ -332,7 +332,7 @@ static char *build_page(const app_config_t *cfg)
                   "nedenfor (&#9650;/&#9660; flytter et sted). La en blokk st&aring; "
                   "tom for &aring; hoppe over den. Finn stedet med s&oslash;ket, eller "
                   "skriv inn breddegrad og lengdegrad. For hvert sted velger du "
-                  "v&aelig;r, flyradar, skipstrafikk, nedb&oslash;rsradar og avganger "
+                  "v&aelig;r, flyradar, skipstrafikk, nedb&oslash;rsradar, avganger og luft "
                   "(vist i den rekkef&oslash;lgen), hvor langt radarene ser, og "
                   "korteste skip som vises: kortere skip, og skip som ikke "
                   "oppgir lengde, skjules (0 viser alle). Innenfor den valgfrie "
@@ -383,13 +383,15 @@ static char *build_page(const app_config_t *cfg)
                       "<label><input type=checkbox name=ac%d value=1%s>Fly</label>"
                       "<label><input type=checkbox name=sh%d value=1%s>Skip</label>"
                       "<label><input type=checkbox name=rn%d value=1%s>Nedb&oslash;r</label>"
-                      "<label><input type=checkbox name=dp%d value=1%s>Avganger</label></div>"
+                      "<label><input type=checkbox name=dp%d value=1%s>Avganger</label>"
+                      "<label><input type=checkbox name=lq%d value=1%s>Luft</label></div>"
                       "<label>Bytt automatisk</label><div class=chk>"
                       "<label><input type=checkbox name=aw%d value=1%s>V&aelig;r</label>"
                       "<label><input type=checkbox name=aa%d value=1%s>Fly</label>"
                       "<label><input type=checkbox name=as%d value=1%s>Skip</label>"
                       "<label><input type=checkbox name=ar%d value=1%s>Nedb&oslash;r</label>"
-                      "<label><input type=checkbox name=ad%d value=1%s>Avganger</label></div>"
+                      "<label><input type=checkbox name=ad%d value=1%s>Avganger</label>"
+                      "<label><input type=checkbox name=al%d value=1%s>Luft</label></div>"
                       "<div class=row><div><label>Flyradar (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Nedb&oslash;rsradar (km)</label>"
@@ -409,11 +411,13 @@ static char *build_page(const app_config_t *cfg)
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (show & APP_SHOW_RAIN) ? " checked" : "",
                       i, (show & APP_SHOW_DEPARTURES) ? " checked" : "",
+                      i, (show & APP_SHOW_AIR) ? " checked" : "",
                       i, (auto_show & APP_SHOW_WEATHER) ? " checked" : "",
                       i, (auto_show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (auto_show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (auto_show & APP_SHOW_RAIN) ? " checked" : "",
                       i, (auto_show & APP_SHOW_DEPARTURES) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_AIR) ? " checked" : "",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
                       i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km,
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
@@ -573,6 +577,10 @@ static esp_err_t h_scan(httpd_req_t *req)
     return httpd_resp_sendstr(req, out);
 }
 
+/* It may mark the running firmware as good first, which writes flash and
+ * logs: 2 KB overflowed doing that (seen as a crash dump). */
+#define REBOOT_TASK_STACK 4096
+
 static void reboot_task(void *arg)
 {
     (void)arg;
@@ -678,7 +686,7 @@ static esp_err_t h_ota(httpd_req_t *req)
     ESP_LOGI(TAG, "Firmware update written - restarting");
     status("Programvare oppdatert.\nStarter p\xC3\xA5 nytt...");
     httpd_resp_sendstr(req, "Oppdatert - starter p\xC3\xA5 nytt\n");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
     return ESP_OK;
 }
 
@@ -808,10 +816,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     uint16_t ship_near_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     char (*deps)[APP_CONFIG_DEPARTURES_MAX] = calloc(APP_CONFIG_MAX_LOCATIONS, APP_CONFIG_DEPARTURES_MAX);
-    char *dep_raw = malloc(3 * APP_CONFIG_DEPARTURES_MAX);
-    if (deps == NULL || dep_raw == NULL) {
-        free(deps);
-        free(dep_raw);
+    if (deps == NULL) {
         return httpd_resp_send_500(req);
     }
     int n = 0;
@@ -833,7 +838,6 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         if (!app_config_coord_valid(lat, true) || !app_config_coord_valid(lon, false)) {
             free(deps);
-            free(dep_raw);
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req,
                 "<meta charset=utf-8><p>Ugyldig: hvert sted m&aring; ha en "
@@ -862,15 +866,14 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RAIN : 0;
         snprintf(key, sizeof(key), "dp%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_DEPARTURES : 0;
-        /* form_field() truncates before URL-decoding, and the IDs' ':' come
-         * in as "%3A": read the raw field into a buffer three times the size. */
+        snprintf(key, sizeof(key), "lq%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_AIR : 0;
         snprintf(key, sizeof(key), "dep%d", i);
-        form_field(body, key, dep_raw, 3 * APP_CONFIG_DEPARTURES_MAX);
-        snprintf(deps[n], APP_CONFIG_DEPARTURES_MAX, "%s", dep_raw);
+        form_field(body, key, deps[n], APP_CONFIG_DEPARTURES_MAX);
         show[n] = sh ? sh : APP_SHOW_WEATHER;
         static const struct { const char *key; uint8_t bit; } rot[] = {
             { "aw%d", APP_SHOW_WEATHER }, { "aa%d", APP_SHOW_RADAR }, { "as%d", APP_SHOW_SHIPS },
-            { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES },
+            { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES }, { "al%d", APP_SHOW_AIR },
         };
         for (int r = 0; r < (int)(sizeof(rot) / sizeof(rot[0])); r++) {
             snprintf(key, sizeof(key), rot[r].key, i);
@@ -926,7 +929,6 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     }
     memcpy(cfg->departures, deps, sizeof(cfg->departures));
     free(deps);
-    free(dep_raw);
 
     if (app_config_save(cfg) != ESP_OK) {
         return httpd_resp_send_500(req);
@@ -939,7 +941,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         "Lagret. Starter p&aring; nytt&hellip;"
         "<p style='font-family:system-ui;text-align:center'>"
         "<a href=/>Tilbake til oppsettsiden</a></p>");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
     return ESP_OK;
 }
 
@@ -1021,7 +1023,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "Settings restored from a backup - restarting");
     httpd_resp_sendstr(req, "Innstillingene er gjenopprettet. Starter p\xC3\xA5 nytt...");
-    xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
+    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
     return ESP_OK;
 }
 

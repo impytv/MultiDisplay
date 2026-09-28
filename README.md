@@ -292,6 +292,25 @@ still, and only that one screen fetches, while the night dimming is on.
 Screens the rotation shows aren't remembered across a restart
 (only tapped-to ones are), to spare the flash.
 
+### Air quality and pollen
+
+Tick **Luft** for a location to get a screen with:
+
+- **Air quality** from MET Norway's
+  [airqualityforecast](https://api.met.no/weatherapi/airqualityforecast/0.1/documentation)
+  (all of Norway): the level now in MET's colours (*Lite*, *Moderat*, *Høy*,
+  *Svært høy* luftforurensning), the pollutant that drives it, and the next
+  24 hours as one coloured cell per hour. Fetched every 30 minutes,
+  honouring MET's `Expires`.
+- **Pollen** for alder, birch, grass and mugwort from
+  [Open-Meteo](https://open-meteo.com/en/docs/air-quality-api), which serves
+  the European Copernicus (CAMS) model: the level now in NAAF's words
+  (*Ingen*, *Beskjeden*, *Moderat*, *Kraftig*, *Ekstrem*, using NAAF's limits
+  of 1/10/100/1000 grains per m³ for trees and 1/10/30/150 for grass and
+  mugwort) and the next 24 hours as bars. It is a model forecast, so it can
+  differ from NAAF's official pollen forecast (whose API needs an agreement
+  with NAAF). Out of season it says *Ingen pollen i lufta nå*.
+
 ### Night
 
 Under **Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**

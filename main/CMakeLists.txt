@@ -11,6 +11,7 @@ idf_component_register(
         "diag.c"
         "sun.c"
         "clock.c"
+        "air.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/app_config_json.c"
@@ -24,6 +25,7 @@ idf_component_register(
         "../components/met_alerts_client.c"
         "../components/rain_client.c"
         "../components/entur_client.c"
+        "../components/air_client.c"
         "../components/http_util.c"
         "../components/ota_writer.c"
     INCLUDE_DIRS

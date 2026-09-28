@@ -97,6 +97,21 @@ void draw_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color)
     lv_draw_rect(layer, &d, &a);
 }
 
+void draw_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv_color_t color)
+{
+    lv_area_t a = { x1, y1, x2, y2 };
+    if (!draw_area_visible(layer, &a)) {
+        return;
+    }
+    lv_draw_rect_dsc_t d;
+    lv_draw_rect_dsc_init(&d);
+    d.radius = radius;
+    d.bg_opa = LV_OPA_COVER;
+    d.bg_color = color;
+    d.border_width = 0;
+    lv_draw_rect(layer, &d, &a);
+}
+
 /* Draw `txt` left-aligned in w px, shortened with ".." if it doesn't fit. */
 void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color)
 {

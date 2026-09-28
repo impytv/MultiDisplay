@@ -23,6 +23,7 @@
 #include "ais_client.h"
 #include "app.h"
 #include "departures.h"
+#include "air.h"
 #include "entur_client.h"
 #include "radar.h"
 #include "rain_client.h"
@@ -86,10 +87,11 @@ typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
-static view_stop_t s_stops[1 + 5 * APP_CONFIG_MAX_LOCATIONS];
+static view_stop_t s_stops[1 + 6 * APP_CONFIG_MAX_LOCATIONS]; /* the overview + up to six per location */
 static int s_stop_count;
 static bool s_any_radar;      /* some location shows aircraft, ships or rain (they share the radar screen) */
 static bool s_any_departures; /* some location shows a departure board */
+static bool s_any_air;        /* some location shows the air screen */
 
 /* Index into s_stops of the screen on show. Switched by a tap or the
  * automatic rotation (view_enter); the weather task watches it and fetches.
@@ -109,6 +111,7 @@ static lv_obj_t *s_detail_root;   /* a location's weather */
 static lv_obj_t *s_overview_root; /* all locations' weather */
 static lv_obj_t *s_radar_root;    /* aircraft, ships or rain; only if some location has one */
 static lv_obj_t *s_dep_root;      /* departures; only if some location has them */
+static lv_obj_t *s_air_root;      /* air quality and pollen; likewise */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
 static bool s_backlight_on = true;
@@ -199,7 +202,7 @@ static void build_stops(void)
         uint8_t show, kind;
     } order[] = {
         { APP_SHOW_WEATHER, STOP_WEATHER }, { APP_SHOW_RADAR, STOP_RADAR }, { APP_SHOW_SHIPS, STOP_SHIPS },
-        { APP_SHOW_RAIN, STOP_RAIN }, { APP_SHOW_DEPARTURES, STOP_DEPARTURES },
+        { APP_SHOW_RAIN, STOP_RAIN }, { APP_SHOW_DEPARTURES, STOP_DEPARTURES }, { APP_SHOW_AIR, STOP_AIR },
     };
     for (int i = 0; i < g_cfg->location_count; i++) {
         for (size_t k = 0; k < sizeof(order) / sizeof(order[0]); k++) {
@@ -213,6 +216,9 @@ static void build_stops(void)
         if (g_cfg->show[i] & APP_SHOW_DEPARTURES) {
             s_any_departures = true;
         }
+        if (g_cfg->show[i] & APP_SHOW_AIR) {
+            s_any_air = true;
+        }
     }
 }
 
@@ -220,10 +226,11 @@ static void build_stops(void)
  * label and tap layer sit above all of them and are left alone. */
 static void show_view(stop_kind_t kind)
 {
-    lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root };
+    lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root, s_air_root };
     lv_obj_t *shown = (kind == STOP_OVERVIEW) ? s_overview_root
                     : (kind == STOP_WEATHER) ? s_detail_root
-                    : (kind == STOP_DEPARTURES) ? s_dep_root : s_radar_root;
+                    : (kind == STOP_DEPARTURES) ? s_dep_root
+                    : (kind == STOP_AIR) ? s_air_root : s_radar_root;
     for (size_t k = 0; k < sizeof(roots) / sizeof(roots[0]); k++) {
         if (roots[k] == NULL) {
             continue;
@@ -268,6 +275,9 @@ static void view_enter(int idx)
         break;
     case STOP_DEPARTURES:
         departures_enter(stop->loc);
+        break;
+    case STOP_AIR:
+        air_enter(stop->loc);
         break;
     }
 }
@@ -327,7 +337,7 @@ static bool stop_in_rotation(int i)
 {
     static const uint8_t bit[] = {
         [STOP_WEATHER] = APP_SHOW_WEATHER, [STOP_RADAR] = APP_SHOW_RADAR, [STOP_SHIPS] = APP_SHOW_SHIPS,
-        [STOP_RAIN] = APP_SHOW_RAIN, [STOP_DEPARTURES] = APP_SHOW_DEPARTURES,
+        [STOP_RAIN] = APP_SHOW_RAIN, [STOP_DEPARTURES] = APP_SHOW_DEPARTURES, [STOP_AIR] = APP_SHOW_AIR,
     };
     const view_stop_t *st = &s_stops[i];
     if (st->kind == STOP_OVERVIEW) {
@@ -388,6 +398,9 @@ static void build_ui(lv_obj_t *screen)
     }
     if (s_any_departures) {
         s_dep_root = departures_build(screen);
+    }
+    if (s_any_air) {
+        s_air_root = air_build(screen);
     }
 
     /* Created after the screens so it sits on top of whichever is shown:
@@ -649,6 +662,9 @@ static void yr_weather_task(void *arg)
             break;
         case STOP_DEPARTURES:
             wait_ms = departures_poll(stop->loc, active_view);
+            break;
+        case STOP_AIR:
+            wait_ms = air_poll(stop->loc, active_view);
             break;
         default:
             wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);

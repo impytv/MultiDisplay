@@ -17,7 +17,8 @@
 
 /* The kinds of screen a tap cycles through (see build_stops in main.c). */
 typedef enum {
-    STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4, STOP_DEPARTURES = 5
+    STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4, STOP_DEPARTURES = 5,
+    STOP_AIR = 6
 } stop_kind_t;
 
 /* Runtime settings (WiFi + locations), from NVS via the setup page or the

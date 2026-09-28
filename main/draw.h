@@ -16,6 +16,8 @@ int draw_text_w(const char *txt);
 
 void draw_line(lv_layer_t *layer, int x1, int y1, int x2, int y2, int width, lv_color_t color);
 void draw_triangle(lv_layer_t *layer, const int pts[3][2], lv_color_t color);
+/* A filled rectangle x1..x2, y1..y2 (inclusive), corners rounded by radius. */
+void draw_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv_color_t color);
 /* A filled circle of radius r around cx, cy. */
 void draw_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color);
 
