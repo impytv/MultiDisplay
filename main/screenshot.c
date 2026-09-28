@@ -14,7 +14,7 @@
 #include "waveshare_rgb_lcd_port.h"
 
 /* PSRAM left over for everything else while a screenshot is taken. */
-#define SCREENSHOT_PSRAM_SPARE (640 * 1024)
+#define SCREENSHOT_PSRAM_SPARE (448 * 1024)
 
 typedef struct {
     httpd_req_t *req;
@@ -64,8 +64,9 @@ esp_err_t screenshot_handler(httpd_req_t *req)
 {
     /* The snapshot is a full-screen RGB565 copy (750 KB of PSRAM). Refuse
      * rather than take it when that would leave too little for the fetches
-     * running meanwhile (a coastline render needs ~600 KB, a forecast parse
-     * ~350 KB). */
+     * running meanwhile: a forecast parse needs ~350 KB. (A coastline render
+     * needs more, but only on the first visit to a location's radar; if it
+     * can't get it, that coastline is drawn on the next visit instead.) */
     const size_t snap_bytes = (size_t)EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * 2;
     if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < snap_bytes ||
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < snap_bytes + SCREENSHOT_PSRAM_SPARE) {

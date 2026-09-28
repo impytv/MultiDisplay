@@ -64,6 +64,15 @@ static const char *TAG = "weather";
 
 #define HOUR_ROW_Y (WIND_CHART_Y + WIND_CHART_H + 6)
 
+/* The bar images (see bars_t): inside the frames' borders, the precipitation
+ * one only as tall as its bars can get. */
+#define BARS_INSET      2
+#define PRECIP_BARS_H   (CHART_H / PRECIP_AXIS_COMPRESSION + 1)
+#define WIND_BARS_H     (WIND_CHART_H - 2 * BARS_INSET)
+/* The bar behind (the precipitation max, the gust) at half the opacity of
+ * the one in front: on white, exactly the palette's "lighten 3" shade. */
+#define BARS_BACK_OPA   128
+
 /* Chart value markers. Temperature: the global high and low are always
  * labelled; precipitation/wind: the global peak is always labelled. Further
  * local extrema get a label only once at least MARKER_MIN_GAP_H hours have
@@ -155,38 +164,104 @@ static met_alerts_t *s_alert_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_alert_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_alert_tk[APP_CONFIG_MAX_LOCATIONS];
 
-/* s_precip_max_chart is the frame (background/border/gridlines) for the
- * whole precip+temp area, and sits behind s_precip_chart (created first, so
- * it's drawn first / lower z-order) and s_temp_line - both fully transparent
- * overlays, so this chart's own (taller, paler) max-precipitation bars show
- * through above wherever the shorter min bar doesn't reach. */
-static lv_obj_t *s_precip_max_chart;
-static lv_chart_series_t *s_precip_max_series;
-static lv_obj_t *s_precip_chart;
-static lv_chart_series_t *s_precip_series;
+/* A pair of bar series - one bar in front of a taller, paler one behind it
+ * (the precipitation min and max, the wind and its gust) - drawn as one A8
+ * image in the one colour: the front bar opaque, the part of the back bar
+ * above it at BARS_BACK_OPA. An lv_chart bar series would do, but it adds a
+ * draw task per bar for every strip of the screen LVGL draws, whether the
+ * bar reaches into the strip or not: some 150 tasks at once for these two
+ * pairs, ~30 KB of internal DRAM, while an image is one task per strip. */
+typedef struct {
+    lv_obj_t *obj;
+    uint8_t *px;       /* PSRAM, CHART_W x the object's height */
+    lv_image_dsc_t img;
+    lv_color_t color;
+} bars_t;
+
+/* The frames (background/border/gridlines) under the bars: charts with no
+ * series of their own. The temperature line and the markers are on top. */
+static lv_obj_t *s_precip_frame;
+static bars_t s_precip_bars;
 static lv_obj_t *s_temp_line;
 static lv_obj_t *s_temp_markers[TEMP_MARKER_POOL];
 static lv_obj_t *s_precip_markers[PRECIP_MARKER_POOL];
 
-/* s_gust_chart is a plain, frameless bars-only layer sitting behind
- * s_wind_chart (created first, so it's drawn first / lower z-order);
- * s_wind_chart's own background is made transparent so the taller gust bars
- * show through above wherever the shorter wind bar doesn't reach - the same
- * "frame widget + transparent overlay" trick as s_precip_max_chart above. */
-static lv_obj_t *s_gust_chart;
-static lv_chart_series_t *s_gust_series;
-static lv_obj_t *s_wind_chart;
-static lv_chart_series_t *s_wind_series;
+static lv_obj_t *s_wind_frame;
+static bars_t s_wind_bars;
 static lv_obj_t *s_wind_markers[WIND_MARKER_POOL];
 static lv_obj_t *s_wind_dir_arrows[NUM_HOUR_LABELS];
 
 static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
 static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 
+/* The bars' values; LV_CHART_POINT_NONE for no bar. */
 static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS];     /* millimeters * 10 */
 static int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
 static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
+
+static void bars_draw_cb(lv_event_t *e)
+{
+    const bars_t *b = lv_event_get_user_data(e);
+    lv_draw_image_dsc_t d;
+    lv_draw_image_dsc_init(&d);
+    d.src = &b->img;
+    d.recolor = b->color; /* the colour of an A8 image */
+    lv_area_t a;
+    lv_obj_get_coords(b->obj, &a);
+    lv_draw_image(lv_event_get_layer(e), &d, &a);
+}
+
+/* A bar pair `h` px tall at x, y (CHART_W wide), in `color`. */
+static void bars_create(bars_t *b, int32_t x, int32_t y, int32_t h, lv_color_t color)
+{
+    b->px = heap_caps_calloc(CHART_W, h, MALLOC_CAP_SPIRAM);
+    assert(b->px != NULL);
+    b->img = (lv_image_dsc_t){
+        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_A8, .w = CHART_W, .h = h, .stride = CHART_W },
+        .data = b->px,
+        .data_size = (uint32_t)CHART_W * h,
+    };
+    b->color = color;
+    b->obj = lv_obj_create(s_detail_root);
+    lv_obj_remove_style_all(b->obj);
+    lv_obj_set_pos(b->obj, x, y);
+    lv_obj_set_size(b->obj, CHART_W, h);
+    lv_obj_clear_flag(b->obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(b->obj, bars_draw_cb, LV_EVENT_DRAW_MAIN, b);
+}
+
+/* Draw `n` bar pairs into `b`: front[i] opaque in front of back[i], each
+ * value/axis_max of `full_h` px tall (the image may be shorter, cutting off
+ * what could never be reached anyway). Adapter lock held. */
+static void bars_render(bars_t *b, int n, const int32_t *front, const int32_t *back, int32_t axis_max,
+                        int32_t full_h)
+{
+    const int32_t h = b->img.header.h;
+    memset(b->px, 0, (size_t)CHART_W * h);
+    if (n <= 0 || axis_max <= 0) {
+        lv_obj_invalidate(b->obj);
+        return;
+    }
+    /* Like lv_chart's bars: n slots across, a bar in each with a gap. */
+    const float slot = (float)(CHART_W - 8) / n;
+    const int32_t w = slot > 3.0f ? (int32_t)(slot * 0.7f + 0.5f) : 1;
+    for (int i = 0; i < n; i++) {
+        const int32_t x0 = 4 + (int32_t)(i * slot + (slot - w) / 2);
+        int32_t hf = (front[i] == LV_CHART_POINT_NONE) ? 0 : front[i] * full_h / axis_max;
+        int32_t hb = (back[i] == LV_CHART_POINT_NONE) ? 0 : back[i] * full_h / axis_max;
+        hf = hf > h ? h : hf;
+        hb = hb > h ? h : hb;
+        for (int32_t r = 0; r < h; r++) {
+            const uint8_t a = (r < hf) ? 255 : (r < hb) ? BARS_BACK_OPA : 0;
+            if (a == 0) {
+                break;
+            }
+            memset(b->px + (size_t)(h - 1 - r) * CHART_W + x0, a, (size_t)w);
+        }
+    }
+    lv_obj_invalidate(b->obj);
+}
 static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
 /* The temperature each s_temp_line_points entry was plotted from, and the
  * chart y of 0 degrees C, so temp_line_draw_cb can colour the sub-zero parts
@@ -581,8 +656,8 @@ static int pick_top_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecas
 /* Precipitation value markers: up to the two highest max-precipitation peaks
  * (pick_top_peaks - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a
  * second peak less than 6h from the strongest is dropped rather than shown),
- * each labelled with its range, e.g. "0.5-2.3 mm" (the max chart's own
- * height, since it's always >= the min chart's - see s_precip_max_chart). */
+ * each labelled with its range, e.g. "0.5-2.3 mm", above the max (back)
+ * bar, which is always at least as tall as the min. */
 static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_max)
 {
     int32_t precip_axis_max = precip_range_max * PRECIP_AXIS_COMPRESSION;
@@ -672,7 +747,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
     int temp_min_idx = 0, temp_max_idx = 0;
     float temp_min = now->air_temperature_c;
     float temp_max = now->air_temperature_c;
-    float precip_max = 0.0f; /* the high end of the range - see s_precip_max_chart */
+    float precip_max = 0.0f; /* the high end of the range - the back bars */
     float wind_max = 0.0f;
     float gust_max = 0.0f; /* folded into the shared wind/gust axis range below */
 
@@ -725,20 +800,9 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
         precip_range_max = 10;
     }
 
-    lv_chart_set_point_count(s_precip_max_chart, fc->point_count);
-    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0,
-                            precip_range_max * PRECIP_AXIS_COMPRESSION);
-    lv_chart_set_series_ext_y_array(s_precip_max_chart, s_precip_max_series, s_precip_max_chart_data);
-    lv_chart_refresh(s_precip_max_chart); /* force redraw - see below */
-
-    lv_chart_set_point_count(s_precip_chart, fc->point_count);
-    lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, precip_range_max * PRECIP_AXIS_COMPRESSION);
-    lv_chart_set_series_ext_y_array(s_precip_chart, s_precip_series, s_precip_chart_data);
-    /* The series shares one static buffer whose contents we overwrite in place;
-     * lv_chart_set_point_count() bails out when the length is unchanged and
-     * set_series_ext_y_array() doesn't invalidate, so between nowcast refreshes
-     * (same point_count) the bars would otherwise never redraw. */
-    lv_chart_refresh(s_precip_chart);
+    /* The min in front, the max behind it (see bars_render). */
+    bars_render(&s_precip_bars, fc->point_count, s_precip_chart_data, s_precip_max_chart_data,
+                precip_range_max * PRECIP_AXIS_COMPRESSION, CHART_H);
 
     for (int i = 0; i < fc->point_count; i++) {
         float v = fc->points[i].air_temperature_c;
@@ -760,22 +824,14 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
     /* Wind/gust bar chart: full m/s per unit, +2 m/s headroom, min 6 m/s so a
      * calm forecast still has a sensible axis. Scaled off whichever of the
      * two is higher - almost always the gust - so a strong gust forecast
-     * never clips off the top of its own chart. Both charts share this same
-     * range and point count (see s_gust_chart's declaration). */
+     * never clips off the top of its own chart. The wind is in front, the
+     * gust behind it. */
     float wind_or_gust_max = (gust_max > wind_max) ? gust_max : wind_max;
     int32_t wind_range_max = round_to_int(wind_or_gust_max * 10.0f) + 20;
     if (wind_range_max < 60) {
         wind_range_max = 60;
     }
-    lv_chart_set_point_count(s_gust_chart, fc->point_count);
-    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
-    lv_chart_set_series_ext_y_array(s_gust_chart, s_gust_series, s_gust_chart_data);
-    lv_chart_refresh(s_gust_chart); /* force redraw - see the precip chart above */
-
-    lv_chart_set_point_count(s_wind_chart, fc->point_count);
-    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, wind_range_max);
-    lv_chart_set_series_ext_y_array(s_wind_chart, s_wind_series, s_wind_chart_data);
-    lv_chart_refresh(s_wind_chart); /* force redraw - see the precip chart above */
+    bars_render(&s_wind_bars, fc->point_count, s_wind_chart_data, s_gust_chart_data, wind_range_max, WIND_BARS_H);
 
     place_wind_markers(fc);
 
@@ -1186,44 +1242,18 @@ lv_obj_t *weather_build(lv_obj_t *screen)
         lv_obj_add_flag(s_icon_slots[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Precipitation-max bar chart acts as the single visual chart frame
-     * (background, border, gridlines) for the whole precip+temp area - the
-     * min bars and the temperature line are both overlaid transparently on
-     * top of it (same "frame widget + transparent overlay" trick as the
-     * wind/gust chart pair below). Its bars are the high end of MET's
-     * forecast uncertainty range for that hour, drawn taller and paler
-     * "behind" the min bars in front - see update_ui_with_forecast. */
-    s_precip_max_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_precip_max_chart, CHART_X, CHART_Y);
-    lv_obj_set_size(s_precip_max_chart, CHART_W, CHART_H);
-    lv_obj_set_style_pad_left(s_precip_max_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_precip_max_chart, 4, 0);
-    lv_chart_set_type(s_precip_max_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_div_line_count(s_precip_max_chart, 4, NUM_HOUR_LABELS - 1);
-    lv_chart_set_point_count(s_precip_max_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_precip_max_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
-    /* "Paler" than the main bars means lighter on a light background, darker
-     * on a dark one; the same goes for the gust bars below. */
-    s_precip_max_series = lv_chart_add_series(s_precip_max_chart,
-                                              dark ? lv_palette_darken(LV_PALETTE_BLUE, 3)
-                                                   : lv_palette_lighten(LV_PALETTE_BLUE, 3),
-                                              LV_CHART_AXIS_PRIMARY_Y);
-
-    /* Precipitation-min bar chart: the low end of the same range, in front -
-     * its own background/border are transparent so the max chart behind it
-     * shows through above wherever this (shorter, since max >= min) bar
-     * doesn't reach. */
-    s_precip_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_precip_chart, CHART_X, CHART_Y);
-    lv_obj_set_size(s_precip_chart, CHART_W, CHART_H);
-    lv_obj_set_style_pad_left(s_precip_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_precip_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_precip_chart, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_precip_chart, 0, 0);
-    lv_chart_set_type(s_precip_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_point_count(s_precip_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_precip_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 10);
-    s_precip_series = lv_chart_add_series(s_precip_chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+    /* The frame (background, border, gridlines) of the precipitation and
+     * temperature area: a chart with no series of its own. The bars are
+     * s_precip_bars on top of it (see bars_t), and the temperature line on
+     * top of those. */
+    s_precip_frame = lv_chart_create(s_detail_root);
+    lv_obj_set_pos(s_precip_frame, CHART_X, CHART_Y);
+    lv_obj_set_size(s_precip_frame, CHART_W, CHART_H);
+    lv_chart_set_type(s_precip_frame, LV_CHART_TYPE_NONE);
+    lv_chart_set_div_line_count(s_precip_frame, 4, NUM_HOUR_LABELS - 1);
+    /* Bars only ever fill the bottom 1/PRECIP_AXIS_COMPRESSION of the area. */
+    bars_create(&s_precip_bars, CHART_X, CHART_Y + CHART_H - BARS_INSET - PRECIP_BARS_H, PRECIP_BARS_H,
+                lv_palette_main(LV_PALETTE_BLUE));
 
     /* A plain transparent object painted by temp_line_draw_cb rather than an
      * lv_line, which can only draw in a single colour. The points are set each
@@ -1294,40 +1324,15 @@ lv_obj_t *weather_build(lv_obj_t *screen)
         lv_obj_add_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* Wind-gust bar chart (m/s): the plain bars-only layer behind the wind
-     * chart below (see s_gust_chart's declaration). Same position/size/scale
-     * as the wind chart, kept in sync every refresh. */
-    s_gust_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_gust_chart, CHART_X, WIND_CHART_Y);
-    lv_obj_set_size(s_gust_chart, CHART_W, WIND_CHART_H);
-    lv_obj_set_style_pad_left(s_gust_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_gust_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_gust_chart, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(s_gust_chart, 0, 0);
-    lv_chart_set_type(s_gust_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_point_count(s_gust_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_gust_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    s_gust_series = lv_chart_add_series(s_gust_chart,
-                                        dark ? lv_palette_darken(LV_PALETTE_TEAL, 3)
-                                             : lv_palette_lighten(LV_PALETTE_TEAL, 3),
-                                        LV_CHART_AXIS_PRIMARY_Y);
-
-    /* Wind-speed bar chart (m/s), same x-scale as the main chart above. Its
-     * own background is transparent so the gust chart behind it shows
-     * through above wherever its (shorter, since gusts are >= sustained
-     * wind) bar doesn't reach. */
-    s_wind_chart = lv_chart_create(s_detail_root);
-    lv_obj_set_pos(s_wind_chart, CHART_X, WIND_CHART_Y);
-    lv_obj_set_size(s_wind_chart, CHART_W, WIND_CHART_H);
-    lv_obj_set_style_pad_left(s_wind_chart, 4, 0);
-    lv_obj_set_style_pad_right(s_wind_chart, 4, 0);
-    lv_obj_set_style_bg_opa(s_wind_chart, LV_OPA_TRANSP, 0);
-    lv_chart_set_type(s_wind_chart, LV_CHART_TYPE_BAR);
-    lv_chart_set_div_line_count(s_wind_chart, 2, NUM_HOUR_LABELS - 1);
-    lv_chart_set_point_count(s_wind_chart, YR_FORECAST_MAX_POINTS);
-    lv_chart_set_axis_range(s_wind_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    s_wind_series = lv_chart_add_series(s_wind_chart, lv_palette_main(LV_PALETTE_TEAL),
-                                       LV_CHART_AXIS_PRIMARY_Y);
+    /* The wind/gust area (m/s), same x-scale as the main chart above: a
+     * transparent frame for the border and gridlines, and s_wind_bars. */
+    s_wind_frame = lv_chart_create(s_detail_root);
+    lv_obj_set_pos(s_wind_frame, CHART_X, WIND_CHART_Y);
+    lv_obj_set_size(s_wind_frame, CHART_W, WIND_CHART_H);
+    lv_obj_set_style_bg_opa(s_wind_frame, LV_OPA_TRANSP, 0);
+    lv_chart_set_type(s_wind_frame, LV_CHART_TYPE_NONE);
+    lv_chart_set_div_line_count(s_wind_frame, 2, NUM_HOUR_LABELS - 1);
+    bars_create(&s_wind_bars, CHART_X, WIND_CHART_Y + BARS_INSET, WIND_BARS_H, lv_palette_main(LV_PALETTE_TEAL));
 
     /* Wind/gust value markers - see place_wind_markers. Sit near the chart
      * top, in the wind bar's colour. */

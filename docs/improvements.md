@@ -71,9 +71,13 @@ planned order is 1, then 2 + 6, then 3, 7 and 10.
   (`CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC`), and the weather task lets a newly
   shown screen draw for 500 ms before fetching; the lowest seen is now
   ~36 KB.*
-- [ ] **16. Drawing a screen costs ~30 KB of internal DRAM.** Cause not found
-  yet. The rain animation still draws while frames download, which leaves
-  ~10 KB free at the lowest.
+- [x] **16. Drawing a screen costs ~30 KB of internal DRAM.** *Done: the
+  weather screen's lv_chart bar series (rain min/max, wind/gust) added a draw
+  task per bar for every 10-line strip drawn, whether the bar reached into
+  it or not - about 150 small allocations at once. Each pair is now one A8
+  image in PSRAM (the back bar at half opacity), one draw task per strip; a
+  full redraw of the weather screen now peaks at 5.7 KB. The rain animation
+  also waits until the hour's frames are in, holding the latest meanwhile.*
 - [x] **17. Screenshots could exhaust PSRAM.** The 1.1 MB RGB888 snapshot plus
   a rain download or forecast parse ran PSRAM to 0. *Done: RGB565 snapshot
   (750 KB), refused with 503 when PSRAM is short.* Streaming a screenshot

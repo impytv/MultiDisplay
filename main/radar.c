@@ -121,6 +121,7 @@ typedef struct {
 static water_seed_t *s_water_seeds; /* PSRAM, WATER_SEEDS_MAX */
 static int s_water_n_seeds;
 static bool s_coast_valid;
+static bool s_coast_retry;           /* the one drawn is incomplete: draw it again */
 /* Rain over the disc: the last hour of radar images, each kept as the
  * s_rain_crop of MET's rain levels under the disc (see rain_poll), and the
  * one on show drawn into an ARGB8888 image the size of the coastline one
@@ -147,6 +148,7 @@ static lv_image_dsc_t s_rain_img;
 static bool s_rain_valid;           /* s_rain_px holds a frame */
 static int s_rain_pos = -1;         /* frame position on show */
 static int s_rain_hold;             /* ticks left resting on the latest */
+static bool s_rain_loading;         /* the hour's frames are being fetched: the latest held still */
 static time_t s_rain_time;          /* when the frame on show was taken */
 static int s_coast_loc = -1;
 /* The location and range the rain frames are held for (see rain_prepare). */
@@ -753,7 +755,7 @@ static void rain_show(int p, int slot)
 static void rain_anim_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (!s_rain_mode || !s_rain_valid || s_radar_canvas == NULL ||
+    if (!s_rain_mode || !s_rain_valid || s_rain_loading || s_radar_canvas == NULL ||
         lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
         return;
     }
@@ -1484,7 +1486,7 @@ static void coast_render(int loc, int range)
 {
     static const esp_partition_t *part;
     static coast_hdr_t hdr;
-    if (s_coast_px == NULL || (s_coast_loc == loc && s_coast_km == range && s_coast_valid)) {
+    if (s_coast_px == NULL || (s_coast_loc == loc && s_coast_km == range && s_coast_valid && !s_coast_retry)) {
         return;
     }
     if (part == NULL) {
@@ -1529,10 +1531,12 @@ static void coast_render(int loc, int range)
     int32_t *pts = NULL; /* one decoded line: x, y pairs */
     uint32_t pts_cap = 0;
     int lines = 0;
+    bool complete = true; /* false: out of memory or a flash read failed */
 
     for (int r = r0; r <= r1 && c1 >= c0 && c1 - c0 + 2 <= 64; r++) {
         int n_idx = c1 - c0 + 2;
         if (esp_partition_read(part, index_off + 4 * ((size_t)r * hdr.cols + c0), idx, 4 * n_idx) != ESP_OK) {
+            complete = false;
             break;
         }
         size_t len = idx[n_idx - 1] - idx[0];
@@ -1542,12 +1546,14 @@ static void coast_render(int loc, int range)
         if (len > buf_cap) {
             uint8_t *nb = heap_caps_realloc(buf, len, MALLOC_CAP_SPIRAM);
             if (nb == NULL) {
+                complete = false;
                 break;
             }
             buf = nb;
             buf_cap = len;
         }
         if (esp_partition_read(part, data_off + idx[0], buf, len) != ESP_OK) {
+            complete = false;
             break;
         }
         for (int c = c0; c <= c1; c++) {
@@ -1562,6 +1568,7 @@ static void coast_render(int loc, int range)
                 if (n > pts_cap) {
                     int32_t *np = heap_caps_realloc(pts, 2 * sizeof(int32_t) * n, MALLOC_CAP_SPIRAM);
                     if (np == NULL) {
+                        complete = false;
                         break;
                     }
                     pts = np;
@@ -1611,14 +1618,16 @@ static void coast_render(int loc, int range)
     free(buf);
     free(pts);
     coast_fill_water();
-    ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d",
-             g_cfg->locations[loc].name, lines, r0, r1, c0, c1);
+    ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d%s",
+             g_cfg->locations[loc].name, lines, r0, r1, c0, c1, complete ? "" : " - incomplete, redone next poll");
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         s_coast_loc = loc;
         s_coast_km = range;
-        /* Unless the screen moved on while drawing. */
+        /* Unless the screen moved on while drawing, or it's incomplete: then
+         * it's drawn again on the next poll (it's still shown meanwhile). */
         s_coast_valid = (s_radar_loc == loc && s_radar_range_km == range);
+        s_coast_retry = !complete;
         lv_obj_invalidate(s_radar_canvas);
         esp_lv_adapter_unlock();
     }
@@ -1658,6 +1667,17 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
  * (rain_client), redrawn over the radar disc in the theme's rain colours.
  * ------------------------------------------------------------------------ */
 
+/* The line above the legend: what the disc shows. Adapter lock held. */
+static void rain_info_set(int range)
+{
+    if (s_rain_loading) {
+        lv_label_set_text(s_radar_info, "Henter siste time...");
+    } else {
+        lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r siste time innen %d km", range);
+    }
+    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
+}
+
 /* Keep the frame just fetched into s_rain_spare, taken at `t`, with
  * `latest` the newest image there is. Adapter lock held. */
 static void rain_store(time_t t, time_t latest, int range)
@@ -1688,8 +1708,7 @@ static void rain_store(time_t t, time_t latest, int range)
         rain_show(p, slot);
     }
     lv_label_set_text(g_status_label, "");
-    lv_label_set_text_fmt(s_radar_info, "Nedb\xC3\xB8r siste time innen %d km", range);
-    lv_obj_align(s_radar_info, LV_ALIGN_TOP_RIGHT, -12, 4);
+    rain_info_set(range);
     lv_obj_invalidate(s_radar_canvas);
 }
 
@@ -1825,6 +1844,17 @@ static bool rain_poll(int loc, int for_view)
             if (rain_slot_for(want) >= 0) {
                 continue;
             }
+            /* Frames of the hour still to come: hold the latest still
+             * until they're all in, rather than animate a patchy hour. */
+            if (!s_rain_loading && lock_for_view(for_view)) {
+                s_rain_loading = true;
+                const int slot = rain_slot_for(latest);
+                if (slot >= 0) {
+                    rain_show(RAIN_FRAMES - 1, slot);
+                }
+                rain_info_set(range);
+                esp_lv_adapter_unlock();
+            }
         }
         time_t taken;
         esp_err_t err = rain_client_fetch(area, want, &s_rain_crop, s_rain_spare, &taken);
@@ -1846,6 +1876,14 @@ static bool rain_poll(int loc, int for_view)
             }
             esp_lv_adapter_unlock();
         }
+    }
+
+    if (s_rain_loading && esp_lv_adapter_lock(-1) == ESP_OK) {
+        /* Done (or the screen moved on): play the hour from its start. */
+        s_rain_loading = false;
+        s_rain_hold = 0;
+        rain_info_set(range);
+        esp_lv_adapter_unlock();
     }
 
     bool shown = false;
@@ -1895,6 +1933,9 @@ void radar_enter(int kind, int loc)
         s_radar_valid = false; /* nothing to dead-reckon: no periodic redraw */
         rain_set_location(loc);
         lv_label_set_text(s_radar_info, "");
+        if (s_rain_valid) {
+            rain_info_set(g_cfg->rain_km[loc]); /* the hour kept from last time */
+        }
         lv_obj_invalidate(s_radar_canvas);
         lv_label_set_text(g_status_label, s_rain_valid ? "" : "Henter nedb\xC3\xB8r...");
         break;
