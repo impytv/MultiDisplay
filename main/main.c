@@ -29,6 +29,7 @@
 #include "screenshot.h"
 #include "watchdog.h"
 #include "updater.h"
+#include "diag.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
 #include "wifi_provision.h"
@@ -52,6 +53,10 @@ static const char *TAG = "main";
  * effective brightness a lot while keeping high-contrast text/lines legible
  * in a dark room. */
 #define NIGHT_DIM_OPA         LV_OPA_70
+
+/* With the screen switched off at night instead (g_cfg->night_off), a touch
+ * lights it for this long. */
+#define NIGHT_WAKE_MS         60000
 
 /* How long the weather task lets a screen just switched to draw before it
  * starts fetching for it: drawing a full screen and a TLS fetch at once took
@@ -101,7 +106,10 @@ static lv_obj_t *s_overview_root; /* all locations' weather */
 static lv_obj_t *s_radar_root;    /* aircraft, ships or rain; only if some location has one */
 static lv_obj_t *s_dep_root;      /* departures; only if some location has them */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
-static volatile bool s_night_dim; /* s_tap_layer is dimming the screen (see nightly_housekeeping) */
+static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
+static bool s_backlight_on = true;
+static lv_obj_t *s_offline_label; /* "Ingen WiFi" / "Ingen internett" in a corner */
+static void night_timer_cb(lv_timer_t *t);
 
 bool lock_for_view(int for_view)
 {
@@ -282,6 +290,12 @@ static void screen_touch_cb(lv_event_t *e)
     s_last_touch_ms = lv_tick_get();
     s_auto_running = false;
 
+    /* Switched off for the night: a touch only lights it (see night_timer_cb). */
+    if (!s_backlight_on) {
+        s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
+        return;
+    }
+
     if (s_stop_count <= 1) {
         return; /* nothing to cycle through */
     }
@@ -377,6 +391,19 @@ static void build_ui(lv_obj_t *screen)
     g_status_label = lv_label_create(screen);
     lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
 
+    /* Offline marker, bottom left (see night_timer_cb). LVGL's built-in
+     * Montserrat, for its WiFi and warning symbols. */
+    s_offline_label = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_offline_label, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_offline_label, lv_color_hex(0xE07000), 0);
+    lv_obj_set_style_bg_color(s_offline_label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_offline_label, LV_OPA_50, 0);
+    lv_obj_set_style_pad_hor(s_offline_label, 6, 0);
+    lv_obj_set_style_pad_ver(s_offline_label, 2, 0);
+    lv_obj_set_style_radius(s_offline_label, 4, 0);
+    lv_obj_align(s_offline_label, LV_ALIGN_BOTTOM_LEFT, 4, -4);
+    lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+
     /* Full-screen tap catcher. In LVGL 9 every lv_obj/lv_chart is clickable by
      * default, so a tap lands on whichever chart or row widget covers that
      * point and never reaches the screen. This overlay is the topmost child,
@@ -395,6 +422,8 @@ static void build_ui(lv_obj_t *screen)
     /* PRESSED (not CLICKED): fires on touch-down regardless of tiny finger
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
+
+    lv_timer_create(night_timer_cb, 1000, NULL);
 
     /* Automatic rotation, counting the idle time from boot. */
     s_last_touch_ms = lv_tick_get();
@@ -435,6 +464,43 @@ static time_t compute_next_nightly_reboot(time_t now)
     return target;
 }
 
+/* The night window's look (adapter lock held): the dimming layer, or the
+ * backlight off. */
+static void night_apply(void)
+{
+    const bool dim = s_night_dim && !g_cfg->night_off;
+    if (dim) {
+        lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_tap_layer, NIGHT_DIM_OPA, 0);
+    } else {
+        lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
+    }
+    const bool light = !(s_night_dim && g_cfg->night_off);
+    if (light != s_backlight_on && waveshare_rgb_lcd_backlight_set(light) == ESP_OK) {
+        s_backlight_on = light;
+    }
+}
+
+/* Once a second, in the LVGL task: switch the screen off again a while
+ * after a touch lit it at night, and show whether the display is online. */
+static void night_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (s_night_dim && g_cfg->night_off && s_backlight_on &&
+        lv_tick_get() - s_last_touch_ms > NIGHT_WAKE_MS &&
+        waveshare_rgb_lcd_backlight_set(false) == ESP_OK) {
+        s_backlight_on = false;
+    }
+    const diag_net_t net = diag_net_state();
+    if (net == DIAG_ONLINE) {
+        lv_obj_add_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text(s_offline_label, net == DIAG_NO_WIFI ? LV_SYMBOL_WIFI " Ingen WiFi"
+                                                                : LV_SYMBOL_WARNING " Ingen internett");
+        lv_obj_clear_flag(s_offline_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 /* The nightly restart and the night dimming, checked on every wake of the
  * weather task (every few minutes at idle, immediately on a tap) rather
  * than on timers of their own - a few minutes of drift doesn't matter for
@@ -469,15 +535,10 @@ static void nightly_housekeeping(void)
     if (want_dim != s_night_dim) {
         s_night_dim = want_dim;
         if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            if (want_dim) {
-                lv_obj_set_style_bg_color(s_tap_layer, lv_color_black(), 0);
-                lv_obj_set_style_bg_opa(s_tap_layer, NIGHT_DIM_OPA, 0);
-            } else {
-                lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
-            }
+            night_apply();
             esp_lv_adapter_unlock();
         }
-        ESP_LOGI(TAG, "Night dimming %s (local time %02d:%02d)",
+        ESP_LOGI(TAG, "Night %s %s (local time %02d:%02d)", g_cfg->night_off ? "screen off" : "dimming",
                  want_dim ? "on" : "off", now_lt.tm_hour, now_lt.tm_min);
     }
 }
@@ -506,6 +567,7 @@ static void yr_weather_task(void *arg)
      * reboots when the form is saved). */
     wifi_provision_connect(g_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", screenshot_handler);
+    diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with
@@ -636,6 +698,7 @@ static void alloc_failed_cb(size_t size, uint32_t caps, const char *function_nam
 
 void app_main(void)
 {
+    diag_init();
     heap_caps_register_failed_alloc_callback(alloc_failed_cb);
     /* Logged first, unconditionally, so a boot that never reaches "Got IP"
      * still leaves a trail: reason 1 is a normal power-on, but e.g. 3 (panic)

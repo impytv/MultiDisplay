@@ -111,16 +111,17 @@ def write_index(site, data):
     chans = data["channels"]
     rows = []
     for r in sorted(data["releases"], key=lambda r: version_key(r["version"]), reverse=True):
-        tags = " ".join('<span class="tag %s">%s</span>' % (c, c) for c in ("stable", "test")
+        tags = " ".join('<span class="tag %s">%s</span>' % (c, {"stable": "stabil", "test": "test"}[c])
+                        for c in ("stable", "test")
                         if chans.get(c) == r["version"])
         rows.append('<tr><td><a href="firmware/%s">%s</a> %s</td><td>%s</td><td>%s</td>'
                     '<td class="sha">%s</td></tr>'
                     % (e(r["file"]), e(r["version"]), tags, e(r["released"]), e(r["notes"]),
                        e(r["sha256"][:12])))
     page = """<!doctype html>
-<html lang="en"><meta charset="utf-8">
+<html lang="no"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MultiDisplay firmware</title>
+<title>MultiDisplay programvare</title>
 <style>
 :root{--bg:#f6f6f4;--fg:#222;--muted:#666;--line:#ddd;--accent:#2d5a86;--test:#a05a00}
 @media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#eee;--muted:#999;--line:#333;--accent:#7fb0e0;--test:#e0a050}}
@@ -132,16 +133,16 @@ th{color:var(--muted);font-weight:600}.sha{font-family:monospace;color:var(--mut
 .tag{font-size:.75rem;padding:.05rem .4rem;border-radius:.3rem;border:1px solid currentColor}
 .tag.stable{color:var(--accent)}.tag.test{color:var(--test)}
 </style>
-<h1>MultiDisplay firmware</h1>
-<p>Stable: <b>%s</b> &middot; Test: <b>%s</b></p>
-<p>Set one of these as the update address on the display's setup page:<br>
-<code>manifest.json</code> for stable releases, <code>manifest-test.json</code> for test releases.
-Any image below can also be installed by hand through the setup page's firmware upload.</p>
-<table><tr><th>Version</th><th>Released</th><th>Notes</th><th>SHA-256</th></tr>
+<h1>MultiDisplay programvare</h1>
+<p>Stabil: <b>%s</b> &middot; Test: <b>%s</b></p>
+<p>Bruk en av disse som oppdateringsadresse p&aring; skjermens oppsettside:<br>
+<code>manifest.json</code> for stabile versjoner, <code>manifest-test.json</code> for testversjoner.
+Hver fil nedenfor kan ogs&aring; installeres for h&aring;nd med opplastingen p&aring; oppsettsiden.</p>
+<table><tr><th>Versjon</th><th>Utgitt</th><th>Endringer</th><th>SHA-256</th></tr>
 %s
 </table>
 </html>
-""" % (e(chans.get("stable", "none")), e(chans.get("test", "none")), "\n".join(rows))
+""" % (e(chans.get("stable", "ingen")), e(chans.get("test", "ingen")), "\n".join(rows))
     write_atomic(os.path.join(site, "index.html"), page)
 
 

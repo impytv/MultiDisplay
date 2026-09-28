@@ -216,9 +216,8 @@ const char *yr_client_user_agent(void)
 }
 
 
-esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
+esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out, http_cache_t *cache, bool force)
 {
-    memset(out, 0, sizeof(*out));
 
     /* "complete", not "compact": the wind chart wants wind_speed_of_gust,
      * which compact strips out. ~90 KB vs ~37 KB for a 9-day forecast -
@@ -230,13 +229,18 @@ esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = http_get_body(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body, TAG);
+    esp_err_t err = http_get_body_cached(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body,
+                                         TAG, cache, force);
     if (err != ESP_OK) {
         return err;
     }
 
+    memset(out, 0, sizeof(*out));
     bool ok = parse_forecast(body, out);
     free(body);
+    if (!ok && cache != NULL) {
+        memset(cache, 0, sizeof(*cache)); /* ask for all of it next time */
+    }
     return ok ? ESP_OK : ESP_FAIL;
 }
 
@@ -342,9 +346,8 @@ done:
     return ok;
 }
 
-esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out)
+esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out, http_cache_t *cache, bool force)
 {
-    memset(out, 0, sizeof(*out));
 
     char url[192];
     snprintf(url, sizeof(url),
@@ -352,12 +355,17 @@ esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = http_get_body(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body, TAG);
+    esp_err_t err = http_get_body_cached(url, yr_client_user_agent(), YR_HTTP_TIMEOUT_MS, YR_MAX_RESPONSE_LEN, &body,
+                                         TAG, cache, force);
     if (err != ESP_OK) {
         return err;
     }
 
+    memset(out, 0, sizeof(*out));
     bool ok = parse_nowcast(body, out);
     free(body);
+    if (!ok && cache != NULL) {
+        memset(cache, 0, sizeof(*cache));
+    }
     return ok ? ESP_OK : ESP_FAIL;
 }

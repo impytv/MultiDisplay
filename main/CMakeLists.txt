@@ -8,11 +8,14 @@ idf_component_register(
         "screenshot.c"
         "watchdog.c"
         "updater.c"
+        "diag.c"
+        "sun.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/wifi_provision.c"
         "../components/yr_client.c"
         "../components/adsb_client.c"
+        "../components/adsb_routes.c"
         "../components/ais_client.c"
         "../components/met_alerts_client.c"
         "../components/rain_client.c"
@@ -42,6 +45,8 @@ idf_component_register(
         mbedtls
         esp_partition
         spi_flash
+        espcoredump
+        espressif__mdns
         esp_driver_gpio
         lwip
         esp-tls

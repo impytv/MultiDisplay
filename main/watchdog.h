@@ -9,4 +9,8 @@ void wd_start(void);
 /* The weather task's sign of life; it's watched from its first beat. */
 void wd_weather_beat(void);
 
+/* If the watchdog caused this boot: why, in Norwegian ("skjermen hadde
+ * stanset", ...); else NULL. */
+const char *wd_boot_trip(void);
+
 #endif

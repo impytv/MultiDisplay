@@ -2,8 +2,10 @@ dependencies:
   idf:
     version: ">=5.5.0"
 
+  # Pinned: esp_lvgl_adapter 0.5.3 patches LVGL's FreeRTOS port and doesn't
+  # recognise 9.6's.
   lvgl/lvgl:
-    version: "^9"
+    version: "9.5.0"
     public: true
 
   espressif/esp_lvgl_adapter:
@@ -11,3 +13,7 @@ dependencies:
 
   espressif/esp_lcd_touch_gt911:
     version: "^1"
+
+  # Announces the display as multidisplay.local (wifi_provision.c).
+  espressif/mdns:
+    version: "^1.8"

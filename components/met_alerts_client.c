@@ -91,9 +91,8 @@ done:
     return ok;
 }
 
-esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out)
+esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out, http_cache_t *cache)
 {
-    memset(out, 0, sizeof(*out));
 
     char url[160];
     snprintf(url, sizeof(url),
@@ -101,13 +100,17 @@ esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out)
              lat, lon);
 
     char *body = NULL;
-    esp_err_t err = http_get_body(url, yr_client_user_agent(), MET_ALERTS_HTTP_TIMEOUT_MS, MET_ALERTS_MAX_RESPONSE_LEN, &body,
-                                  TAG);
+    esp_err_t err = http_get_body_cached(url, yr_client_user_agent(), MET_ALERTS_HTTP_TIMEOUT_MS,
+                                         MET_ALERTS_MAX_RESPONSE_LEN, &body, TAG, cache, false);
     if (err != ESP_OK) {
         return err;
     }
 
+    memset(out, 0, sizeof(*out));
     bool ok = parse_alerts(body, out);
     free(body);
+    if (!ok && cache != NULL) {
+        memset(cache, 0, sizeof(*cache));
+    }
     return ok ? ESP_OK : ESP_FAIL;
 }

@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "http_util.h"
 
 /* Hourly points taken from the Locationforecast API. */
 #define YR_FORECAST_BASE_POINTS 48
@@ -76,13 +77,15 @@ const char *yr_client_user_agent(void);
  *
  * lat/lon are formatted with at most 4 decimals as required by the API.
  */
-esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out);
+/* With `cache` (see http_util.h), HTTP_NOT_MODIFIED if the forecast held for
+ * that location is still current; `out` is then untouched. */
+esp_err_t yr_client_fetch_forecast(double lat, double lon, yr_forecast_t *out, http_cache_t *cache, bool force);
 
 /**
  * Fetch the MET Norway Nowcast (5-minute radar precipitation nowcast for the
  * next ~2 hours). Nordic coverage only; check out->radar_ok before trusting
  * the precipitation values.
  */
-esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out);
+esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out, http_cache_t *cache, bool force);
 
 #endif

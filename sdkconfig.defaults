@@ -135,10 +135,8 @@ CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_16=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_LV_FONT_MONTSERRAT_24=y
-# CONFIG_LV_MEM_CUSTOM is not set
 # CONFIG_LV_USE_FONT_COMPRESSED is not set
 # CONFIG_LV_USE_IMGFONT is not set
-# CONFIG_LV_COLOR_SCREEN_TRANSP is not set
 # CONFIG_LV_USE_LOG is not set
 # CONFIG_LV_LOG_PRINTF is not set
 # CONFIG_LV_USE_PERF_MONITOR is not set
@@ -173,3 +171,22 @@ CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
 CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
 CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
 CONFIG_SECURE_BOOT_SIGNING_KEY="keys/ota_signing_key.pem"
+
+# Crash dumps to the coredump partition, read back over WiFi from /coredump
+# (main/diag.c) and decoded with `idf.py coredump-info -c <file>`. The binary
+# format, as ELF needs larger interrupt stacks (1.1 KB more internal DRAM);
+# 32 tasks is well above the ~16 this firmware runs.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+CONFIG_ESP_COREDUMP_MAX_TASKS_NUM=32
+CONFIG_FREERTOS_ISR_STACKSIZE=1536
+
+# mDNS (multidisplay.local): its task stack and allocations in PSRAM, as
+# internal DRAM is the scarce kind here.
+CONFIG_MDNS_TASK_CREATE_FROM_SPIRAM=y
+CONFIG_MDNS_MEMORY_ALLOC_SPIRAM=y
+
+# Large static arrays marked EXT_RAM_BSS_ATTR (route cache, rain grid,
+# chart data, ...) go to PSRAM, leaving internal DRAM for WiFi and TLS.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y

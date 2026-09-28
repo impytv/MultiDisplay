@@ -2,6 +2,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
+#include <time.h>
 
 #include "cJSON.h"
 #include "esp_heap_caps.h"
@@ -104,24 +106,58 @@ int64_t iso8601_to_epoch(const char *s)
     return days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - off;
 }
 
+int64_t http_date_to_epoch(const char *s)
+{
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    char mon[4];
+    int d, y, h, mi, se;
+    if (s == NULL || sscanf(s, "%*3s, %d %3s %d %d:%d:%d", &d, mon, &y, &h, &mi, &se) != 6) {
+        return 0;
+    }
+    const char *m = strstr(months, mon);
+    if (m == NULL || strlen(mon) != 3) {
+        return 0;
+    }
+    return days_from_civil(y, (int)(m - months) / 3 + 1, d) * 86400 + h * 3600 + mi * 60 + se;
+}
+
+typedef struct {
+    http_buf_t buf;
+    http_cache_t *cache; /* where Last-Modified/Expires go, or NULL */
+} get_ctx_t;
+
 static esp_err_t get_body_handler(esp_http_client_event_t *evt)
 {
+    get_ctx_t *ctx = evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && ctx->cache != NULL) {
+        if (strcasecmp(evt->header_key, "Last-Modified") == 0) {
+            snprintf(ctx->cache->last_modified, sizeof(ctx->cache->last_modified), "%s", evt->header_value);
+        } else if (strcasecmp(evt->header_key, "Expires") == 0) {
+            ctx->cache->expires = http_date_to_epoch(evt->header_value);
+        }
+        return ESP_OK;
+    }
     if (evt->event_id != HTTP_EVENT_ON_DATA) {
         return ESP_OK;
     }
-    http_buf_t *b = evt->user_data;
-    return http_buf_append(b, evt->data, evt->data_len, "http_util");
+    return http_buf_append(&ctx->buf, evt->data, evt->data_len, "http_util");
 }
 
-esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
-                        const char *tag)
+esp_err_t http_get_body_cached(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
+                               const char *tag, http_cache_t *cache, bool ignore_expires)
 {
     *body = NULL;
-    http_buf_t b = { .max = max };
+    const time_t now = time(NULL);
+    if (cache != NULL && !ignore_expires && cache->expires != 0 && now < cache->expires) {
+        return HTTP_NOT_MODIFIED; /* not expired yet: don't even ask */
+    }
+    /* The headers of a 304 or a new body replace these. */
+    http_cache_t fresh = { 0 };
+    get_ctx_t ctx = { .buf = { .max = max }, .cache = cache ? &fresh : NULL };
     const esp_http_client_config_t config = {
         .url = url,
         .event_handler = get_body_handler,
-        .user_data = &b,
+        .user_data = &ctx,
         .timeout_ms = timeout_ms,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -129,10 +165,19 @@ esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms,
         return ESP_FAIL;
     }
     esp_http_client_set_header(client, "User-Agent", user_agent);
+    if (cache != NULL && cache->last_modified[0] != '\0') {
+        esp_http_client_set_header(client, "If-Modified-Since", cache->last_modified);
+    }
     esp_err_t err = esp_http_client_perform(client);
     const int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    http_buf_t b = ctx.buf;
 
+    if (err == ESP_OK && status == 304 && cache != NULL) {
+        cache->expires = fresh.expires;
+        http_buf_free(&b);
+        return HTTP_NOT_MODIFIED;
+    }
     if (err != ESP_OK) {
         ESP_LOGE(tag, "HTTP request failed: %s", esp_err_to_name(err));
     } else if (status != 200) {
@@ -145,6 +190,15 @@ esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms,
         http_buf_free(&b);
         return err;
     }
+    if (cache != NULL) {
+        *cache = fresh;
+    }
     *body = b.buf;
     return ESP_OK;
+}
+
+esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
+                        const char *tag)
+{
+    return http_get_body_cached(url, user_agent, timeout_ms, max, body, tag, NULL, false);
 }

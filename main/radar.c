@@ -7,6 +7,7 @@
  * the right. Everything is drawn in one custom draw callback rather than as
  * LVGL objects - an object per aircraft/label would cost scarce internal DRAM. */
 
+#include "esp_attr.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +21,7 @@
 #include "adsb_client.h"
 #include "ais_client.h"
 #include "app.h"
+#include "diag.h"
 #include "draw.h"
 #include "radar.h"
 #include "rain_client.h"
@@ -140,7 +142,8 @@ static size_t s_rain_cells;         /* what the frame buffers were allocated for
 static const rain_area_t *s_rain_area;
 static rain_crop_t s_rain_crop;
 /* Where every RAIN_GRID-th disc pixel falls in the crop, in cells. */
-static float s_rain_gx[RAIN_GRID_N][RAIN_GRID_N], s_rain_gy[RAIN_GRID_N][RAIN_GRID_N];
+static EXT_RAM_BSS_ATTR float s_rain_gx[RAIN_GRID_N][RAIN_GRID_N];
+static EXT_RAM_BSS_ATTR float s_rain_gy[RAIN_GRID_N][RAIN_GRID_N];
 static float s_rain_col[RAIN_LEVELS + 1][4]; /* premultiplied colour per level; 0 is clear */
 static time_t s_rain_latest;
 static uint32_t *s_rain_px;         /* PSRAM, COAST_D x COAST_D */
@@ -450,6 +453,10 @@ typedef struct {
 enum { AC_CALL, AC_TYPE, AC_ALT, AC_GS, AC_DIST, AC_COLS };
 enum { SH_NAME, SH_TYPE, SH_KN, SH_DIST, SH_COLS };
 static radar_col_t s_ac_col[AC_COLS];
+/* The route column shows only the destination ("Til": "BGO") when the whole
+ * route ("OSL-BGO") doesn't fit. */
+static bool s_route_short;
+static int s_col_gap = RADAR_COL_GAP;
 static radar_col_t s_sh_col[SH_COLS];
 
 /* Place columns 1..n-1 right to left from the table's right edge, each
@@ -462,7 +469,7 @@ static int radar_layout_cols(radar_col_t *c, const int *w, int n)
         c[i].w = w[i];
         if (w[i] > 0) {
             c[i].x = right - w[i];
-            right = c[i].x - RADAR_COL_GAP;
+            right = c[i].x - s_col_gap;
         }
     }
     c[0].x = RADAR_LIST_X;
@@ -487,16 +494,32 @@ static int radar_max_w(const char *const *txt, int n)
 static void radar_layout_tables(void)
 {
     int ac[AC_COLS] = {
-        [AC_TYPE] = radar_max_w((const char *[]){ "Type", "B77W" }, 2),
+        [AC_TYPE] = radar_max_w((const char *[]){ "Rute", "B77W", "OSL-BGO" }, 3),
         [AC_ALT] = radar_max_w((const char *[]){ "H\xC3\xB8yde", "00.0 km", "88.8 km", "000 m", "888 m" }, 5),
         [AC_GS] = radar_max_w((const char *[]){ "kt", "000", "888" }, 3),
         [AC_DIST] = radar_max_w((const char *[]){ "km", "000", "888" }, 3),
     };
-    if (radar_layout_cols(s_ac_col, ac, AC_COLS) < draw_text_w("SAS1234")) {
-        ac[AC_TYPE] = 0;
-        radar_layout_cols(s_ac_col, ac, AC_COLS);
+    /* Too narrow for a typical callsign (a large font): the destination
+     * only, no type and no speed, a little closer together; failing that,
+     * the speed back and no route column. */
+    const int call_w = draw_text_w("SAS1234");
+    if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
+        const int gs_w = ac[AC_GS];
+        s_route_short = true;
+        s_col_gap = RADAR_COL_GAP - 2;
+        ac[AC_TYPE] = radar_max_w((const char *[]){ "Til", "BGO" }, 2);
+        ac[AC_GS] = 0;
+        if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
+            s_route_short = false;
+            s_col_gap = RADAR_COL_GAP;
+            ac[AC_TYPE] = 0;
+            ac[AC_GS] = gs_w;
+            radar_layout_cols(s_ac_col, ac, AC_COLS);
+        }
     }
 
+    const int ac_gap = s_col_gap;
+    s_col_gap = RADAR_COL_GAP; /* the ship table keeps the usual gap */
     const char *cats[AIS_CAT_COUNT + 1];
     for (int i = 0; i < AIS_CAT_COUNT; i++) {
         cats[i] = ais_category_label(i);
@@ -508,6 +531,7 @@ static void radar_layout_tables(void)
         [SH_DIST] = radar_max_w((const char *[]){ "km", "000", "888", "8.8" }, 4),
     };
     radar_layout_cols(s_sh_col, sh, SH_COLS);
+    s_col_gap = ac_gap;
 }
 
 /* One table cell: left-aligned text is shortened to fit; right-aligned
@@ -923,7 +947,7 @@ static void radar_draw_cb(lv_event_t *e)
     /* Table header + divider. */
     draw_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
     radar_cell(layer, &s_ac_col[AC_CALL], "Fly", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_TYPE], "Type", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_TYPE], s_route_short ? "Til" : "Rute", 50, LV_TEXT_ALIGN_LEFT, c_dim);
     radar_cell(layer, &s_ac_col[AC_ALT], "H\xC3\xB8yde", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
     radar_cell(layer, &s_ac_col[AC_GS], "kt", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
     radar_cell(layer, &s_ac_col[AC_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
@@ -1028,7 +1052,15 @@ static void radar_draw_cb(lv_event_t *e)
         snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
         snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
         radar_cell(layer, &s_ac_col[AC_CALL], a->callsign, y, LV_TEXT_ALIGN_LEFT, c_txt);
-        radar_cell(layer, &s_ac_col[AC_TYPE], a->type, y, LV_TEXT_ALIGN_LEFT, c_dim);
+        /* The route when it's known, else the aircraft type (not in the
+         * narrow destination-only column). */
+        if (a->route[0] != '\0') {
+            const char *dest = strrchr(a->route, '-');
+            radar_cell(layer, &s_ac_col[AC_TYPE], (s_route_short && dest) ? dest + 1 : a->route, y,
+                       LV_TEXT_ALIGN_LEFT, c_txt);
+        } else if (!s_route_short) {
+            radar_cell(layer, &s_ac_col[AC_TYPE], a->type, y, LV_TEXT_ALIGN_LEFT, c_dim);
+        }
         radar_cell(layer, &s_ac_col[AC_ALT], alt, y, LV_TEXT_ALIGN_RIGHT, c_txt);
         radar_cell(layer, &s_ac_col[AC_GS], gs, y, LV_TEXT_ALIGN_RIGHT, c_txt);
         radar_cell(layer, &s_ac_col[AC_DIST], dist, y, LV_TEXT_ALIGN_RIGHT, c_txt);
@@ -1083,6 +1115,17 @@ static void radar_redraw_timer_cb(lv_timer_t *t)
     (void)t;
     if (s_radar_valid && s_radar_canvas != NULL && !lv_obj_has_flag(s_radar_root, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_invalidate(s_radar_canvas);
+    }
+}
+
+/* The info line in orange while the last poll failed and older data is
+ * shown (adapter lock held). */
+static void info_stale(bool stale)
+{
+    if (stale) {
+        lv_obj_set_style_text_color(s_radar_info, lv_color_hex(0xE07000), 0);
+    } else {
+        lv_obj_remove_local_style_prop(s_radar_info, LV_STYLE_TEXT_COLOR, 0);
     }
 }
 
@@ -1190,8 +1233,9 @@ lv_obj_t *radar_build(lv_obj_t *screen)
 
     lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
     radar_layout_tables();
-    ESP_LOGI(TAG, "Radar table: callsign %d px%s, name %d px", s_ac_col[AC_CALL].w,
-             s_ac_col[AC_TYPE].w ? "" : " (no type column)", s_sh_col[SH_NAME].w);
+    ESP_LOGI(TAG, "Radar table: callsign %d px%s%s, name %d px", s_ac_col[AC_CALL].w,
+             s_ac_col[AC_TYPE].w ? "" : " (no route/type column)", s_ac_col[AC_GS].w ? "" : " (no speed column)",
+             s_sh_col[SH_NAME].w);
 
     for (int l = 1; l <= RAIN_LEVELS; l++) {
         const uint32_t c = s_rp->rain[l - 1];
@@ -1261,7 +1305,22 @@ static void aircraft_poll(int loc, adsb_result_t *scratch, int for_view)
 {
     double lat = atof(g_cfg->locations[loc].lat);
     double lon = atof(g_cfg->locations[loc].lon);
-    bool ok = (adsb_client_fetch(lat, lon, (float)g_cfg->radar_km[loc], scratch) == ESP_OK);
+    esp_err_t err = adsb_client_fetch(lat, lon, (float)g_cfg->radar_km[loc], scratch);
+    const bool ok = (err == ESP_OK);
+    if (ok) {
+        diag_ok(DIAG_AIRCRAFT);
+        /* Routes for the table's rows, a few new ones per poll. */
+        if (s_ac_col[AC_TYPE].w > 0) {
+            esp_err_t rerr = adsb_routes_fill(scratch, RADAR_LIST_ROWS, 4);
+            if (rerr == ESP_OK) {
+                diag_ok(DIAG_ROUTES);
+            } else {
+                diag_fail(DIAG_ROUTES, rerr);
+            }
+        }
+    } else {
+        diag_fail(DIAG_AIRCRAFT, err);
+    }
 
     if (!lock_for_view(for_view)) {
         return;
@@ -1273,8 +1332,11 @@ static void aircraft_poll(int loc, adsb_result_t *scratch, int for_view)
             memcpy(s_adsb_cache[loc], scratch, sizeof(*scratch));
         }
         radar_apply(scratch, &s_adsb_at[loc]);
+        info_stale(false);
     } else if (!s_radar_valid) {
         lv_label_set_text(g_status_label, "Kunne ikke hente fly. Pr\xC3\xB8ver igjen...");
+    } else {
+        info_stale(true);
     }
     esp_lv_adapter_unlock();
 }
@@ -1641,6 +1703,11 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
                                      lat, lon, (float)g_cfg->ship_km[loc], g_cfg->ship_min_len_m[loc],
                                      (float)g_cfg->ship_near_km[loc], g_cfg->ship_near_min_len_m[loc],
                                      scratch);
+    if (err == ESP_OK) {
+        diag_ok(DIAG_SHIPS);
+    } else {
+        diag_fail(DIAG_SHIPS, err);
+    }
 
     if (!lock_for_view(for_view)) {
         return;
@@ -1652,12 +1719,15 @@ static void ships_poll(int loc, ais_result_t *scratch, int for_view)
             memcpy(s_ais_cache[loc], scratch, sizeof(*scratch));
         }
         ships_apply(scratch, &s_ais_at[loc]);
+        info_stale(false);
     } else if (err == ESP_ERR_INVALID_ARG) {
         lv_label_set_text(g_status_label, "Mangler BarentsWatch-n\xC3\xB8kkel");
     } else if (err == ESP_ERR_INVALID_STATE) {
         lv_label_set_text(g_status_label, "Innlogging feilet");
     } else if (!s_radar_valid) {
         lv_label_set_text(g_status_label, "Kunne ikke hente skip. Pr\xC3\xB8ver igjen...");
+    } else {
+        info_stale(true);
     }
     esp_lv_adapter_unlock();
 }
@@ -1726,7 +1796,8 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
     const double lon0 = atof(g_cfg->locations[loc].lon);
     const double km_per_px = (double)range / RADAR_R;
     const double km_lon = 111.320 * cos(lat0 * M_PI / 180.0);
-    static float gx[RAIN_GRID_N][RAIN_GRID_N], gy[RAIN_GRID_N][RAIN_GRID_N];
+    static EXT_RAM_BSS_ATTR float gx[RAIN_GRID_N][RAIN_GRID_N];
+    static EXT_RAM_BSS_ATTR float gy[RAIN_GRID_N][RAIN_GRID_N];
     float x_lo = 1e9f, x_hi = -1e9f, y_lo = 1e9f, y_hi = -1e9f;
     for (int j = 0; j < RAIN_GRID_N; j++) {
         for (int i = 0; i < RAIN_GRID_N; i++) {
@@ -1858,6 +1929,13 @@ static bool rain_poll(int loc, int for_view)
         }
         time_t taken;
         esp_err_t err = rain_client_fetch(area, want, &s_rain_crop, s_rain_spare, &taken);
+        if (k == 0) {
+            if (err == ESP_OK) {
+                diag_ok(DIAG_RAIN);
+            } else {
+                diag_fail(DIAG_RAIN, err);
+            }
+        }
         if (err != ESP_OK) {
             if (k == 0) {
                 break;
@@ -1906,6 +1984,7 @@ uint32_t radar_status_colour(void)
 
 void radar_enter(int kind, int loc)
 {
+    info_stale(false);
     switch (kind) {
     case STOP_RADAR:
         radar_set_location(loc);

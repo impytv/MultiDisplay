@@ -47,6 +47,12 @@ static volatile int64_t s_wd_lvgl_us;
 static volatile int64_t s_wd_weather_us;
 /* Survives the restart, so the next boot can say why it happened. */
 static RTC_NOINIT_ATTR uint32_t s_wd_tripped;
+static const char *s_boot_trip; /* why the watchdog caused this boot, or NULL */
+
+const char *wd_boot_trip(void)
+{
+    return s_boot_trip;
+}
 
 void wd_weather_beat(void)
 {
@@ -57,6 +63,17 @@ static void wd_lvgl_beat_cb(lv_timer_t *t)
 {
     (void)t;
     s_wd_lvgl_us = esp_timer_get_time();
+}
+
+/* The same for the setup page. */
+static const char *trip_reason_no(uint32_t trip)
+{
+    switch (trip) {
+    case WD_TRIP_LVGL:    return "skjermen hadde stanset";
+    case WD_TRIP_WEATHER: return "hentingen hadde stanset";
+    case WD_TRIP_MEMORY:  return "minnet var nesten brukt opp";
+    default:              return NULL;
+    }
 }
 
 static const char *trip_reason(uint32_t trip)
@@ -120,6 +137,7 @@ void wd_start(void)
     const char *why = trip_reason(s_wd_tripped);
     if (esp_reset_reason() == ESP_RST_SW && why != NULL) {
         ESP_LOGW(TAG, "Restarted by the watchdog: %s", why);
+        s_boot_trip = trip_reason_no(s_wd_tripped);
     }
     s_wd_tripped = 0;
     s_wd_lvgl_us = esp_timer_get_time();

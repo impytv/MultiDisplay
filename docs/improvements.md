@@ -2,7 +2,11 @@
 
 Findings from a review of the whole project (September 2026), most important
 first within each group. Items are ticked off as they are implemented; the
-planned order is 1, then 2 + 6, then 3, 7 and 10.
+planned order is 1, then 2 + 6, then 3, 7 and 10. Items 19 onwards come from
+a second review after automatic updates were added; 19–21, 24–26, 29–31, 33,
+39 and 41 are in firmware 1.1.0, which also moved ~16 KB of static arrays
+to PSRAM (internal DRAM free went from ~53 KB to ~90 KB, lowest from 18 KB
+to 52 KB).
 
 ## Stability
 
@@ -135,3 +139,101 @@ planned order is 1, then 2 + 6, then 3, 7 and 10.
   backoff (0.3 s doubling to 10 s); the last view is saved once shown for
   10 s; Entur and BarentsWatch retry only a quick failure on a reused
   connection (`http_retry_worthwhile`).*
+
+## Second review: robustness and operations
+
+- [x] **19. Debugging needs the USB cable, which resets the board.** Logs
+  only go to the serial port, and opening it restarts the device, so the
+  moment before a fault is always lost. Keep the last ~16 KB of log lines in
+  a PSRAM ring buffer and serve it as `/log` (behind the setup password).
+  Add a `coredump` partition (64 KB, in the 2.4 MB still free after `ota_1`
+  at 0xda0000, so nothing moves) with
+  `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`, served as `/coredump` - crashes in
+  the field become readable with `idf.py coredump-info`. *Done: `/log` (the last 16 KB of the log, with wall-clock times, in PSRAM), a `coredump` partition at 0xda0000 (binary format, CRC32) served as `/coredump` and removed with POST `/coredump/erase`; tested with a forced crash, decoded by `idf.py coredump-info`. The partition table was written once over USB.*
+- [x] **20. No health view.** A `/status` JSON (and a line on the setup
+  page): firmware version, uptime, reset reason, the watchdog's last trip,
+  WiFi RSSI, free/lowest internal and PSRAM, the last successful fetch per
+  service and the last error. Most of it exists only in the serial log. *Done: `/status` (JSON) with version, uptime, restart reason (including the watchdog's), crash dump, WiFi signal, memory and each service's last success and error; shown under Driftsstatus on the setup page with links to the log, a screenshot and the crash dump.*
+- [x] **21. Ignoring MET's caching rules.** `api.met.no`'s terms ask
+  clients to honour `Expires` and send `If-Modified-Since`; the forecast is
+  fetched every 10 minutes per location although it changes about hourly.
+  Keep `Last-Modified`/`Expires` per location and send `If-Modified-Since`:
+  a 304 costs no parse, no ~350 KB of PSRAM and far less TLS time, and it
+  guards against being throttled (403/429) for the whole household. *Done: forecasts, nowcasts and alerts keep MET's `Last-Modified`/`Expires` per location (`http_get_body_cached`): nothing is asked before `Expires`, then `If-Modified-Since`; a 304 keeps the data held. A tap on a weather screen still asks (conditionally).*
+- [ ] **22. TLS verification is off for yr, MET alerts, adsb.lol and the
+  rain radar.** It was switched off because the certificate chains didn't
+  fit in internal RAM; since #15 mbedTLS allocates from PSRAM, so
+  `esp_crt_bundle_attach` (already used by Entur and BarentsWatch) may now
+  work for all of them. Try it and drop `CONFIG_ESP_TLS_INSECURE`.
+- [ ] **23. The clock depends on pool.ntp.org alone.** Add the router
+  (DHCP option 42, `CONFIG_LWIP_DHCP_GET_NTP_SRV`) and a second pool as
+  fallbacks. Until the clock syncs, dimming, the nightly restart and the
+  update window don't run; show "Klokken er ikke stilt" if still unsynced
+  after 10 minutes.
+- [x] **24. No visible sign of being offline.** When WiFi is down or every
+  fetch fails, screens keep old data with only the weather's orange stamp.
+  A small WiFi-off icon in a corner while disconnected, and each screen's
+  age shown in orange past its own staleness limit (radar 2 min, departures
+  3 min, ships 10 min). *Done: "Ingen WiFi" / "Ingen internett" bottom left (every fetch failing for 2 minutes); the radar, ship and departure screens show their info line in orange while the last fetch failed and older data is shown.*
+- [x] **25. Only reachable by IP address.** Announce `multidisplay.local`
+  with mDNS (`espressif/mdns`) so the setup page can be found without the
+  router's lease table. (The display itself still uses the Pi's IP for
+  updates.) *Done: `multidisplay.local` and an `_http._tcp` service (espressif/mdns, in PSRAM). LVGL is pinned to 9.5.0, as adding the component otherwise pulled in 9.6, which esp_lvgl_adapter 0.5.3 can't patch.*
+- [x] **26. Cross-site requests can change the settings.** With no setup
+  password, any web page opened on the home network can POST to
+  `http://192.168.0.42/save` (change WiFi, locations, update address) or
+  `/ota/install`. Refuse POSTs whose `Origin`/`Referer` isn't the display
+  itself. Updates are safe through signing, but a changed WiFi network needs
+  the BOOT button to undo. *Done: POSTs whose `Origin` (or `Referer`) names another host get 403; curl without either still works.*
+- [ ] **27. Settings can't be backed up.** Five locations with departure
+  selections take a while to enter. `/config.json` to download (secrets
+  left out) and an upload field to restore, also useful when replacing the
+  board.
+- [ ] **28. Host tests for the parsers.** `version_cmp`, `resolve_url`,
+  `iso8601_to_epoch`, Entur's `parse_direction`/`goes_via`, the form field
+  decoding and the manifest checks are pure C; build them for the `linux`
+  target (or plain gcc) with a few recorded API responses, and run them in a
+  GitHub Action that also does `idf.py build` (with a throwaway signing key).
+- [x] **29. Build warnings.** `sdkconfig.defaults` still sets
+  `LV_MEM_CUSTOM` and `LV_COLOR_SCREEN_TRANSP`, which LVGL 9 no longer has. *Done.*
+- [x] **30. Night: dim or off.** The backlight can't dim in hardware, but
+  the CH422G can switch it off. An option to turn the screen fully off
+  during the night window (a tap wakes it for a minute) saves power and
+  light in a bedroom. *Done: "Slå av skjermen" as an alternative to dimming; a touch lights it for a minute (the touch only wakes it).*
+## Second review: features
+
+- [x] **31. Look up places by name on the setup page.** Locations need
+  typed latitude/longitude. The page already calls Entur's geocoder for
+  stops; the same search (or Kartverket's place names API) can fill in name,
+  latitude and longitude. *Done: "Finn sted" in each location block searches Kartverket's place names from the browser and fills in name, latitude and longitude.*
+- [ ] **32. Weather: the week ahead.** The forecast already holds ~9 days;
+  a row of day cards (symbol, max/min, rain sum, wind) under or instead of
+  the 48-hour chart, or as its own screen.
+- [x] **33. Weather: sunrise and sunset.** MET's `sunrise/3.0` gives sun
+  and moon times; show them on the weather screen and shade the chart's
+  night hours. The dark theme could also follow sunset automatically. *Done: "Sol 07:15–18:58" (or Midnattssol / Mørketid) in the weather header when there is room, and the night hours shaded in both charts, from the sun's elevation worked out on the device (`main/sun.c`, checked against published times for Oslo and Tromsø). The theme doesn't follow sunset.*
+- [ ] **34. Rain is coming.** The nowcast already fetched says when
+  precipitation starts or stops in the next 90 minutes; a line such as
+  "Regn om 25 min" on the weather screen and in the overview.
+- [ ] **35. Departures: walking time.** Per stop, hide departures sooner than
+  the time it takes to walk there, and show "Gå nå" when it is time to leave
+  for the next one.
+- [ ] **36. Departures: disruptions.** Cancellations are parsed; show them
+  struck through, and Entur's `situations` (track work, replacement buses)
+  as a line under the affected row.
+- [ ] **37. Electricity prices.** Today's and tomorrow's hourly spot price
+  for the chosen price area (NO1–NO5) from hvakosterstrommen.no, as a bar
+  chart with the current hour marked and the cheapest hours highlighted.
+- [ ] **38. More screens from open Norwegian data.**
+  - Tides and water level (Kartverket's API) for coastal locations.
+  - Air quality (MET's airqualityforecast).
+  - Pollen in season.
+  - A calendar from an iCal URL (Google/Outlook share links).
+- [x] **39. Aircraft: routes.** adsb.lol's `/api/0/routeset` gives origin and
+  destination by callsign: "SAS123 OSL→BGO" in the table. *Done: routes from adsb.lol's per-callsign route files, kept a day (96 in PSRAM), up to four new lookups per poll; shown as "OSL-BGO" in the Rute column, or only the destination ("Til") when a large font leaves too little room.*
+- [ ] **40. Home Assistant.** Publish the display's state over MQTT (and
+  accept a "show screen X" command), or show a few Home Assistant sensors
+  (indoor temperature, door) on the overview.
+- [x] **41. One language.** The screens are Norwegian and the setup page is
+  English; pick one for both (or a language setting). *Done: the setup page, its messages, the update statuses and the update site's index page are Norwegian. The serial log stays English.*
+

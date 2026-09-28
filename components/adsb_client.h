@@ -20,6 +20,7 @@ typedef struct {
     float gs_kt;          /* ground speed, 0 if unknown */
     float track_deg;      /* ground track, clockwise from north */
     float seen_pos_s;     /* age of the position report at fetch time */
+    char route[12];       /* "OSL-BGO" from adsb_routes_fill, "" if unknown */
 } adsb_aircraft_t;
 
 typedef struct {
@@ -46,5 +47,17 @@ esp_err_t adsb_client_fetch(double lat, double lon, float radius_km, adsb_result
 
 /** Drop the kept-alive connection (frees its TLS buffers). Safe to call any time. */
 void adsb_client_close(void);
+
+/**
+ * Fill in the route (IATA airports, e.g. "OSL-BGO") of the first `rows`
+ * aircraft in `res`, from adsb.lol's route data by callsign. Routes are kept
+ * for a day, and at most `max_fetches` new ones are looked up per call, so a
+ * busy sky fills in over a few polls. Returns ESP_OK, or the error of a
+ * lookup that failed (the others still apply).
+ */
+esp_err_t adsb_routes_fill(adsb_result_t *res, int rows, int max_fetches);
+
+/** Drop the route lookups' kept-alive connection. */
+void adsb_routes_close(void);
 
 #endif

@@ -14,6 +14,7 @@
  * hour, then two, ... up to a day. "Check now" and "Install now" on the
  * setup page run straight away. */
 
+#include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -73,8 +74,8 @@ static bool s_busy;
 static int s_progress = -1;  /* percent while installing, else -1 */
 static time_t s_checked;     /* wall time of the last check, 0 = none (or no clock) */
 static bool s_checked_any;
-static char s_result[160];
-static offer_t s_offer;      /* when s_have_offer: a version newer than the running one */
+static EXT_RAM_BSS_ATTR char s_result[160];
+static EXT_RAM_BSS_ATTR offer_t s_offer;      /* when s_have_offer: a version newer than the running one */
 static bool s_have_offer;
 
 static TaskHandle_t s_task;
@@ -194,13 +195,13 @@ static const char *fetch_manifest(offer_t *o)
     snprintf(ua, sizeof(ua), "MultiDisplay/%s", me->version);
     char *body = NULL;
     if (http_get_body(g_cfg->ota_url, ua, UPD_TIMEOUT_MS, UPD_MANIFEST_MAX, &body, TAG) != ESP_OK) {
-        return "couldn't fetch the manifest";
+        return "fikk ikke hentet manifestet";
     }
     json_use_psram();
     cJSON *root = cJSON_Parse(body);
     free(body);
     if (root == NULL) {
-        return "the manifest isn't valid JSON";
+        return "manifestet er ikke gyldig JSON";
     }
     const char *err = NULL;
     const char *project = cJSON_GetStringValue(cJSON_GetObjectItem(root, "project"));
@@ -212,14 +213,14 @@ static const char *fetch_manifest(offer_t *o)
     int v[3];
     memset(o, 0, sizeof(*o));
     if (project == NULL || strcmp(project, me->project_name) != 0) {
-        err = "the manifest is for another project";
+        err = "manifestet gjelder et annet prosjekt";
     } else if (board == NULL || strcmp(board, CONFIG_MULTIDISPLAY_BOARD) != 0) {
-        err = "the manifest is for another board";
+        err = "manifestet gjelder et annet kort";
     } else if (version == NULL || strlen(version) >= sizeof(o->version) || !parse_version(version, v)) {
-        err = "the manifest has no valid version";
+        err = "manifestet har ingen gyldig versjon";
     } else if (url == NULL || url[0] == '\0' || !cJSON_IsNumber(size) || size->valuedouble <= 0 ||
                !parse_hex32(sha, o->sha256)) {
-        err = "the manifest lacks the image's address, size or SHA-256";
+        err = "manifestet mangler filens adresse, st\xC3\xB8" "rrelse eller SHA-256";
     } else {
         snprintf(o->version, sizeof(o->version), "%s", version);
         snprintf(o->released, sizeof(o->released), "%s",
@@ -245,7 +246,7 @@ static const char *download(const offer_t *o)
     esp_http_client_handle_t client = NULL;
     const char *err = NULL;
     if (buf == NULL || w == NULL) {
-        err = "out of memory";
+        err = "ikke nok minne";
         goto out;
     }
     if ((err = ota_writer_start(w, o->size)) != NULL) {
@@ -254,18 +255,18 @@ static const char *download(const offer_t *o)
     const esp_http_client_config_t config = { .url = o->url, .timeout_ms = UPD_TIMEOUT_MS };
     client = esp_http_client_init(&config);
     if (client == NULL || esp_http_client_open(client, 0) != ESP_OK) {
-        err = "couldn't connect to the update site";
+        err = "fikk ikke kontakt med oppdateringssiden";
         goto abort;
     }
     const int64_t len = esp_http_client_fetch_headers(client);
     const int status = esp_http_client_get_status_code(client);
     if (status != 200) {
         ESP_LOGE(TAG, "HTTP status %d for %s", status, o->url);
-        err = "the update site doesn't have the image";
+        err = "oppdateringssiden har ikke filen";
         goto abort;
     }
     if (len > 0 && len != o->size) {
-        err = "the image's size doesn't match the manifest";
+        err = "filens st\xC3\xB8" "rrelse stemmer ikke med manifestet";
         goto abort;
     }
     ESP_LOGI(TAG, "Downloading %s (%u bytes)", o->url, (unsigned)o->size);
@@ -276,7 +277,7 @@ static const char *download(const offer_t *o)
     while (done < o->size) {
         const int n = esp_http_client_read(client, (char *)buf, UPD_CHUNK);
         if (n <= 0) {
-            err = "the download was interrupted";
+            err = "nedlastingen ble avbrutt";
             goto abort;
         }
         if ((err = ota_writer_write(w, buf, (size_t)n)) != NULL) {
@@ -288,7 +289,7 @@ static const char *download(const offer_t *o)
         if (!version_checked && app != NULL) {
             version_checked = true;
             if (strncmp(app->version, o->version, sizeof(app->version)) != 0) {
-                err = "the image isn't the version the manifest names";
+                err = "filen er ikke versjonen manifestet oppgir";
                 goto abort;
             }
         }
@@ -335,7 +336,7 @@ static bool run_check(bool install, bool automatic)
 
     offer_t *o = heap_caps_malloc(sizeof(*o), MALLOC_CAP_SPIRAM);
     bool drew = false;
-    const char *err = o ? fetch_manifest(o) : "out of memory";
+    const char *err = o ? fetch_manifest(o) : "ikke nok minne";
     const char *running = esp_app_get_description()->version;
     char bad[32];
     rolled_back_version(bad, sizeof(bad));
@@ -344,22 +345,22 @@ static bool run_check(bool install, bool automatic)
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_have_offer = false;
         xSemaphoreGive(s_lock);
-        set_result("failed: %s", err);
+        set_result("feilet: %s", err);
     } else if (version_cmp(o->version, running) <= 0) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_have_offer = false;
         xSemaphoreGive(s_lock);
-        set_result("up to date%s", "");
+        set_result("oppdatert%s", "");
     } else {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_offer = *o;
         s_have_offer = true;
         xSemaphoreGive(s_lock);
         if (automatic && strcmp(bad, o->version) == 0) {
-            set_result("%s went back to the previous firmware after installing; waiting for a newer version",
+            set_result("%s gikk tilbake til forrige programvare etter installering; venter p\xC3\xA5" " en nyere",
                        o->version);
         } else if (!install) {
-            set_result(g_cfg->ota_auto ? "%s available, installs tonight" : "%s available", o->version);
+            set_result(g_cfg->ota_auto ? "%s er tilgjengelig og installeres i natt" : "%s er tilgjengelig", o->version);
         } else {
             ESP_LOGI(TAG, "Installing %s over %s", o->version, running);
             /* Free what the screens' idle connections hold. */
@@ -373,13 +374,13 @@ static bool run_check(bool install, bool automatic)
             xSemaphoreGive(s_lock);
             const char *why = download(o);
             if (why == NULL) {
-                set_result("%s installed, restarting", o->version);
+                set_result("%s installert, starter p\xC3\xA5" " nytt", o->version);
                 show_status("Programvare oppdatert.\nStarter p\xC3\xA5 nytt...");
                 vTaskDelay(pdMS_TO_TICKS(1500));
                 esp_restart();
             }
             char msg[128];
-            snprintf(msg, sizeof(msg), "installing %s failed: %s", o->version, why);
+            snprintf(msg, sizeof(msg), "installering av %s feilet: %s", o->version, why);
             set_result("%s", msg);
             err = why;
         }
@@ -424,7 +425,7 @@ bool updater_poll(uint32_t *wait_ms)
     s_request = REQ_NONE;
     if (g_cfg->ota_url[0] == '\0') {
         if (req != REQ_NONE) {
-            set_result("no update address set%s", "");
+            set_result("ingen oppdateringsadresse satt%s", "");
             xSemaphoreTake(s_lock, portMAX_DELAY);
             s_busy = false;
             xSemaphoreGive(s_lock);
@@ -474,7 +475,7 @@ static esp_err_t h_status(httpd_req_t *req)
             localtime_r(&s_checked, &lt);
             strftime(when, sizeof(when), "%d.%m %H:%M", &lt);
         } else {
-            snprintf(when, sizeof(when), "just now");
+            snprintf(when, sizeof(when), "nettopp");
         }
     }
     cJSON_AddStringToObject(o, "checked", when);

@@ -50,7 +50,7 @@ idf.py -p PORT coast-flash
 ### Updating over WiFi
 
 After the first USB flash, new firmware can go over WiFi. Upload
-`build/multi_display.bin` under **Firmware update** on the setup page, or:
+`build/multi_display.bin` under **Last opp programvare** on the setup page, or:
 
 ```bash
 curl --data-binary @build/multi_display.bin http://DEVICE-IP/ota
@@ -71,12 +71,12 @@ was signed with a key that has since been lost.
 The display can fetch new firmware by itself from an update site on the
 home network (see `docs/auto-update-plan.md` for the design).
 
-- **On the display:** the setup page's **Firmware updates** section has the
+- **On the display:** the setup page's **Programvareoppdatering** section has the
   update address (default `http://192.168.0.119:8070/manifest.json`) and
-  **Install new firmware automatically** (off by default). When ticked, a
-  newer release is installed at night between 03:30 and 05:00. **Check
-  now** shows what the site offers, with its release notes, and **Install
-  now** installs it straight away, ticked or not.
+  **Installer ny programvare automatisk** (off by default). When ticked, a
+  newer release is installed at night between 03:30 and 05:00. **Sjekk
+  nå** shows what the site offers, with its release notes, and **Installer
+  nå** installs it straight away, ticked or not.
 - **What is refused:** a manifest for another project or board, a version
   that isn't newer than the running one, an image whose version, size or
   SHA-256 differs from the manifest, and any image not signed with the
@@ -113,6 +113,26 @@ page, and tags the commit (`git push origin v1.1.0` to share the tag).
   minute, the fetching stalls for 20 minutes, or memory stays low for a
   minute; the next boot logs which. The memory figures are logged hourly.
 
+- **Diagnostics without the cable** (opening the serial port resets the
+  board). On the device's address, behind the setup password if one is set:
+  - `/status`: version, uptime, why it last restarted, WiFi signal, memory,
+    and each service's last success and error. The setup page shows it under
+    **Driftsstatus**.
+  - `/log`: the last 16 KB of the log.
+  - `/coredump`: the crash dump from the last crash, if any. Decode it with
+    `idf.py coredump-info -c coredump.bin`, using the build of that same
+    firmware. `curl -X POST http://DEVICE-IP/coredump/erase` removes it.
+    The crash dump partition comes with the partition table; a board flashed
+    before 1.1.0 needs `idf.py -p PORT partition-table-flash` once (it only
+    adds a partition at the end).
+- The display announces itself as **`multidisplay.local`**.
+- **Offline:** "Ingen WiFi" or "Ingen internett" shows bottom left while the
+  display is off the network or every fetch has failed for two minutes. A
+  screen showing older data after a failed fetch has its info line in
+  orange.
+- The setup page only accepts changes sent from itself, so another web page
+  open on the home network can't change the settings.
+
 - The example keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.
 - The default panel resolution is `800x480`.
 - Touch is enabled by default. If your panel variant has no touch, set `EXAMPLE_USE_TOUCH` to `0` in `main/waveshare_rgb_lcd_port.h`.
@@ -121,7 +141,15 @@ page, and tags the commit (`git push origin v1.1.0` to share the tag).
 
 The "YR" tab connects to WiFi and shows the current forecast from the
 [MET Norway Locationforecast API](https://developer.yr.no/doc/), refreshed
-every 10 minutes.
+every 10 minutes. As MET's terms ask, a forecast isn't asked for again until
+its `Expires` time, and then with `If-Modified-Since`, so an unchanged
+forecast costs nothing to check. The header shows today's sunrise and sunset
+("Sol 07:15–18:58", or Midnattssol / Mørketid), worked out on the device,
+and the night hours are shaded in the charts.
+
+To add a location, type a place name under **Finn sted** in a location block
+on the setup page: the hits come from Kartverket's place names, and picking
+one fills in the name, latitude and longitude.
 
 ### Multiple locations
 
@@ -139,28 +167,31 @@ around):
 2. For each location in order, whichever of its weather screen (chart + wind),
    aircraft radar, ship traffic, rain radar and departure board are enabled.
 
-The setup page also has a **Theme** choice (light or dark) that applies to
+The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
 
-**Contact email for yr** goes into the User-Agent header of every api.met.no
+**Kontakt-e-post for yr** goes into the User-Agent header of every api.met.no
 request (`MultiDisplay/1.0 (<email>)`), as MET Norway's
 [Terms of Service](https://developer.yr.no/doc/TermsOfService/) ask. Leave it
 blank to send the build-time **YR API User-Agent** instead.
 
 ### Aircraft radar
 
-For each location on the setup page, tick what it shows: **Weather**,
-**Aircraft** and/or **Ships** (shown in that order: Oslo weather, Oslo
+For each location on the setup page, tick what it shows: **Vær**,
+**Fly** and/or **Skip** (shown in that order: Oslo weather, Oslo
 aircraft, Oslo ships, next location, ...). Each location also has its own
-**Aircraft range** (kilometres, 10-185, default 40). A location without
+**Flyradar (km)** (kilometres, 10-185, default 40). A location without
 weather has no weather screen and isn't a row in the overview table (the overview lists only the locations that show weather, and
 is empty of rows - but still shown, for its IP address - if none do).
 
 The screen shows a sonar-style plot centred on the location (north up, range
 rings at quarter steps, a heading triangle and a 60-second speed vector per
 aircraft, callsign tags for the nearest ones) and a table of the nearest 14
-aircraft: callsign, type, altitude (metres, or kilometres from 1000 m), ground
-speed in knots and distance in kilometres. Aircraft on the ground are left out.
+aircraft: callsign, route (e.g. "OSL-BGO", from adsb.lol's route data,
+or just the destination under **Til** at large font sizes; the type when no
+route is known), altitude (metres, or kilometres from 1000 m), ground
+speed in knots (left out at large font sizes) and distance in kilometres.
+Aircraft on the ground are left out.
 Airports within range are drawn under the aircraft - runway lines, or a dot
 where they'd be too small to see, plus the airport's IATA code (its ICAO code
 where it has no IATA one; labels that would land on another label are
@@ -183,13 +214,13 @@ location with a hull-shaped marker along each ship's heading and a 10-minute
 course vector (moored or anchored ships are plain dots), name tags for the
 nearest ones, and a table of the nearest 14: name, type (Last, Tank, Pass,
 Fiske, Fritid, Slep, Annet - also the marker colour), speed in knots and
-distance in kilometres. Each location has its own **Ship range** (kilometres,
+distance in kilometres. Each location has its own **Skipstrafikk (km)** (kilometres,
 2-100, default 20).
 
 Positions come from the [BarentsWatch Live AIS
 API](https://developer.barentswatch.no/docs/AIS/live-ais-api), which needs a
 free API client: create one at [BarentsWatch](https://www.barentswatch.no/minside/)
-with access to AIS, and enter its **Client ID** and **Client secret** on the
+with access to AIS, and enter its **Klient-ID** and **Klienthemmelighet** on the
 setup page. The screen fetches the latest positions every 30 s (ships that
 haven't reported for 15 minutes are left out) and moves moving ships along
 their course in between. Coverage is Norwegian waters only, and small vessels
@@ -231,28 +262,35 @@ the device does no date or geometry filtering of its own.
 
 ### Automatic rotation
 
-The setup page's **Automatic rotation** section makes the display page
-through screens on its own when nobody is using it. After **After idle
-(min)** minutes without a touch it moves to the next screen ticked in a
-location's **Rotate** row (plus the overview, if **Include the overview**
-is ticked), in the normal screen order, and moves on every **Per screen
+The setup page's **Automatisk bytte** section makes the display page
+through screens on its own when nobody is using it. After **Etter (min uten trykk)** minutes without a touch it moves to the next screen ticked in a
+location's **Bytt automatisk** row (plus the overview, if **Ta med oversikten**
+is ticked), in the normal screen order, and moves on every **Per skjerm
 (s)** seconds. A touch stops it until the display has been left alone that
 long again. 0 minutes (the default) turns it off, and nothing is ticked by
-default. With **Pause while dimmed at night** (on by default) it stands
+default. With **Stopp om natta** (on by default) it stands
 still, and only that one screen fetches, while the night dimming is on.
 Screens the rotation shows aren't remembered across a restart
 (only tapped-to ones are), to spare the flash.
 
+### Night
+
+Under **Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
+times (local time, default 22:00–07:00) either dims the screen (**Demp
+skjermen**: a dark layer over it, as the backlight can't be dimmed) or
+switches it off (**Slå av skjermen**). When it's off, a touch lights it for a
+minute; that touch only wakes it.
+
 ### Public transport departures
 
-Tick **Departures** for a location to give it a departure board: realtime
+Tick **Avganger** for a location to give it a departure board: realtime
 departures from [Entur's Journey Planner](https://developer.entur.no/pages-journeyplanner-journeyplanner),
 the next two per line and direction,
 under a large 24-hour clock. Refreshed every 30 seconds while on screen; the
 "N min" countdowns tick between refreshes. Times without realtime data are
 dimmed, cancelled departures say *Innstilt*.
 
-The stops and lines go in the location's **Departures (stops and lines)**
+The stops and lines go in the location's **Avganger (holdeplasser og linjer)**
 field as one line of text:
 
 ```
@@ -291,14 +329,14 @@ network, and restarts normally once it's back:
 2. A "sign in to network" page opens automatically (captive portal); if not,
    browse to **`http://192.168.4.1/`**.
 3. Pick your WiFi network, enter the password, then fill in one or more
-   **Location** blocks (name + latitude/longitude). Leave a block empty to
-   skip it. Press **Save** — the device reboots and connects.
+   **Sted** blocks (name + latitude/longitude). Leave a block empty to
+   skip it. Press **Lagre og start på nytt** — the device reboots and connects.
 
 Once connected, the same page is reachable at the device's IP on your LAN
 (shown on the overview screen, in the router's client list, or the serial
 log: `Got IP: …`) for later edits.
 
-The page can have a password (**Setup page password**; none by default).
+The page can have a password (**Passord for oppsettsiden**; none by default).
 The browser then asks for it, with any user name; it covers the page, the
 screenshot and firmware updates (`curl -u x:PASSWORD …`). It travels
 unencrypted, so don't reuse an important one. Holding BOOT while powering on

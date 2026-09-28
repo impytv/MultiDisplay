@@ -5,6 +5,7 @@
  * Polled every 30 s, and repainted between polls so the "N min" countdowns
  * stay current. */
 
+#include "esp_attr.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -12,6 +13,7 @@
 #include "esp_heap_caps.h"
 
 #include "app.h"
+#include "diag.h"
 #include "departures.h"
 #include "draw.h"
 #include "entur_client.h"
@@ -344,7 +346,7 @@ uint32_t departures_poll(int loc, int for_view)
 {
     /* s_dep_sel was parsed for `loc` by departures_enter; copied, as a tap
      * may re-parse it for another location while the fetch is under way. */
-    static entur_selection_t sel;
+    static EXT_RAM_BSS_ATTR entur_selection_t sel;
     bool have = false;
     if (lock_for_view(for_view)) {
         sel = *s_dep_sel;
@@ -358,6 +360,11 @@ uint32_t departures_poll(int loc, int for_view)
         return DEP_RETRY_MS;
     }
     esp_err_t err = entur_client_fetch(&sel, s_dep_scratch);
+    if (err == ESP_OK) {
+        diag_ok(DIAG_DEPARTURES);
+    } else {
+        diag_fail(DIAG_DEPARTURES, err);
+    }
 
     if (!lock_for_view(for_view)) {
         return DEP_RETRY_MS;
@@ -370,11 +377,13 @@ uint32_t departures_poll(int loc, int for_view)
             memcpy(s_dep_cache[loc], s_dep_scratch, sizeof(*s_dep_scratch));
         }
         lv_label_set_text(g_status_label, "");
+        lv_obj_set_style_text_color(s_dep_updated, dep_dim_color(), 0);
         dep_updated_set(&s_dep_at[loc]);
         lv_obj_invalidate(s_dep_canvas);
     } else if (!s_dep_valid) {
         lv_label_set_text(g_status_label, "Kunne ikke hente avganger. Pr\xC3\xB8ver igjen...");
     } else {
+        lv_obj_set_style_text_color(s_dep_updated, lv_color_hex(0xE07000), 0);
         lv_label_set_text(s_dep_updated, "Kunne ikke oppdatere - viser siste data");
     }
     const bool shown = s_dep_valid;

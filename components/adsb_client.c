@@ -37,6 +37,7 @@ void adsb_client_close(void)
         s_client = NULL;
     }
     http_buf_free(&s_resp);
+    adsb_routes_close();
 }
 
 /* --------------------------------------------------------------------------

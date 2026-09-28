@@ -34,6 +34,9 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
  */
 const char *wifi_provision_get_ip(void);
 
+/* Whether the station is connected with an IP right now. */
+bool wifi_provision_is_up(void);
+
 /**
  * Serve GET `uri` with `handler` on the config web server (which is running
  * once wifi_provision_connect has returned), ahead of its catch-all page.

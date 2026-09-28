@@ -125,6 +125,9 @@ typedef struct {
      * midnight, each < 24 * 60; the window may wrap past midnight) when
      * dim_enabled. */
     uint8_t dim_enabled;
+    /* During that window: 0 = dim the screen, 1 = switch it off (a touch
+     * lights it for a minute). */
+    uint8_t night_off;
     uint16_t dim_start;
     uint16_t dim_end;
     /* Two font classes: title_* for the heading of each screen (the location

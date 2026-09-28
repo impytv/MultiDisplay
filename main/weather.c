@@ -3,6 +3,7 @@
  * table of all of them. The forecasts and alerts are cached per location
  * and refreshed on their own cadences by weather_poll. */
 
+#include "esp_attr.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,8 @@
 #include "esp_log.h"
 
 #include "app.h"
+#include "diag.h"
+#include "sun.h"
 #include "draw.h"
 #include "met_alerts_client.h"
 #include "watchdog.h"
@@ -133,6 +136,11 @@ static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
 static lv_obj_t *s_updated_label;
+/* Today's sunrise and sunset, left of s_updated_label (see sun_update), and
+ * the night hours shaded in the two charts. */
+#define NIGHT_BANDS 3
+static lv_obj_t *s_sun_label;
+static lv_obj_t *s_night_main[NIGHT_BANDS], *s_night_wind[NIGHT_BANDS];
 static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
 #define WX_CACHE_MAX_MS     (30 * 60 * 1000)
 /* A forecast fetched this long ago is flagged as old on screen. */
@@ -156,6 +164,13 @@ static lv_obj_t *s_ov_alert[APP_CONFIG_MAX_LOCATIONS]; /* small badge beside the
 static yr_forecast_t *s_fc_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_fc_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_fc_tk[APP_CONFIG_MAX_LOCATIONS];
+/* MET's Expires/Last-Modified for each cached forecast and alert list, and
+ * for the one nowcast held (s_nc_loc's): see http_util.h. */
+static EXT_RAM_BSS_ATTR http_cache_t s_fc_http[APP_CONFIG_MAX_LOCATIONS];
+static EXT_RAM_BSS_ATTR http_cache_t s_alert_http[APP_CONFIG_MAX_LOCATIONS];
+static http_cache_t s_nc_http;
+static int s_nc_loc = -1;
+static bool s_nc_held; /* s_nowcast holds a parsed nowcast for s_nc_loc */
 static time_t s_fc_when[APP_CONFIG_MAX_LOCATIONS]; /* wall clock of that refresh, 0 if not synced */
 
 /* Per-location severe weather alerts (PSRAM), same shape as the forecast
@@ -195,10 +210,10 @@ static lv_obj_t *s_hour_labels[NUM_HOUR_LABELS];
 static lv_obj_t *s_icon_slots[NUM_HOUR_LABELS];
 
 /* The bars' values; LV_CHART_POINT_NONE for no bar. */
-static int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS];     /* millimeters * 10 */
-static int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
-static int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
-static int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
+static EXT_RAM_BSS_ATTR int32_t s_precip_chart_data[YR_FORECAST_MAX_POINTS];     /* millimeters * 10 */
+static EXT_RAM_BSS_ATTR int32_t s_precip_max_chart_data[YR_FORECAST_MAX_POINTS]; /* millimeters * 10 */
+static EXT_RAM_BSS_ATTR int32_t s_wind_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
+static EXT_RAM_BSS_ATTR int32_t s_gust_chart_data[YR_FORECAST_MAX_POINTS];   /* m/s * 10 */
 
 static void bars_draw_cb(lv_event_t *e)
 {
@@ -262,11 +277,11 @@ static void bars_render(bars_t *b, int n, const int32_t *front, const int32_t *b
     }
     lv_obj_invalidate(b->obj);
 }
-static lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
+static EXT_RAM_BSS_ATTR lv_point_precise_t s_temp_line_points[YR_FORECAST_MAX_POINTS];
 /* The temperature each s_temp_line_points entry was plotted from, and the
  * chart y of 0 degrees C, so temp_line_draw_cb can colour the sub-zero parts
  * of the line separately. */
-static float s_temp_line_values[YR_FORECAST_MAX_POINTS];
+static EXT_RAM_BSS_ATTR float s_temp_line_values[YR_FORECAST_MAX_POINTS];
 static uint32_t s_temp_line_count;
 static lv_color_t s_temp_warm_color;
 static lv_color_t s_temp_cold_color;
@@ -724,7 +739,116 @@ static void format_hour_label(int64_t epoch, char *out, size_t out_len)
  * wasn't synced): "Oppdatert kl." is when the device got it, not when MET
  * issued it, and turns orange once it's WX_STALE_S old - the chart itself
  * looks the same however old the data is. Adapter lock held. */
-static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
+/* Show the sun line only where it fits: not with an alert banner, and not
+ * over a long location name (adapter lock held). */
+static void sun_label_fit(void)
+{
+    if (lv_label_get_text(s_sun_label)[0] == '\0' || !lv_obj_has_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_update_layout(s_detail_root);
+    lv_obj_align_to(s_sun_label, s_updated_label, LV_ALIGN_OUT_LEFT_MID, -28, 0);
+    lv_obj_update_layout(s_sun_label);
+    const bool fits = lv_obj_get_x(s_sun_label) > lv_obj_get_x(s_location_label) +
+                                                     lv_obj_get_width(s_location_label) + 24;
+    if (fits) {
+        lv_obj_clear_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* Today's sun times for location `loc`, and the night hours shaded across
+ * the charts, whose x axis runs from fc's first point to its last (adapter
+ * lock held). */
+static void sun_update(const yr_forecast_t *fc, int loc)
+{
+    const double lat = atof(g_cfg->locations[loc].lat);
+    const double lon = atof(g_cfg->locations[loc].lon);
+    const time_t now = time(NULL);
+
+    char text[48] = "";
+    if (now > PLAUSIBLE_EPOCH_S) {
+        time_t rise, set;
+        switch (sun_times(lat, lon, now, &rise, &set)) {
+        case SUN_UP_ALL_DAY:
+            snprintf(text, sizeof(text), "Midnattssol");
+            break;
+        case SUN_DOWN_ALL_DAY:
+            snprintf(text, sizeof(text), "M\xC3\xB8rketid");
+            break;
+        default: {
+            struct tm r, s;
+            localtime_r(&rise, &r);
+            localtime_r(&set, &s);
+            if (rise != 0 && set != 0) {
+                snprintf(text, sizeof(text), "Sol %02d:%02d\xE2\x80\x93%02d:%02d", r.tm_hour, r.tm_min, s.tm_hour,
+                         s.tm_min);
+            } else if (rise != 0) {
+                snprintf(text, sizeof(text), "Sol opp %02d:%02d", r.tm_hour, r.tm_min);
+            } else {
+                snprintf(text, sizeof(text), "Sol ned %02d:%02d", s.tm_hour, s.tm_min);
+            }
+            break;
+        }
+        }
+    }
+    lv_label_set_text(s_sun_label, text);
+    sun_label_fit();
+
+    /* Night: every 5 minutes along the axis, the runs with the sun down. */
+    int band = 0;
+    const int n = fc->point_count;
+    if (n > 1 && fc->points[0].epoch_utc > PLAUSIBLE_EPOCH_S) {
+        const time_t t0 = (time_t)fc->points[0].epoch_utc, t1 = (time_t)fc->points[n - 1].epoch_utc;
+        time_t start = 0;
+        for (time_t t = t0; band < NIGHT_BANDS; t += 300) {
+            const bool end = t >= t1;
+            const time_t at = end ? t1 : t;
+            const bool down = !end && sun_elevation_deg(lat, lon, at) <= SUN_DOWN_DEG;
+            if (down && start == 0) {
+                start = at;
+            } else if (!down && start != 0) {
+                const int x0 = (int)((start - t0) * (CHART_W - 1) / (t1 - t0));
+                const int x1 = (int)((at - t0) * (CHART_W - 1) / (t1 - t0));
+                if (x1 - x0 >= 2) {
+                    lv_obj_set_x(s_night_main[band], CHART_X + x0);
+                    lv_obj_set_width(s_night_main[band], x1 - x0);
+                    lv_obj_set_x(s_night_wind[band], CHART_X + x0);
+                    lv_obj_set_width(s_night_wind[band], x1 - x0);
+                    lv_obj_clear_flag(s_night_main[band], LV_OBJ_FLAG_HIDDEN);
+                    lv_obj_clear_flag(s_night_wind[band], LV_OBJ_FLAG_HIDDEN);
+                    band++;
+                }
+                start = 0;
+            }
+            if (end) {
+                break;
+            }
+        }
+    }
+    for (; band < NIGHT_BANDS; band++) {
+        lv_obj_add_flag(s_night_main[band], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_night_wind[band], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* A shaded night band over a chart, y..y+h (placed by sun_update). */
+static lv_obj_t *night_band(int y, int h, bool dark)
+{
+    lv_obj_t *b = lv_obj_create(s_detail_root);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_style_bg_color(b, dark ? lv_color_hex(0x5070C0) : lv_color_hex(0x203070), 0);
+    lv_obj_set_style_bg_opa(b, dark ? LV_OPA_20 : LV_OPA_10, 0);
+    lv_obj_set_pos(b, CHART_X, y);
+    lv_obj_set_size(b, 1, h);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
+    return b;
+}
+
+static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int loc)
 {
     const yr_forecast_point_t *now = &fc->points[0];
 
@@ -857,6 +981,8 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched)
         lv_image_set_rotation(s_wind_dir_arrows[i], to_deg * 10);
         lv_obj_clear_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
+
+    sun_update(fc, loc);
 }
 
 /* Linear-interpolate a per-point float field of the hourly forecast at an
@@ -958,6 +1084,7 @@ static void update_alert_banner(int loc)
     const met_alert_t *worst = alert_worst(loc);
     if (worst == NULL) {
         lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
+        sun_label_fit();
         return;
     }
     lv_obj_set_style_bg_color(s_alert_label, alert_lv_color(worst->color), 0);
@@ -968,6 +1095,7 @@ static void update_alert_banner(int loc)
         lv_label_set_text_fmt(s_alert_label, "OBS: %s", worst->event_name);
     }
     lv_obj_clear_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
+    sun_label_fit();
 }
 
 /* Refresh every row's alert badge in the overview table. Part of
@@ -1205,6 +1333,11 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
     lv_label_set_text(s_updated_label, "");
 
+    s_sun_label = lv_label_create(s_detail_root);
+    lv_obj_set_style_text_color(s_sun_label, dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060), 0);
+    lv_label_set_text(s_sun_label, "");
+    lv_obj_add_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
+
     /* The selected location's worst active severe weather alert, if any (see
      * update_alert_banner). Sits centred in the gap between the location name
      * and the "updated" timestamp: black text on a solid fill of the alert's
@@ -1251,6 +1384,9 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_set_size(s_precip_frame, CHART_W, CHART_H);
     lv_chart_set_type(s_precip_frame, LV_CHART_TYPE_NONE);
     lv_chart_set_div_line_count(s_precip_frame, 4, NUM_HOUR_LABELS - 1);
+    for (int i = 0; i < NIGHT_BANDS; i++) {
+        s_night_main[i] = night_band(CHART_Y + 1, CHART_H - 2, dark);
+    }
     /* Bars only ever fill the bottom 1/PRECIP_AXIS_COMPRESSION of the area. */
     bars_create(&s_precip_bars, CHART_X, CHART_Y + CHART_H - BARS_INSET - PRECIP_BARS_H, PRECIP_BARS_H,
                 lv_palette_main(LV_PALETTE_BLUE));
@@ -1332,6 +1468,9 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_set_style_bg_opa(s_wind_frame, LV_OPA_TRANSP, 0);
     lv_chart_set_type(s_wind_frame, LV_CHART_TYPE_NONE);
     lv_chart_set_div_line_count(s_wind_frame, 2, NUM_HOUR_LABELS - 1);
+    for (int i = 0; i < NIGHT_BANDS; i++) {
+        s_night_wind[i] = night_band(WIND_CHART_Y + 1, WIND_CHART_H - 2, dark);
+    }
     bars_create(&s_wind_bars, CHART_X, WIND_CHART_Y + BARS_INSET, WIND_BARS_H, lv_palette_main(LV_PALETTE_TEAL));
 
     /* Wind/gust value markers - see place_wind_markers. Sit near the chart
@@ -1370,7 +1509,7 @@ void weather_enter(int loc)
      * this location's last fetch found. */
     update_alert_banner(loc);
     if (s_wx_shown[loc] != NULL && stamp_fresh(&s_wx_shown_at[loc], WX_CACHE_MAX_MS)) {
-        update_ui_with_forecast(s_wx_shown[loc], s_wx_shown_at[loc].when);
+        update_ui_with_forecast(s_wx_shown[loc], s_wx_shown_at[loc].when, loc);
         lv_label_set_text(g_status_label, "");
     } else {
         /* Never another location's chart under this one's name: hidden until
@@ -1419,7 +1558,25 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
         double lon = atof(g_cfg->locations[i].lon);
 
         if (stale) {
-            if (yr_client_fetch_forecast(lat, lon, s_scratch) == ESP_OK &&
+            if (!s_fc_valid[i]) {
+                memset(&s_fc_http[i], 0, sizeof(s_fc_http[i]));
+            }
+            esp_err_t err = yr_client_fetch_forecast(lat, lon, s_scratch, &s_fc_http[i], i == sel && refetch_sel);
+            if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
+                diag_ok(DIAG_FORECAST);
+            } else {
+                diag_fail(DIAG_FORECAST, err);
+            }
+            if (err == HTTP_NOT_MODIFIED) {
+                ESP_LOGI(TAG, "Forecast[%d] %s: unchanged (%s)", i, g_cfg->locations[i].name,
+                         (i == sel && refetch_sel) ? "asked MET" : "not expired");
+                /* The one held is still MET's latest: count it as fetched. */
+                if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                    s_fc_tk[i] = now_tk;
+                    s_fc_when[i] = (time(NULL) > PLAUSIBLE_EPOCH_S) ? time(NULL) : 0;
+                    esp_lv_adapter_unlock();
+                }
+            } else if (err == ESP_OK &&
                 s_scratch->valid && s_scratch->point_count > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
                 /* Under the lock: the overview may be drawn from a tap. */
                 *s_fc_cache[i] = *s_scratch;
@@ -1437,7 +1594,18 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
         }
 
         if (alert_stale) {
-            if (met_alerts_client_fetch(lat, lon, s_alert_scratch) == ESP_OK && s_alert_scratch->valid &&
+            if (!s_alert_valid[i]) {
+                memset(&s_alert_http[i], 0, sizeof(s_alert_http[i]));
+            }
+            esp_err_t err = met_alerts_client_fetch(lat, lon, s_alert_scratch, &s_alert_http[i]);
+            if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
+                diag_ok(DIAG_ALERTS);
+            } else {
+                diag_fail(DIAG_ALERTS, err);
+            }
+            if (err == HTTP_NOT_MODIFIED) {
+                s_alert_tk[i] = now_tk;
+            } else if (err == ESP_OK && s_alert_scratch->valid &&
                 esp_lv_adapter_lock(-1) == ESP_OK) {
                 *s_alert_cache[i] = *s_alert_scratch;
                 s_alert_valid[i] = true;
@@ -1481,7 +1649,22 @@ static void show_selected(int sel, int for_view)
     /* Nowcast refreshes every 5 min upstream - fetch it every cycle. */
     double lat = atof(g_cfg->locations[sel].lat);
     double lon = atof(g_cfg->locations[sel].lon);
-    bool nc_ok = (yr_client_fetch_nowcast(lat, lon, s_nowcast) == ESP_OK &&
+    if (sel != s_nc_loc || !s_nc_held) {
+        memset(&s_nc_http, 0, sizeof(s_nc_http)); /* holding another location's */
+    }
+    esp_err_t nc_err = yr_client_fetch_nowcast(lat, lon, s_nowcast, &s_nc_http, false);
+    if (nc_err == HTTP_NOT_MODIFIED) {
+        nc_err = ESP_OK; /* s_nowcast is still sel's latest */
+    } else {
+        s_nc_loc = sel;
+        s_nc_held = (nc_err == ESP_OK);
+    }
+    if (nc_err == ESP_OK) {
+        diag_ok(DIAG_NOWCAST);
+    } else {
+        diag_fail(DIAG_NOWCAST, nc_err);
+    }
+    bool nc_ok = (nc_err == ESP_OK &&
                   s_nowcast->valid && s_nowcast->radar_ok && s_nowcast->point_count > 0);
 
     if (!(s_fc_valid[sel] && s_fc_cache[sel]->point_count > 0)) {
@@ -1508,7 +1691,7 @@ static void show_selected(int sel, int for_view)
     resample_uniform_time(s_resampled, to_render);
     if (lock_for_view(for_view)) {
         lv_label_set_text(g_status_label, "");
-        update_ui_with_forecast(s_resampled, s_fc_when[sel]);
+        update_ui_with_forecast(s_resampled, s_fc_when[sel], sel);
         lv_obj_clear_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN);
         *s_wx_shown[sel] = *s_resampled;
         stamp_now(&s_wx_shown_at[sel]);

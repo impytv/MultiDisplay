@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include "esp_err.h"
+#include "http_util.h"
 
 /* A point on the map is essentially never covered by more than a couple of
  * simultaneously active warnings. */
@@ -38,6 +39,8 @@ typedef struct {
  * alerts whose area covers the point and that are active right now, so no
  * date or geometry filtering is needed on the device.
  */
-esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out);
+/* With `cache` (see http_util.h), HTTP_NOT_MODIFIED if the alerts held for
+ * that location are still current; `out` is then untouched. */
+esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out, http_cache_t *cache);
 
 #endif

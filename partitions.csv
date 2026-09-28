@@ -10,3 +10,7 @@ fonts,    data, spiffs,  0x410000, 0x80000,
 coast,    data, 0x40,    0x490000, 5M,
 otadata,  data, ota,     0x990000, 0x2000,
 ota_1,    app,  ota_1,   0x9a0000, 4M,
+# Crash dumps (served as /coredump, see main/diag.c), in the space left
+# after ota_1 so nothing above moves. Needs one USB flash of the partition
+# table (idf.py partition-table-flash); without it, dumps are just skipped.
+coredump, data, coredump, 0xda0000, 0x10000,

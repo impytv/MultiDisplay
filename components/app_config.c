@@ -54,6 +54,7 @@ static void sanitize_view_settings(app_config_t *c)
         c->theme = APP_THEME_LIGHT;
     }
     c->dim_enabled = c->dim_enabled ? 1 : 0;
+    c->night_off = c->night_off ? 1 : 0;
     if (c->dim_start >= 24 * 60 || c->dim_end >= 24 * 60) {
         c->dim_start = APP_CONFIG_DIM_START_DEFAULT;
         c->dim_end = APP_CONFIG_DIM_END_DEFAULT;
@@ -212,6 +213,7 @@ esp_err_t app_config_load(app_config_t *out)
     }
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
     nvs_get_u8(h, "dimon", &out->dim_enabled); /* these three keep the defaults if never saved */
+    nvs_get_u8(h, "nightoff", &out->night_off); /* dims if never saved */
     nvs_get_u16(h, "dimstart", &out->dim_start);
     nvs_get_u16(h, "dimend", &out->dim_end);
     nvs_get_u8(h, "titlepx", &out->title_px); /* the font settings too */
@@ -289,6 +291,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "otaurl", cfg->ota_url);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimstart", cfg->dim_start);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimend", cfg->dim_end);
     if (err == ESP_OK) err = nvs_set_u8(h, "titlepx", cfg->title_px);

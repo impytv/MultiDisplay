@@ -84,4 +84,7 @@ esp_err_t waveshare_esp32_s3_rgb_lcd_init(uint8_t frame_buffer_count,
 
 esp_err_t waveshare_rgb_lcd_backlight_on(void);
 
+/* Switch the backlight on or off (after waveshare_rgb_lcd_backlight_on). */
+esp_err_t waveshare_rgb_lcd_backlight_set(bool on);
+
 #endif
