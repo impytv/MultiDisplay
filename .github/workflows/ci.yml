@@ -10,9 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Only cJSON is needed from ESP-IDF.
+      # Only cJSON is needed from ESP-IDF, and it is a submodule there.
       - name: Get cJSON from ESP-IDF
-        run: git clone --depth 1 --branch v5.5.5 --no-recurse-submodules https://github.com/espressif/esp-idf.git $HOME/esp-idf
+        run: |
+          git clone --depth 1 --branch v5.5.5 --no-recurse-submodules https://github.com/espressif/esp-idf.git $HOME/esp-idf
+          git -C $HOME/esp-idf submodule update --init --depth 1 components/json/cJSON
       - name: Run host tests
         run: make -C test/host IDF_PATH=$HOME/esp-idf
 
