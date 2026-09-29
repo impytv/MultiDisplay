@@ -19,6 +19,7 @@ void test_adsb(void);
 void test_routes(void);
 void test_config(void);
 void test_air(void);
+void test_yr(void);
 
 int main(int argc, char **argv)
 {
@@ -26,7 +27,7 @@ int main(int argc, char **argv)
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "version", test_version }, { "form", test_form },   { "http", test_http },
         { "sun", test_sun },         { "entur", test_entur }, { "adsb", test_adsb },
-        { "routes", test_routes },   { "config", test_config }, { "air", test_air },
+        { "routes", test_routes },   { "config", test_config }, { "air", test_air }, { "yr", test_yr },
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         const int before = g_failures;

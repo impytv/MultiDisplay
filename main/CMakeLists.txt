@@ -12,6 +12,7 @@ idf_component_register(
         "sun.c"
         "clock.c"
         "air.c"
+        "week.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/app_config_json.c"

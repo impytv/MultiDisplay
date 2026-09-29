@@ -18,7 +18,12 @@ went wrong, why, and what to do next time.
 - [ ] **Real settings:** test with the display's actual settings (21 px text,
   five locations, night mode on) as well as the defaults.
 - [ ] **Stacks:** when adding work to a task, check its stack size; anything
-  that writes flash or logs needs more than 2 KB.
+  that writes flash or logs needs more than 2 KB. When a struct grows,
+  look for it as a local on a task stack.
+- [ ] **The new version is running:** after installing, check the version
+  in `/status` (and that there's no crash dump) before testing on it.
+- [ ] **Widest content:** size text columns for the widest possible value
+  ("WWW", "-88°"), not a typical one.
 - [ ] **Tests prove what they claim:** start from a clean state (erased slot,
   empty cache), and check that a "refused" case fails for the intended
   reason.
@@ -79,6 +84,25 @@ reach a screen during a test.
 The workflow cloned ESP-IDF without submodules; cJSON is one, so the host
 tests couldn't compile there, while the Pi has a full ESP-IDF.
 *Lesson:* run workflow steps locally as written.
+
+### A bigger struct overflowed a task stack
+
+Adding the daily summaries to `yr_forecast_t` (1.4.0) crashed the weather
+task at start: `resample_uniform_time` copied a whole forecast into a local
+variable, ~7 KB before and ~7.6 KB after, on an 8 KB stack. The bootloader
+rolled back to 1.3.0 - which then applied a settings backup meant for 1.4.0
+and quietly dropped the settings it didn't know. The copy now lives in
+PSRAM.
+*Lesson:* when a struct grows, look for it as a local variable (and as a
+value copy) on task stacks; after installing, check that `/status` really
+shows the new version before testing anything on it.
+
+### Measure text with the widest letters
+
+The route column was measured with "BGO", and "BOO" didn't fit ("O" is
+wider than "G"). It is now measured with "WWW", the widest any code can be.
+*Lesson:* size columns for the widest possible content, not a typical
+example.
 
 ### A form bug that tests found
 

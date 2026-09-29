@@ -23,8 +23,9 @@
 #define APP_SHOW_RAIN    0x08
 #define APP_SHOW_DEPARTURES 0x10
 #define APP_SHOW_AIR     0x20 /* air quality and pollen */
+#define APP_SHOW_WEEK    0x40 /* the week ahead */
 #define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN | \
-                          APP_SHOW_DEPARTURES | APP_SHOW_AIR)
+                          APP_SHOW_DEPARTURES | APP_SHOW_AIR | APP_SHOW_WEEK)
 
 /* Public transport departures: which stops and lines a location shows, as
  * the text entur_parse_selection() reads (see entur_client.h). */

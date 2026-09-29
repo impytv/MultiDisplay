@@ -32,12 +32,24 @@ typedef struct {
     char symbol_code[48];       /* e.g. "partlycloudy_day" */
 } yr_forecast_point_t;
 
+/* One local day of the forecast, summed up (for the week screen). */
+#define YR_DAYS 9
+typedef struct {
+    int64_t start;              /* epoch seconds of the day's local midnight */
+    float temp_max_c, temp_min_c;
+    float precip_mm;            /* the day's total */
+    float wind_max_ms;
+    char symbol_code[48];       /* the 6-hour symbol nearest midday */
+} yr_day_t;
+
 typedef struct {
     bool valid;
     char updated_time[32];         /* ISO8601 UTC timestamp of forecast issue time */
     char updated_hour_minute[6];   /* "HH:MM", Europe/Oslo local time, of the issue time */
     int point_count;               /* number of valid entries in points[] (<= YR_FORECAST_MAX_POINTS) */
     yr_forecast_point_t points[YR_FORECAST_MAX_POINTS];
+    int day_count;                 /* entries in days[], from today on */
+    yr_day_t days[YR_DAYS];
 } yr_forecast_t;
 
 typedef struct {
@@ -66,6 +78,19 @@ typedef struct {
  * "MultiDisplay/1.0 (<email>)". NULL or empty goes back to the compiled-in
  * CONFIG_EXAMPLE_YR_USER_AGENT. Call before any fetch.
  */
+/* When the nowcast says precipitation starts or stops, seen from `now`. */
+typedef enum {
+    YR_RAIN_NONE,     /* dry all through the nowcast (or no radar) */
+    YR_RAIN_STARTS,   /* dry now, precipitation from *at */
+    YR_RAIN_STOPS,    /* precipitation now, dry from *at */
+    YR_RAIN_ONGOING,  /* precipitation all through the nowcast */
+} yr_rain_change_t;
+
+/* Precipitation counts from YR_RAIN_MM_H on. */
+#define YR_RAIN_MM_H 0.1f
+
+yr_rain_change_t yr_rain_change(const yr_nowcast_t *nc, int64_t now, int64_t *at);
+
 void yr_client_set_contact_email(const char *email);
 
 /** The User-Agent to send with every api.met.no request. */

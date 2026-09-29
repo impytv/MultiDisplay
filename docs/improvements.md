@@ -206,21 +206,21 @@ to 52 KB).
   typed latitude/longitude. The page already calls Entur's geocoder for
   stops; the same search (or Kartverket's place names API) can fill in name,
   latitude and longitude. *Done: "Finn sted" in each location block searches Kartverket's place names from the browser and fills in name, latitude and longitude.*
-- [ ] **32. Weather: the week ahead.** The forecast already holds ~9 days;
+- [x] **32. Weather: the week ahead.** The forecast already holds ~9 days;
   a row of day cards (symbol, max/min, rain sum, wind) under or instead of
-  the 48-hour chart, or as its own screen.
+  the 48-hour chart, or as its own screen. *Done (1.4.0): the forecast is summed up per local day (high/low, precipitation, strongest wind, the 6-hour symbol nearest midday); a "Uke" screen shows seven day cards with the temperature range as bars on a scale shared by the week.*
 - [x] **33. Weather: sunrise and sunset.** MET's `sunrise/3.0` gives sun
   and moon times; show them on the weather screen and shade the chart's
   night hours. The dark theme could also follow sunset automatically. *Done: "Sol 07:15–18:58" (or Midnattssol / Mørketid) in the weather header when there is room, and the night hours shaded in both charts, from the sun's elevation worked out on the device (`main/sun.c`, checked against published times for Oslo and Tromsø). The theme doesn't follow sunset.*
-- [ ] **34. Rain is coming.** The nowcast already fetched says when
+- [x] **34. Rain is coming.** The nowcast already fetched says when
   precipitation starts or stops in the next 90 minutes; a line such as
-  "Regn om 25 min" on the weather screen and in the overview.
+  "Regn om 25 min" on the weather screen and in the overview. *Done (1.4.0): "Nedbør om 25 min", "Opphold om 10 min" or "Nedbør den neste timen" in blue in the weather header, in place of the sun times, from the nowcast already fetched (only the location on screen has one, so not in the overview).*
 - [ ] **35. Departures: walking time.** Per stop, hide departures sooner than
   the time it takes to walk there, and show "Gå nå" when it is time to leave
   for the next one.
-- [ ] **36. Departures: disruptions.** Cancellations are parsed; show them
+- [x] **36. Departures: disruptions.** Cancellations are parsed; show them
   struck through, and Entur's `situations` (track work, replacement buses)
-  as a line under the affected row.
+  as a line under the affected row. *Done (1.4.0): Entur's notices (situations) for a row's departures as an orange line under it, e.g. "Færre vogner: Denne avgangen kjører med 4 vogner..."; cancellations already said "Innstilt".*
 - [ ] **37. Electricity prices.** Today's and tomorrow's hourly spot price
   for the chosen price area (NO1–NO5) from hvakosterstrommen.no, as a bar
   chart with the current hour marked and the cheapest hours highlighted.

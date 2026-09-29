@@ -25,16 +25,19 @@
 #include "draw.h"
 #include "radar.h"
 #include "rain_client.h"
+#include "waveshare_rgb_lcd_port.h"
 
 static const char *TAG = "radar";
-#define RADAR_CX            250
+/* The plot as far left as its "V" label allows, to give the table room for
+ * speed and distance at larger text sizes. */
+#define RADAR_CX            214
 #define RADAR_CY            262
-#define RADAR_R             190   /* outer ring radius, px */
-#define RADAR_LIST_X        500
+#define RADAR_R             176   /* outer ring radius, px */
+#define RADAR_LIST_X        430
 #define RADAR_LIST_Y        78
 #define RADAR_LIST_ROW_H    26
 #define RADAR_LIST_ROWS     14
-#define RADAR_LIST_R        (RADAR_LIST_X + 294) /* right edge of the table */
+#define RADAR_LIST_R        (EXAMPLE_LCD_H_RES - 6) /* right edge of the table */
 #define RADAR_COL_GAP       8
 #define RADAR_TAGS          10    /* aircraft that also get a callsign tag on the plot */
 #define KM_PER_NM           1.852f
@@ -494,27 +497,35 @@ static int radar_max_w(const char *const *txt, int n)
 static void radar_layout_tables(void)
 {
     int ac[AC_COLS] = {
-        [AC_TYPE] = radar_max_w((const char *[]){ "Rute", "B77W", "OSL-BGO" }, 3),
+        /* "WWW": the widest any three-letter airport code can be. */
+        [AC_TYPE] = radar_max_w((const char *[]){ "Rute", "B77W", "WWW-WWW" }, 3),
         [AC_ALT] = radar_max_w((const char *[]){ "H\xC3\xB8yde", "00.0 km", "88.8 km", "000 m", "888 m" }, 5),
         [AC_GS] = radar_max_w((const char *[]){ "kt", "000", "888" }, 3),
         [AC_DIST] = radar_max_w((const char *[]){ "km", "000", "888" }, 3),
     };
     /* Too narrow for a typical callsign (a large font): the destination
-     * only, no type and no speed, a little closer together; failing that,
-     * the speed back and no route column. */
+     * only (no type), a little closer together; then without the speed;
+     * then without the distance too (the plot's rings show it); failing
+     * that, speed and distance back and no route column. */
     const int call_w = draw_text_w("SAS1234");
     if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
-        const int gs_w = ac[AC_GS];
+        const int gs_w = ac[AC_GS], dist_w = ac[AC_DIST];
         s_route_short = true;
         s_col_gap = RADAR_COL_GAP - 2;
-        ac[AC_TYPE] = radar_max_w((const char *[]){ "Til", "BGO" }, 2);
-        ac[AC_GS] = 0;
+        ac[AC_TYPE] = radar_max_w((const char *[]){ "Til", "WWW" }, 2);
         if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
-            s_route_short = false;
-            s_col_gap = RADAR_COL_GAP;
-            ac[AC_TYPE] = 0;
-            ac[AC_GS] = gs_w;
-            radar_layout_cols(s_ac_col, ac, AC_COLS);
+            ac[AC_GS] = 0;
+        }
+        if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
+            ac[AC_DIST] = 0;
+            if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
+                s_route_short = false;
+                s_col_gap = RADAR_COL_GAP;
+                ac[AC_TYPE] = 0;
+                ac[AC_GS] = gs_w;
+                ac[AC_DIST] = dist_w;
+                radar_layout_cols(s_ac_col, ac, AC_COLS);
+            }
         }
     }
 
@@ -661,7 +672,7 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
     if (res->count == 0) {
         char none[48];
         snprintf(none, sizeof(none), "Ingen skip innen %d km", range);
-        draw_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
+        draw_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, RADAR_LIST_R - RADAR_LIST_X, LV_TEXT_ALIGN_LEFT, c_txt);
         return;
     }
 
@@ -685,7 +696,7 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
         char more[40];
         snprintf(more, sizeof(more), "Viser %d av %d skip", res->count, res->total);
         draw_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
-                   290, LV_TEXT_ALIGN_LEFT, c_dim);
+                   RADAR_LIST_R - RADAR_LIST_X, LV_TEXT_ALIGN_LEFT, c_dim);
     }
 }
 
@@ -1039,7 +1050,7 @@ static void radar_draw_cb(lv_event_t *e)
     if (res->count == 0) {
         char none[48];
         snprintf(none, sizeof(none), "Ingen fly innen %d km", range);
-        draw_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, 290, LV_TEXT_ALIGN_LEFT, c_txt);
+        draw_text(layer, none, RADAR_LIST_X, RADAR_LIST_Y, RADAR_LIST_R - RADAR_LIST_X, LV_TEXT_ALIGN_LEFT, c_txt);
         return;
     }
 
@@ -1069,7 +1080,7 @@ static void radar_draw_cb(lv_event_t *e)
         char more[40];
         snprintf(more, sizeof(more), "Viser %d av %d fly", res->count, res->total);
         draw_text(layer, more, RADAR_LIST_X, RADAR_LIST_Y + RADAR_LIST_ROWS * RADAR_LIST_ROW_H + 4,
-                   290, LV_TEXT_ALIGN_LEFT, c_dim);
+                   RADAR_LIST_R - RADAR_LIST_X, LV_TEXT_ALIGN_LEFT, c_dim);
     }
 }
 
@@ -1234,7 +1245,8 @@ lv_obj_t *radar_build(lv_obj_t *screen)
     lv_timer_create(radar_redraw_timer_cb, RADAR_REDRAW_MS, NULL);
     radar_layout_tables();
     ESP_LOGI(TAG, "Radar table: callsign %d px%s%s, name %d px", s_ac_col[AC_CALL].w,
-             s_ac_col[AC_TYPE].w ? "" : " (no route/type column)", s_ac_col[AC_GS].w ? "" : " (no speed column)",
+             s_ac_col[AC_TYPE].w ? "" : " (no route/type column)",
+             s_ac_col[AC_GS].w ? "" : (s_ac_col[AC_DIST].w ? " (no speed column)" : " (no speed or distance column)"),
              s_sh_col[SH_NAME].w);
 
     for (int l = 1; l <= RAIN_LEVELS; l++) {

@@ -109,12 +109,45 @@ void test_entur(void)
 
     CHECK(!parse_response("not json", &all, &out));
 
+    /* Disruption notices: the Norwegian text, summary and description. */
+    static const char SIT[] =
+        "{\"data\":{\"s0\":{\"name\":\"Oslo S\",\"estimatedCalls\":["
+        "{\"aimedDepartureTime\":\"2026-09-28T20:01:00+02:00\",\"expectedDepartureTime\":\"2026-09-28T20:01:00+02:00\","
+        "\"destinationDisplay\":{\"frontText\":\"Eidsvoll\"},\"quay\":{\"id\":\"q\"},"
+        "\"serviceJourney\":{\"directionType\":\"outbound\",\"line\":{\"id\":\"VYG:Line:L1\",\"publicCode\":\"L1\"}},"
+        "\"situations\":[{\"summary\":[{\"value\":\"Fewer cars\",\"language\":\"en\"},"
+        "{\"value\":\"F\xC3\xA6rre vogner\",\"language\":\"no\"}],"
+        "\"description\":[{\"value\":\"Denne avgangen kj\xC3\xB8rer med 4 vogner.\",\"language\":\"no\"}]}]},"
+        "{\"aimedDepartureTime\":\"2026-09-28T20:05:00+02:00\",\"expectedDepartureTime\":\"2026-09-28T20:05:00+02:00\","
+        "\"destinationDisplay\":{\"frontText\":\"Spikkestad\"},\"quay\":{\"id\":\"q\"},"
+        "\"serviceJourney\":{\"directionType\":\"inbound\",\"line\":{\"id\":\"VYG:Line:L1\",\"publicCode\":\"L1\"}},"
+        "\"situations\":[{\"summary\":[{\"value\":\"Forsinket\",\"language\":\"nob\"}],\"description\":[]}]},"
+        "{\"aimedDepartureTime\":\"2026-09-28T20:07:00+02:00\",\"expectedDepartureTime\":\"2026-09-28T20:07:00+02:00\","
+        "\"destinationDisplay\":{\"frontText\":\"Lillestr\xC3\xB8m\"},\"quay\":{\"id\":\"q\"},"
+        "\"serviceJourney\":{\"directionType\":\"outbound\",\"line\":{\"id\":\"VYG:Line:R10\",\"publicCode\":\"R10\"}},"
+        "\"situations\":[]}]}}}";
+    static entur_selection_t os;
+    CHECK(entur_parse_selection("59872", &os));
+    memset(&out, 0, sizeof(out));
+    CHECK(parse_response(SIT, &os, &out));
+    CHECK_INT(out.group_count, 3);
+    for (int g = 0; g < out.group_count; g++) {
+        if (strcmp(out.groups[g].dest, "Eidsvoll") == 0) {
+            CHECK_STR(out.groups[g].notice, "F\xC3\xA6rre vogner: Denne avgangen kj\xC3\xB8rer med 4 vogner.");
+        } else if (strcmp(out.groups[g].dest, "Spikkestad") == 0) {
+            CHECK_STR(out.groups[g].notice, "Forsinket");
+        } else {
+            CHECK_STR(out.groups[g].notice, "");
+        }
+    }
+
     /* The query asks only for the listed lines, and for the via stops' ids
      * only when a line has a via direction. */
     char *q = build_query(&s3);
     CHECK(q != NULL);
     CHECK(strstr(q, "whiteListed:{lines:[") != NULL && strstr(q, "RUT:Line:385") != NULL);
     CHECK(strstr(q, "stopPlace{id}") != NULL);
+    CHECK(strstr(q, "situations{summary{value language} description{value language}}") != NULL);
     free(q);
     q = build_query(&all);
     CHECK(q != NULL && strstr(q, "whiteListed") == NULL && strstr(q, "stopPlace{id}") == NULL);

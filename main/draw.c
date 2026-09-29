@@ -118,14 +118,22 @@ void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_c
     if (!draw_visible(layer, x, y, x + w - 1, y + lv_font_get_line_height(g_font_body) - 1)) {
         return;
     }
-    char buf[64]; /* longer than anything drawn: a departure's destination and quay */
-    size_t len = strlen(txt);
+    char buf[128]; /* longer than anything drawn: a disruption notice */
+    const size_t full = strlen(txt);
+    size_t len = full;
     if (len > sizeof(buf) - 3) {
         len = sizeof(buf) - 3;
     }
+    /* Never cut inside a UTF-8 character (æ, ø, å are two bytes). */
+    while (len > 0 && ((unsigned char)txt[len] & 0xC0) == 0x80) {
+        len--;
+    }
     for (size_t n = len;; n--) {
+        while (n > 1 && n < len && ((unsigned char)txt[n] & 0xC0) == 0x80) {
+            n--;
+        }
         memcpy(buf, txt, n);
-        if (n < len) {
+        if (n < full) {
             memcpy(buf + n, "..", 3);
         } else {
             buf[n] = '\0';
@@ -137,6 +145,32 @@ void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_c
         }
     }
     draw_text(layer, buf, x, y, w, LV_TEXT_ALIGN_LEFT, color);
+}
+
+int draw_text_lines(const char *txt, int w, int max_lines)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, txt, g_font_body, 0, 0, w, LV_TEXT_FLAG_NONE);
+    const int lh = lv_font_get_line_height(g_font_body);
+    const int n = (sz.y + lh - 1) / lh;
+    return n < 1 ? 1 : n > max_lines ? max_lines : n;
+}
+
+void draw_text_wrap(lv_layer_t *layer, const char *txt, int x, int y, int w, int lines, lv_color_t color)
+{
+    const int h = lines * lv_font_get_line_height(g_font_body);
+    if (!draw_visible(layer, x, y, x + w - 1, y + h - 1)) {
+        return;
+    }
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.font = g_font_body;
+    d.color = color;
+    d.text = txt;
+    d.text_local = 1;
+    d.align = LV_TEXT_ALIGN_LEFT;
+    lv_area_t a = { x, y, x + w - 1, y + h - 1 }; /* LVGL wraps; what's past `lines` is cut */
+    lv_draw_label(layer, &d, &a);
 }
 
 int draw_text_w(const char *txt)

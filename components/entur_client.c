@@ -213,7 +213,8 @@ static int post_query(const char *body, bool *reused)
     "realtime cancellation aimedDepartureTime expectedDepartureTime "             \
     "destinationDisplay{frontText} quay{id publicCode} "                          \
     "serviceJourney{directionType%s line{id publicCode transportMode "            \
-    "presentation{colour textColour}}}"
+    "presentation{colour textColour}}} "                                          \
+    "situations{summary{value language} description{value language}}"
 
 static bool stop_has_via(const entur_stop_sel_t *st)
 {
@@ -367,6 +368,43 @@ static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, co
     return true;
 }
 
+/* The Norwegian text of a situation's summary/description list (or the
+ * first, if none is Norwegian); NULL if empty. */
+static const char *norwegian(const cJSON *texts)
+{
+    const cJSON *t;
+    const char *first = NULL;
+    cJSON_ArrayForEach(t, texts)
+    {
+        const char *v = str_at(t, "value");
+        const char *lang = str_at(t, "language");
+        if (v == NULL || v[0] == '\0') {
+            continue;
+        }
+        if (lang != NULL && lang[0] == 'n') { /* "no", "nob", "nno", "nb", "nn" */
+            return v;
+        }
+        first = first ? first : v;
+    }
+    return first;
+}
+
+/* A call's first disruption notice as "Summary: description" into `out`. */
+static void call_notice(const cJSON *call, char *out, size_t out_len)
+{
+    const cJSON *sit = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(call, "situations"), 0);
+    if (sit == NULL) {
+        return;
+    }
+    const char *sum = norwegian(cJSON_GetObjectItemCaseSensitive(sit, "summary"));
+    const char *desc = norwegian(cJSON_GetObjectItemCaseSensitive(sit, "description"));
+    if (sum && desc && strncmp(desc, sum, strlen(sum)) != 0) {
+        snprintf(out, out_len, "%s: %s", sum, desc);
+    } else if (sum || desc) {
+        snprintf(out, out_len, "%s", sum ? sum : desc);
+    }
+}
+
 /* Group the calls of stop `si` per line + direction into `out`, the first
  * ENTUR_PER_GROUP calls of each (the API lists them in departure order). */
 static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int si,
@@ -429,6 +467,9 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
         entur_group_t *grp = &out->groups[g];
         if (grp->call_count >= ENTUR_PER_GROUP) {
             continue;
+        }
+        if (grp->notice[0] == '\0') {
+            call_notice(call, grp->notice, sizeof(grp->notice));
         }
         entur_call_t *c = &grp->calls[grp->call_count++];
         c->expected = iso8601_to_epoch(str_at(call, "expectedDepartureTime"));

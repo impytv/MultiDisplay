@@ -3,8 +3,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "esp_lv_adapter.h"
+#include "yr_client.h"
 
 /* The per-location forecast and alert caches. Before building. */
 void weather_init(void);
@@ -23,5 +25,14 @@ void overview_enter(void);
  * `refetch_sel`); the wait in ms before the next poll, 0 if the screen
  * changed. Weather task. */
 uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view);
+
+/* Location `loc`'s forecast if one is held, else NULL; *fetched is when it
+ * was fetched (0 if the clock wasn't set). Read it with the adapter lock
+ * held. */
+const yr_forecast_t *weather_forecast(int loc, time_t *fetched);
+
+/* Refresh the stale forecasts and alerts, `loc`'s first (for the week
+ * screen). Weather task. */
+void weather_refresh(int loc, int for_view);
 
 #endif

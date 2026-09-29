@@ -12,7 +12,7 @@ LDFLAGS += -fsanitize=address,undefined
 LDLIBS  += -lm
 
 SRCS := main.c stubs/stubs.c test_version.c test_form.c test_http.c test_sun.c test_entur.c \
-        test_adsb.c test_routes.c test_config.c test_air.c \
+        test_adsb.c test_routes.c test_config.c test_air.c test_yr.c \
         $(ROOT)/components/app_config.c $(ROOT)/components/app_config_json.c $(CJSON)/cJSON.c
 
 run: host_tests

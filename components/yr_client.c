@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -111,6 +112,93 @@ static void extract_hour_minute(const char *time_str, char *out, size_t out_len,
     *is_first_of_day = (local.tm_hour == 0);
 }
 
+static float num_at(const cJSON *o, const char *k, float fallback)
+{
+    const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
+    return cJSON_IsNumber(v) ? (float)v->valuedouble : fallback;
+}
+
+/* Sum the whole timeseries (about nine days: hourly, then 6-hourly) up per
+ * local day. Precipitation: each step's own period - next_1_hours where the
+ * steps are hourly, next_6_hours after - so nothing is counted twice. */
+static void parse_days(const cJSON *timeseries, yr_forecast_t *out)
+{
+    int best_dist[YR_DAYS];
+    const cJSON *entry;
+    out->day_count = 0;
+    cJSON_ArrayForEach(entry, timeseries)
+    {
+        const cJSON *time = cJSON_GetObjectItemCaseSensitive(entry, "time");
+        const int64_t t = iso8601_to_epoch(cJSON_IsString(time) ? time->valuestring : NULL);
+        if (t <= 0) {
+            continue;
+        }
+        const time_t tt = (time_t)t;
+        struct tm lt;
+        localtime_r(&tt, &lt);
+        const int hour = lt.tm_hour;
+        lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+        lt.tm_isdst = -1;
+        const int64_t day = (int64_t)mktime(&lt);
+
+        int d = out->day_count - 1;
+        if (d < 0 || out->days[d].start != day) {
+            if (d >= 0 && day < out->days[d].start) {
+                continue; /* out of order */
+            }
+            if (out->day_count == YR_DAYS) {
+                break;
+            }
+            d = out->day_count++;
+            yr_day_t *nd = &out->days[d];
+            memset(nd, 0, sizeof(*nd));
+            nd->start = day;
+            nd->temp_max_c = -1000.0f;
+            nd->temp_min_c = 1000.0f;
+            best_dist[d] = 99;
+        }
+        yr_day_t *dy = &out->days[d];
+        const cJSON *data = cJSON_GetObjectItemCaseSensitive(entry, "data");
+        const cJSON *inst = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(data, "instant"),
+                                                             "details");
+        const float temp = num_at(inst, "air_temperature", NAN);
+        if (!isnan(temp)) {
+            dy->temp_max_c = fmaxf(dy->temp_max_c, temp);
+            dy->temp_min_c = fminf(dy->temp_min_c, temp);
+        }
+        dy->wind_max_ms = fmaxf(dy->wind_max_ms, num_at(inst, "wind_speed", 0.0f));
+
+        const cJSON *h1 = cJSON_GetObjectItemCaseSensitive(data, "next_1_hours");
+        const cJSON *h6 = cJSON_GetObjectItemCaseSensitive(data, "next_6_hours");
+        const cJSON *h6d = cJSON_GetObjectItemCaseSensitive(h6, "details");
+        if (h1 != NULL) {
+            dy->precip_mm += num_at(cJSON_GetObjectItemCaseSensitive(h1, "details"), "precipitation_amount", 0.0f);
+        } else if (h6 != NULL) {
+            dy->precip_mm += num_at(h6d, "precipitation_amount", 0.0f);
+            /* The 6-hour extremes cover hours the samples don't. */
+            const float mx = num_at(h6d, "air_temperature_max", NAN), mn = num_at(h6d, "air_temperature_min", NAN);
+            if (!isnan(mx)) {
+                dy->temp_max_c = fmaxf(dy->temp_max_c, mx);
+            }
+            if (!isnan(mn)) {
+                dy->temp_min_c = fminf(dy->temp_min_c, mn);
+            }
+        }
+        /* The day's symbol: the 6-hour one starting nearest midday. */
+        const cJSON *sym = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(h6, "summary"),
+                                                            "symbol_code");
+        const int dist = abs(hour - 12);
+        if (cJSON_IsString(sym) && dist < best_dist[d]) {
+            best_dist[d] = dist;
+            snprintf(dy->symbol_code, sizeof(dy->symbol_code), "%s", sym->valuestring);
+        }
+    }
+    /* A day with no temperature at all isn't worth a card. */
+    while (out->day_count > 0 && out->days[out->day_count - 1].temp_max_c < -999.0f) {
+        out->day_count--;
+    }
+}
+
 static bool parse_forecast(const char *json, yr_forecast_t *out)
 {
     json_use_psram();
@@ -190,6 +278,7 @@ static bool parse_forecast(const char *json, yr_forecast_t *out)
     }
 
     out->point_count = n;
+    parse_days(timeseries, out);
     out->valid = true;
     ok = true;
 
@@ -344,6 +433,27 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
 done:
     cJSON_Delete(root);
     return ok;
+}
+
+yr_rain_change_t yr_rain_change(const yr_nowcast_t *nc, int64_t now, int64_t *at)
+{
+    *at = 0;
+    if (nc == NULL || !nc->valid || !nc->radar_ok || nc->point_count < 2) {
+        return YR_RAIN_NONE;
+    }
+    /* The step holding `now`: the last one starting at or before it. */
+    int i0 = 0;
+    while (i0 + 1 < nc->point_count && nc->points[i0 + 1].epoch_utc <= now) {
+        i0++;
+    }
+    const bool wet = nc->points[i0].precipitation_rate >= YR_RAIN_MM_H;
+    for (int i = i0 + 1; i < nc->point_count; i++) {
+        if ((nc->points[i].precipitation_rate >= YR_RAIN_MM_H) != wet) {
+            *at = nc->points[i].epoch_utc;
+            return wet ? YR_RAIN_STOPS : YR_RAIN_STARTS;
+        }
+    }
+    return wet ? YR_RAIN_ONGOING : YR_RAIN_NONE;
 }
 
 esp_err_t yr_client_fetch_nowcast(double lat, double lon, yr_nowcast_t *out, http_cache_t *cache, bool force)

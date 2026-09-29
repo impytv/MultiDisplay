@@ -28,6 +28,8 @@
 #define DEP_BADGE_W         64
 #define DEP_TIME_W          112
 #define DEP_GONE_S          30  /* a departure this long past is no longer shown */
+#define DEP_NOTICE_COLOUR   0xD35400 /* disruption notices */
+#define DEP_SHARED_MAX      3        /* notices listed once at the bottom */
 
 /* Departure board (built only if some location has one): the location's
  * name, a large 24-hour clock, and the rows painted by dep_draw_cb from
@@ -111,6 +113,26 @@ static bool dep_call_upcoming(const entur_call_t *c, time_t now)
     return t >= (int64_t)now - DEP_GONE_S;
 }
 
+/* Where `notice` is in shared[0..n), or -1. */
+static int dep_shared_index(const char *const *shared, int n, const char *notice)
+{
+    for (int k = 0; notice[0] && k < n; k++) {
+        if (strcmp(shared[k], notice) == 0) {
+            return k;
+        }
+    }
+    return -1;
+}
+
+/* Notice number k + 1 in an orange dot `d` px across at x, y. */
+static void dep_note_mark(lv_layer_t *layer, int x, int y, int d, int k)
+{
+    draw_dot(layer, x + d / 2, y + d / 2, d / 2, lv_color_hex(DEP_NOTICE_COLOUR));
+    const char num[2] = { (char)('1' + k % 9), '\0' };
+    const int lh = lv_font_get_line_height(g_font_body);
+    draw_text(layer, num, x, y + (d - lh) / 2, d, LV_TEXT_ALIGN_CENTER, lv_color_white());
+}
+
 static void dep_draw_cb(lv_event_t *e)
 {
     if (!s_dep_valid) {
@@ -119,7 +141,7 @@ static void dep_draw_cb(lv_event_t *e)
     lv_layer_t *layer = lv_event_get_layer(e);
     const int lh = lv_font_get_line_height(g_font_body);
     const int row_h = lh + 12;
-    const int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
+    int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
     const int x_t2 = EXAMPLE_LCD_H_RES - DEP_X;
     const int x_t1 = x_t2 - DEP_TIME_W - 12;
     const int x_dest = DEP_X + DEP_BADGE_W + 14;
@@ -139,6 +161,32 @@ static void dep_draw_cb(lv_event_t *e)
         }
     }
 
+    /* A notice on several rows is listed once at the bottom, and those rows
+     * get its number in an orange dot instead; one on a single row stays
+     * under that row. */
+    const char *shared[DEP_SHARED_MAX];
+    int n_shared = 0;
+    for (int g = 0; g < s_dep_data->group_count; g++) {
+        const char *nt = s_dep_data->groups[g].notice;
+        if (nt[0] == '\0' || n_shared == DEP_SHARED_MAX || dep_shared_index(shared, n_shared, nt) >= 0) {
+            continue;
+        }
+        for (int h = g + 1; h < s_dep_data->group_count; h++) {
+            if (strcmp(s_dep_data->groups[h].notice, nt) == 0) {
+                shared[n_shared++] = nt;
+                break;
+            }
+        }
+    }
+    /* Up to two lines each. */
+    const int note_x = DEP_X + (lh - 4) + 8, note_w = x_t2 - note_x;
+    int note_lines[DEP_SHARED_MAX], notes_h = 0;
+    for (int k = 0; k < n_shared; k++) {
+        note_lines[k] = draw_text_lines(shared[k], note_w, 2);
+        notes_h += note_lines[k] * lh + 2;
+    }
+    bottom -= notes_h;
+
     int y = DEP_BODY_Y;
     for (int si = 0; si < s_dep_data->stop_count && y + row_h <= bottom; si++) {
         /* The stop's name as a heading - only needed to tell several apart. */
@@ -151,6 +199,12 @@ static void dep_draw_cb(lv_event_t *e)
             const entur_group_t *grp = &s_dep_data->groups[g];
             if (grp->stop != si) {
                 continue;
+            }
+            /* A row with a disruption notice gets a line under it for it. */
+            const int shared_i = dep_shared_index(shared, n_shared, grp->notice);
+            const int this_h = row_h + (grp->notice[0] && shared_i < 0 ? lh : 0);
+            if (y + this_h > bottom) {
+                break;
             }
             /* Only the departures still to come; a row whose departures have all gone
              * is left out until the next poll brings the next ones. */
@@ -179,19 +233,38 @@ static void dep_draw_cb(lv_event_t *e)
             draw_text(layer, grp->code, DEP_X, y + (row_h - lh) / 2, DEP_BADGE_W, LV_TEXT_ALIGN_CENTER,
                        lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
 
-            char dest[sizeof(grp->dest) + sizeof(grp->quay) + 8];
-            if (grp->quay[0]) {
+            /* The quay: "(Spor 2)" for trains, none for the metro (its
+             * platforms aren't numbered for travellers), "(2)" otherwise. */
+            char dest[sizeof(grp->dest) + sizeof(grp->quay) + 16];
+            if (grp->quay[0] && strcmp(grp->mode, "rail") == 0) {
+                snprintf(dest, sizeof(dest), "%s (Spor %s)", grp->dest, grp->quay);
+            } else if (grp->quay[0] && strcmp(grp->mode, "metro") != 0) {
                 snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
             } else {
                 snprintf(dest, sizeof(dest), "%s", grp->dest);
             }
-            draw_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, x_t1 - DEP_TIME_W - x_dest - 8, c_txt);
+            const int dest_w = x_t1 - DEP_TIME_W - x_dest - 8;
+            if (shared_i >= 0) {
+                /* Room for the notice's number after the destination. */
+                const int dot = lh - 4;
+                const int text_w = draw_text_w(dest);
+                const int fit_w = dest_w - dot - 6;
+                draw_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, fit_w, c_txt);
+                dep_note_mark(layer, x_dest + (text_w < fit_w ? text_w : fit_w) + 6, y + (row_h - dot) / 2, dot,
+                              shared_i);
+            } else {
+                draw_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, dest_w, c_txt);
+            }
 
             dep_draw_call(layer, calls[0], x_t1, y + (row_h - lh) / 2, now);
             if (n_calls > 1) {
                 dep_draw_call(layer, calls[1], x_t2, y + (row_h - lh) / 2, now);
             }
-            y += row_h;
+            if (grp->notice[0] && shared_i < 0) {
+                draw_text_fit(layer, grp->notice, x_dest, y + row_h - 6, x_t2 - x_dest,
+                              lv_color_hex(DEP_NOTICE_COLOUR));
+            }
+            y += this_h;
             rows_left--;
         }
         if (!any && y + row_h <= bottom) {
@@ -201,6 +274,16 @@ static void dep_draw_cb(lv_event_t *e)
         }
         y += 6;
     }
+    /* The shared notices, once each, above the bottom line. */
+    int ny = bottom + 4;
+    for (int k = 0; k < n_shared; k++) {
+        const int dot = lh - 4;
+        dep_note_mark(layer, DEP_X, ny + (lh - dot) / 2, dot, k);
+        draw_text_wrap(layer, shared[k], note_x, ny, note_w, note_lines[k], lv_color_hex(DEP_NOTICE_COLOUR));
+        ny += note_lines[k] * lh + 2;
+    }
+    bottom += notes_h;
+
     if (rows_left > 0) {
         char more[64];
         /* At ENTUR_MAX_GROUPS the fetch itself may have left some out. */

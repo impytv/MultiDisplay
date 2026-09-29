@@ -332,7 +332,7 @@ static char *build_page(const app_config_t *cfg)
                   "nedenfor (&#9650;/&#9660; flytter et sted). La en blokk st&aring; "
                   "tom for &aring; hoppe over den. Finn stedet med s&oslash;ket, eller "
                   "skriv inn breddegrad og lengdegrad. For hvert sted velger du "
-                  "v&aelig;r, flyradar, skipstrafikk, nedb&oslash;rsradar, avganger og luft "
+                  "v&aelig;r, uke, flyradar, skipstrafikk, nedb&oslash;rsradar, avganger og luft "
                   "(vist i den rekkef&oslash;lgen), hvor langt radarene ser, og "
                   "korteste skip som vises: kortere skip, og skip som ikke "
                   "oppgir lengde, skjules (0 viser alle). Innenfor den valgfrie "
@@ -380,6 +380,7 @@ static char *build_page(const app_config_t *cfg)
         p += snprintf(p, end - p, "\"></div></div>"
                       "<label>Vis</label><div class=chk>"
                       "<label><input type=checkbox name=wx%d value=1%s>V&aelig;r</label>"
+                      "<label><input type=checkbox name=uk%d value=1%s>Uke</label>"
                       "<label><input type=checkbox name=ac%d value=1%s>Fly</label>"
                       "<label><input type=checkbox name=sh%d value=1%s>Skip</label>"
                       "<label><input type=checkbox name=rn%d value=1%s>Nedb&oslash;r</label>"
@@ -387,6 +388,7 @@ static char *build_page(const app_config_t *cfg)
                       "<label><input type=checkbox name=lq%d value=1%s>Luft</label></div>"
                       "<label>Bytt automatisk</label><div class=chk>"
                       "<label><input type=checkbox name=aw%d value=1%s>V&aelig;r</label>"
+                      "<label><input type=checkbox name=au%d value=1%s>Uke</label>"
                       "<label><input type=checkbox name=aa%d value=1%s>Fly</label>"
                       "<label><input type=checkbox name=as%d value=1%s>Skip</label>"
                       "<label><input type=checkbox name=ar%d value=1%s>Nedb&oslash;r</label>"
@@ -407,12 +409,14 @@ static char *build_page(const app_config_t *cfg)
                       "<label>Avganger (holdeplasser og linjer)</label>"
                       "<input name=dep%d autocomplete=off spellcheck=false maxlength=%d value=\"",
                       i, (show & APP_SHOW_WEATHER) ? " checked" : "",
+                      i, (show & APP_SHOW_WEEK) ? " checked" : "",
                       i, (show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (show & APP_SHOW_RAIN) ? " checked" : "",
                       i, (show & APP_SHOW_DEPARTURES) ? " checked" : "",
                       i, (show & APP_SHOW_AIR) ? " checked" : "",
                       i, (auto_show & APP_SHOW_WEATHER) ? " checked" : "",
+                      i, (auto_show & APP_SHOW_WEEK) ? " checked" : "",
                       i, (auto_show & APP_SHOW_RADAR) ? " checked" : "",
                       i, (auto_show & APP_SHOW_SHIPS) ? " checked" : "",
                       i, (auto_show & APP_SHOW_RAIN) ? " checked" : "",
@@ -866,6 +870,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_RAIN : 0;
         snprintf(key, sizeof(key), "dp%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_DEPARTURES : 0;
+        snprintf(key, sizeof(key), "uk%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_WEEK : 0;
         snprintf(key, sizeof(key), "lq%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_AIR : 0;
         snprintf(key, sizeof(key), "dep%d", i);
@@ -873,7 +879,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         show[n] = sh ? sh : APP_SHOW_WEATHER;
         static const struct { const char *key; uint8_t bit; } rot[] = {
             { "aw%d", APP_SHOW_WEATHER }, { "aa%d", APP_SHOW_RADAR }, { "as%d", APP_SHOW_SHIPS },
-            { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES }, { "al%d", APP_SHOW_AIR },
+            { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES }, { "al%d", APP_SHOW_AIR }, { "au%d", APP_SHOW_WEEK },
         };
         for (int r = 0; r < (int)(sizeof(rot) / sizeof(rot[0])); r++) {
             snprintf(key, sizeof(key), rot[r].key, i);

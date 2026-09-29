@@ -3,11 +3,6 @@
 #include "check.h"
 #include "../../components/air_client.c"
 
-const char *yr_client_user_agent(void)
-{
-    return "test";
-}
-
 static char *slurp(const char *path)
 {
     FILE *f = fopen(path, "rb");

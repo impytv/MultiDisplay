@@ -63,6 +63,8 @@ typedef struct {
     char mode[12];         /* transportMode, e.g. "bus" */
     char dest[40];         /* destinationDisplay.frontText of the first call */
     char quay[8];          /* quay publicCode of the first call ("" if none) */
+    char notice[160];      /* a disruption notice for the row's departures, e.g.
+                            * "Færre vogner: Denne avgangen kjører ..." ("" = none) */
     bool has_colour;
     uint32_t colour;       /* line colour, 0xRRGGBB */
     uint32_t text_colour;

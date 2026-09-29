@@ -140,6 +140,13 @@ static lv_obj_t *s_updated_label;
  * the night hours shaded in the two charts. */
 #define NIGHT_BANDS 3
 static lv_obj_t *s_sun_label;
+static lv_color_t s_sun_colour;
+/* What each location's last nowcast says about precipitation starting or
+ * stopping (see rain_text), and when that nowcast came in. */
+static yr_rain_change_t s_rain[APP_CONFIG_MAX_LOCATIONS];
+static int64_t s_rain_at[APP_CONFIG_MAX_LOCATIONS];
+static fetch_stamp_t s_rain_stamp[APP_CONFIG_MAX_LOCATIONS];
+#define RAIN_NOTE_MAX_MS (15 * 60 * 1000) /* an older nowcast says nothing */
 static lv_obj_t *s_night_main[NIGHT_BANDS], *s_night_wind[NIGHT_BANDS];
 static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
 #define WX_CACHE_MAX_MS     (30 * 60 * 1000)
@@ -762,14 +769,49 @@ static void sun_label_fit(void)
 /* Today's sun times for location `loc`, and the night hours shaded across
  * the charts, whose x axis runs from fc's first point to its last (adapter
  * lock held). */
+/* "Nedbør om 25 min", "Opphold om 10 min", ... from location `loc`'s last
+ * nowcast, if recent and it foresees a change; else false. */
+static bool rain_text(int loc, time_t now, char *out, size_t out_len)
+{
+    if (!stamp_fresh(&s_rain_stamp[loc], RAIN_NOTE_MAX_MS) || now <= PLAUSIBLE_EPOCH_S) {
+        return false;
+    }
+    /* Whole 5 minutes, rounded up: the nowcast's own steps. */
+    const int64_t left = s_rain_at[loc] - now;
+    const int min = (int)((left + 299) / 300 * 5);
+    switch (s_rain[loc]) {
+    case YR_RAIN_STARTS:
+        if (left <= 0) {
+            return false; /* started since; the next nowcast says more */
+        }
+        snprintf(out, out_len, "Nedb\xC3\xB8r om %d min", min);
+        return true;
+    case YR_RAIN_STOPS:
+        if (left <= 0) {
+            return false;
+        }
+        snprintf(out, out_len, "Opphold om %d min", min);
+        return true;
+    case YR_RAIN_ONGOING:
+        snprintf(out, out_len, "Nedb\xC3\xB8r den neste timen");
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void sun_update(const yr_forecast_t *fc, int loc)
 {
     const double lat = atof(g_cfg->locations[loc].lat);
     const double lon = atof(g_cfg->locations[loc].lon);
     const time_t now = time(NULL);
 
+    /* Precipitation starting or stopping soon says more than the sun times,
+     * so it takes their place. */
     char text[48] = "";
-    if (now > PLAUSIBLE_EPOCH_S) {
+    const bool rain = rain_text(loc, now, text, sizeof(text));
+    lv_obj_set_style_text_color(s_sun_label, rain ? lv_palette_main(LV_PALETTE_BLUE) : s_sun_colour, 0);
+    if (!rain && now > PLAUSIBLE_EPOCH_S) {
         time_t rise, set;
         switch (sun_times(lat, lon, now, &rise, &set)) {
         case SUN_UP_ALL_DAY:
@@ -1283,7 +1325,11 @@ static void resample_uniform_time(yr_forecast_t *dst, const yr_forecast_t *src)
         return;
     }
 
-    yr_forecast_t out = *src; /* carries over valid / updated_hour_minute / etc. */
+    /* Not on the stack: a forecast is ~7.6 KB, nearly all of the weather
+     * task's 8 KB (it overflowed once the daily summaries were added). Only
+     * the weather task calls this. */
+    static EXT_RAM_BSS_ATTR yr_forecast_t out;
+    out = *src; /* carries over valid / updated_hour_minute / etc. */
     for (int i = 0; i < n; i++) {
         int64_t target = t0 + (int64_t)i * (t1 - t0) / (n - 1);
         const yr_forecast_point_t *near = nearest_base_point(src, target);
@@ -1303,7 +1349,9 @@ void weather_init(void)
 {
     for (int i = 0; i < g_cfg->location_count; i++) {
         if (g_cfg->show[i] & APP_SHOW_WEATHER) {
-            s_wx_loc[s_weather_count++] = (uint8_t)i;
+            s_wx_loc[s_weather_count++] = (uint8_t)i; /* an overview row */
+        }
+        if (g_cfg->show[i] & (APP_SHOW_WEATHER | APP_SHOW_WEEK)) {
             s_fc_cache[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
             s_alert_cache[i] = heap_caps_malloc(sizeof(met_alerts_t), MALLOC_CAP_SPIRAM);
             s_wx_shown[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
@@ -1334,7 +1382,8 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_label_set_text(s_updated_label, "");
 
     s_sun_label = lv_label_create(s_detail_root);
-    lv_obj_set_style_text_color(s_sun_label, dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060), 0);
+    s_sun_colour = dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060);
+    lv_obj_set_style_text_color(s_sun_label, s_sun_colour, 0);
     lv_label_set_text(s_sun_label, "");
     lv_obj_add_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -1543,7 +1592,7 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
         }
         int i = (sel + k) % g_cfg->location_count;
         wd_weather_beat();
-        if (!(g_cfg->show[i] & APP_SHOW_WEATHER)) {
+        if (!(g_cfg->show[i] & (APP_SHOW_WEATHER | APP_SHOW_WEEK))) {
             continue; /* radar-only location: no forecast needed */
         }
         bool stale = !s_fc_valid[i] || (i == sel && refetch_sel) ||
@@ -1661,6 +1710,10 @@ static void show_selected(int sel, int for_view)
     }
     if (nc_err == ESP_OK) {
         diag_ok(DIAG_NOWCAST);
+        int64_t at;
+        s_rain[sel] = yr_rain_change(s_nowcast, time(NULL), &at);
+        s_rain_at[sel] = at;
+        stamp_now(&s_rain_stamp[sel]);
     } else {
         diag_fail(DIAG_NOWCAST, nc_err);
     }
@@ -1698,6 +1751,17 @@ static void show_selected(int sel, int for_view)
         s_wx_shown_at[sel].when = s_fc_when[sel]; /* the forecast's age, not the drawing's */
         esp_lv_adapter_unlock();
     }
+}
+
+const yr_forecast_t *weather_forecast(int loc, time_t *fetched)
+{
+    *fetched = s_fc_when[loc];
+    return (s_fc_cache[loc] != NULL && s_fc_valid[loc]) ? s_fc_cache[loc] : NULL;
+}
+
+void weather_refresh(int loc, int for_view)
+{
+    refresh_caches(false, loc, false, for_view);
 }
 
 uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view)

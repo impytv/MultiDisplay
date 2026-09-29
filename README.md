@@ -164,7 +164,10 @@ every 10 minutes. As MET's terms ask, a forecast isn't asked for again until
 its `Expires` time, and then with `If-Modified-Since`, so an unchanged
 forecast costs nothing to check. The header shows today's sunrise and sunset
 ("Sol 07:15–18:58", or Midnattssol / Mørketid), worked out on the device,
-and the night hours are shaded in the charts.
+and the night hours are shaded in the charts. When the nowcast sees
+precipitation starting or stopping within the next hour and a half, that
+takes the sun times' place in blue: "Nedbør om 25 min", "Opphold om 10 min"
+or "Nedbør den neste timen".
 
 To add a location, type a place name under **Finn sted** in a location block
 on the setup page: the hits come from Kartverket's place names, and picking
@@ -291,6 +294,13 @@ default. With **Stopp om natta** (on by default) it stands
 still, and only that one screen fetches, while the night dimming is on.
 Screens the rotation shows aren't remembered across a restart
 (only tapped-to ones are), to spare the flash.
+
+### The week ahead
+
+Tick **Uke** for a location to get seven day cards from its forecast: the
+weekday, MET's symbol for the middle of the day, the day's temperature
+range as a bar on a scale shared by the week (the high above it, the low
+below), the day's precipitation and its strongest wind.
 
 ### Air quality and pollen
 
