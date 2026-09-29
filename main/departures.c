@@ -279,12 +279,12 @@ static void dep_draw_cb(lv_event_t *e)
             draw_text(layer, grp->code, DEP_X, y + (row_h - lh) / 2, DEP_BADGE_W, LV_TEXT_ALIGN_CENTER,
                        lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
 
-            /* The quay: "(Spor 2)" for trains, none for the metro (its
-             * platforms aren't numbered for travellers), "(2)" otherwise. */
+            /* The quay: "(Spor 2)" for trains, none for the metro and trams
+             * (their platforms aren't marked for travellers), "(2)" otherwise. */
             char dest[sizeof(grp->dest) + sizeof(grp->quay) + 16];
             if (grp->quay[0] && strcmp(grp->mode, "rail") == 0) {
                 snprintf(dest, sizeof(dest), "%s (Spor %s)", grp->dest, grp->quay);
-            } else if (grp->quay[0] && strcmp(grp->mode, "metro") != 0) {
+            } else if (grp->quay[0] && strcmp(grp->mode, "metro") != 0 && strcmp(grp->mode, "tram") != 0) {
                 snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
             } else {
                 snprintf(dest, sizeof(dest), "%s", grp->dest);

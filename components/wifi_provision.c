@@ -53,6 +53,8 @@ static volatile bool s_sta_up; /* has an IP right now */
  * power-on, which opens the page without it - the way back in when the
  * password is forgotten. Set by wifi_provision_connect. */
 static char s_web_pass[APP_CONFIG_PASS_MAX];
+static char s_hostname[APP_CONFIG_DEVNAME_MAX] = APP_CONFIG_DEVNAME_DEFAULT; /* <name>.local */
+static esp_netif_t *s_sta_netif;
 static bool s_auth_bypass;
 
 static void status(const char *msg)
@@ -86,112 +88,128 @@ static char *html_escape_append(char *dst, char *dst_end, const char *src)
  * Config web page
  * ------------------------------------------------------------------------ */
 
+/* The page's look and behaviour are files of their own (setup_page.css and
+ * setup_page.js, embedded and served as /setup.css and /setup.js). */
 static const char PAGE_HEAD[] =
     "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
-    "<html lang=no><title>MultiDisplay oppsett</title><style>"
-    "body{font-family:system-ui,sans-serif;max-width:26rem;margin:2rem auto;padding:0 1rem;background:#f6f6f4;color:#222}"
-    "h1{font-size:1.3rem}label{display:block;margin:.8rem 0 .2rem;font-weight:600}"
-    "input{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem}"
-    "button{margin-top:1.3rem;width:100%;padding:.7rem;font-size:1rem;border:0;border-radius:.4rem;background:#2d5a86;color:#fff}"
-    ".row{display:flex;gap:.6rem}.row>div{flex:1}small{color:#666}"
-    "fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid #ccc;border-radius:.5rem}"
-    "legend{padding:0 .4rem;color:#555;font-weight:600}"
-    ".mv{width:auto;margin:0 0 0 .4rem;padding:.05rem .5rem;font-size:.85rem;background:#e4e8ee;color:#2d5a86}"
-    ".mv:disabled{opacity:.35}"
-    "select{width:100%;box-sizing:border-box;padding:.5rem;font-size:1rem;border:1px solid #bbb;border-radius:.4rem;background:#fff}"
-    ".chk{display:flex;gap:1.2rem;flex-wrap:wrap}.chk label{display:flex;align-items:center;gap:.35rem;margin:.2rem 0;font-weight:400}"
-    ".chk input{width:auto;margin:0}"
-    ".hits button{display:block;margin:.3rem 0 0;padding:.45rem .6rem;text-align:left;background:#e4e8ee;color:#222}"
-    ".hits small{color:#555}"
-    "</style><h1>MultiDisplay oppsett</h1><form method=post action=/save>";
+    "<html lang=no><link rel=stylesheet href=/setup.css>";
 
-static const char PAGE_TAIL[] =
-    "<button type=submit>Lagre og start p&aring; nytt</button></form>"
-    /* Firmware update: the .bin goes up as the raw body of POST /ota. */
-    "<fieldset><legend>Last opp programvare</legend><small>build/multi_display.bin fra "
-    "prosjektet, signert med prosjektets n&oslash;kkel. Skjermen starter p&aring; nytt med den nye "
-    "programvaren, og g&aring;r tilbake til den forrige om den nye ikke starter som den skal. "
-    "Eldre versjoner godtas ogs&aring;.</small>"
-    "<input type=file id=fw accept=.bin style='margin-top:.6rem'>"
-    "<button type=button id=fwb>Last opp og start p&aring; nytt</button><small id=fws></small></fieldset>"
-    /* Settings backup: /config.json down, and back up to restore it. */
-    "<fieldset><legend>Sikkerhetskopi</legend><small>Alle innstillingene unntatt WiFi og passord/"
-    "hemmeligheter, som en fil. Gjenoppretting beholder skjermens WiFi og passord, og starter "
-    "den p&aring; nytt.</small><p><a href=/config.json download>Last ned innstillingene</a></p>"
-    "<input type=file id=cfgf accept=.json><button type=button id=cfgb>Gjenopprett</button>"
-    "<small id=cfgs></small></fieldset>"
-    /* Health (main/diag.c): /status, /log and /coredump. */
-    "<fieldset><legend>Driftsstatus</legend><div id=diag><small>Henter...</small></div>"
-    "<p><small><a href=/log target=_blank>Logg</a> &middot; <a href=/screen.png target=_blank>Skjermbilde</a>"
-    "<span id=cdl hidden> &middot; <a href=/coredump>Krasjdump</a> &middot; "
-    "<a href=# id=cde>slett den</a></span></small></p></fieldset>"
-    "<script>function E(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}"
-    "fwb.onclick=()=>{let f=fw.files[0];if(!f)return;fwb.disabled=true;"
-    "fws.textContent='Laster opp...';let x=new XMLHttpRequest();x.open('POST','/ota');"
-    "x.upload.onprogress=e=>fws.textContent='Laster opp '+Math.round(100*e.loaded/e.total)+' %';"
-    "x.onload=()=>{fws.textContent=x.responseText;fwb.disabled=x.status==200};"
-    "x.onerror=()=>{fws.textContent='Opplastingen feilet';fwb.disabled=false};x.send(f)};"
-    "function D(){fetch('/status').then(r=>r.json()).then(s=>{let u=s.oppetid_s,t=u>=86400?Math.floor(u/86400)+' d ':'';"
-    "t+=Math.floor(u%86400/3600)+' t '+Math.floor(u%3600/60)+' min';"
-    "let h='<small>Versjon '+E(s.versjon)+', oppe i '+t+'. Sist startet av: '+E(s.omstart)+'.';"
-    "if(s.wifi_dbm!==undefined)h+=' WiFi '+s.wifi_dbm+' dBm.';h+=' Klokka: '+E(s.klokke)+'.';"
-    "h+=' Minne: '+Math.round(s.minne.intern_ledig/1024)+' KB internt (lavest '+Math.round(s.minne.intern_lavest/1024)+"
-    "'), '+Math.round(s.minne.psram_ledig/1024)+' KB PSRAM.';"
-    "if(s.krasjdump)h+=' <b>Krasjdump lagret'+(s.krasjgrunn?': '+E(s.krasjgrunn):'')+'.</b>';h+='</small>';"
-    "s.tjenester.forEach(v=>{h+='<br><small>'+(v.feiler?'&#9888; ':'&#10003; ')+E(v.navn)+(v.sist_ok=='aldri'?': aldri hentet':': ok '+E(v.sist_ok))+"
-    "(v.feiler?', feil '+E(v.sist_feil)+' ('+E(v.feil)+')':'')+'</small>'});"
-    "diag.innerHTML=h;cdl.hidden=!s.krasjdump}).catch(e=>{diag.innerHTML='<small>Ikke tilgjengelig i oppsettmodus.</small>'})}"
-    "cde.onclick=e=>{e.preventDefault();fetch('/coredump/erase',{method:'POST'}).then(D)};D();"
-    "cfgb.onclick=()=>{let f=cfgf.files[0];if(!f)return;cfgb.disabled=true;cfgs.textContent='Gjenoppretter...';"
-    "fetch('/config.json',{method:'POST',body:f}).then(r=>r.text().then(t=>{cfgs.textContent=t;cfgb.disabled=r.ok}))"
-    ".catch(e=>{cfgs.textContent='Feilet';cfgb.disabled=false})};"
-    /* Firmware updates: the status from main/updater.c, polled while a
-     * check or install runs. */
-    "function U(){fetch('/ota/status').then(r=>r.json()).then(s=>{"
-    "let t='Kjører '+s.running+'. ';"
-    "if(s.busy)t+=s.progress>=0?'Installerer '+s.available.version+': '+s.progress+' %':'Sjekker...';"
-    "else if(s.checked)t+='Sist sjekket '+s.checked+': '+s.result;else t+='Ikke sjekket ennå.';"
-    "otast.innerHTML='<small>'+E(t)+'</small>';"
-    "let a=s.available;otanew.innerHTML=a?'<p style=\\'margin:.4rem 0 0\\'><b>'+E(a.version)+'</b>'+"
-    "(a.released?' ('+E(a.released)+')':'')+(a.notes?': '+E(a.notes):'')+'</p>':'';"
-    "otains.hidden=!a||s.busy;otachk.disabled=s.busy;if(s.busy)setTimeout(U,1500)})"
-    ".catch(e=>{otast.innerHTML='<small>Ikke tilgjengelig i oppsettmodus.</small>';otachk.disabled=true})}"
-    "function P(u){otachk.disabled=true;otains.hidden=true;fetch(u,{method:'POST'}).then(()=>setTimeout(U,800))}"
-    "otachk.onclick=()=>P('/ota/check');otains.onclick=()=>{if(confirm('Installere nå? Skjermen starter på nytt.'))"
-    "P('/ota/install')};U()</script>"
-    "<script>fetch('/scan').then(r=>r.json()).then(l=>{let d=document.getElementById('nets');"
-    "l.forEach(n=>{let o=document.createElement('option');o.value=n.s;d.appendChild(o)})}).catch(e=>{});</script>"
-    /* Place search (Kartverket's place names): fills in a location's name,
-     * latitude and longitude. */
-    "<script>document.querySelectorAll('fieldset[data-loc]').forEach(f=>{let q=f.querySelector('.plq'),"
-    "h=f.querySelector('.hits'),t,c;q.oninput=()=>{clearTimeout(t);if(c)c.abort();let v=q.value.trim();"
-    "if(v.length<2){h.innerHTML='';return}t=setTimeout(()=>{c=new AbortController();"
-    "fetch('https://ws.geonorge.no/stedsnavn/v1/navn?fuzzy=true&utkoordsys=4258&treffPerSide=8&side=1&sok='+"
-    "encodeURIComponent(v),{signal:c.signal}).then(r=>r.json()).then(d=>{h.innerHTML='';"
-    "(d.navn||[]).forEach(n=>{let p=n.representasjonspunkt,b=document.createElement('button');b.type='button';"
-    "b.innerHTML=E(n['skrivemåte'])+' <small>'+E(n.navneobjekttype)+', '+"
-    "E((n.kommuner||[]).map(k=>k.kommunenavn).join(', '))+'</small>';"
-    "b.onclick=()=>{let i=f.dataset.loc;f.querySelector('[name=name'+i+']').value=n['skrivemåte'];"
-    "f.querySelector('[name=lat'+i+']').value=p.nord.toFixed(4);f.querySelector('[name=lon'+i+']').value=p['øst'].toFixed(4);"
-    "h.innerHTML='';q.value=''};h.appendChild(b)});if(!h.children.length)h.innerHTML='<small>Ingen treff</small>'})"
-    ".catch(e=>{if(e.name!='AbortError')h.innerHTML='<small>Søket trenger internett.</small>'})},300)};"
-    "q.onkeydown=e=>{if(e.key=='Enter')e.preventDefault()}})</script>"
-    /* Move a location up or down: swap every field with the neighbour's
-     * (same name, other index), then let the departure pickers re-read theirs. */
-    "<script>let L=[...document.querySelectorAll('fieldset[data-loc]')];"
-    "document.querySelectorAll('.mv').forEach(b=>b.onclick=()=>{let a=b.closest('fieldset'),"
-    "j=+a.dataset.loc+ +b.dataset.d,o=L[j];if(!o)return;"
-    "a.querySelectorAll('input[name]').forEach(x=>{let y=o.querySelector('[name='+x.name.replace(/\\d+$/,j)+']');"
-    "if(!y)return;if(x.type=='checkbox'){let c=x.checked;x.checked=y.checked;y.checked=c}"
-    "else{let v=x.value;x.value=y.value;y.value=v}});"
-    "[a,o].forEach(f=>f.querySelectorAll('input[name^=dep]').forEach(x=>x.dispatchEvent(new Event('change'))));"
-    "o.scrollIntoView({block:'nearest',behavior:'smooth'})});</script>"
-    "<script src=/dep.js></script>";
+static const char PAGE_LOC_INTRO[] =
+    "<h2>Steder</h2><small>Skjermen viser ett sted om gangen; trykk p\xC3\xA5 h\xC3\xB8yre halvdel for neste, venst"
+    "re for forrige. \xE2\x96\xB2/\xE2\x96\xBC flytter et sted. S\xC3\xB8kene etter steder og holdeplasser trenger "
+    "internett, s\xC3\xA5 de virker ikke p\xC3\xA5 skjermens eget oppsettnett.</small>";
 
-/* Build the full page into a heap buffer (caller frees). */
+/* Maintenance (upload, backup, health), the save bar and the end of the form. */
+static const char PAGE_MAINT[] =
+    "<fieldset><legend>Last opp programvare</legend><small>build/multi_display.bin fra prosjektet, signert med pros"
+    "jektets n\xC3\xB8kkel. Skjermen starter p\xC3\xA5 nytt med den nye programvaren, og g\xC3\xA5r tilbake til den"
+    " forrige om den nye ikke starter som den skal. Eldre versjoner godtas ogs\xC3\xA5.</small><input type=file id="
+    "fw accept=.bin style='margin-top:.6rem'><button type=button id=fwb class=lt2>Last opp og start p\xC3\xA5 nytt<"
+    "/button><small id=fws></small></fieldset><fieldset><legend>Sikkerhetskopi</legend><small>Alle innstillingene u"
+    "nntatt navn, WiFi og passord/hemmeligheter, som en fil. Gjenoppretting beholder skjermens navn, WiFi og passor"
+    "d, og starter den p\xC3\xA5 nytt.</small><p><a href=/config.json download>Last ned innstillingene</a></p><inpu"
+    "t type=file id=cfgf accept=.json><button type=button id=cfgb class=lt2>Gjenopprett</button><small id=cfgs></sm"
+    "all></fieldset><fieldset><legend>Driftsstatus</legend><div id=diag><small>Henter...</small></div><p><small><a "
+    "href=/log target=_blank>Logg</a> &middot; <a href=/screen.png target=_blank>Skjermbilde</a><span id=cdl hidden"
+    "> &middot; <a href=/coredump>Krasjdump</a> &middot; <a href=# id=cde>slett den</a></span></small></p></fieldse"
+    "t></details><div class=bar><span id=dirty></span><button type=submit>Lagre og start p\xC3\xA5 nytt</button></d"
+    "iv></form>";
+
+static const char PAGE_SCRIPTS[] = "<script src=/setup.js></script><script src=/dep.js></script>";
+
+/* The screens a location can show, in their order: the "show" and "in the
+ * rotation" checkbox names (with the location's index after them) and the
+ * APP_SHOW_* bit. */
+static const struct {
+    const char *vis, *rot, *label;
+    uint8_t bit;
+} SCREENS[] = {
+    { "wx", "aw", "V&aelig;r", APP_SHOW_WEATHER }, { "uk", "au", "Uke", APP_SHOW_WEEK },
+    { "ac", "aa", "Fly", APP_SHOW_RADAR },         { "sh", "as", "Skip", APP_SHOW_SHIPS },
+    { "rn", "ar", "Nedb&oslash;r", APP_SHOW_RAIN }, { "dp", "ad", "Avganger", APP_SHOW_DEPARTURES },
+    { "lq", "al", "Luft", APP_SHOW_AIR },
+};
+
+/* One location's block: collapsed, hidden when not in use (the page's "+ Legg
+ * til sted" shows it). Only the fields its ticked screens need are shown
+ * (data-need, see PAGE_SCRIPTS). */
+static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
+{
+    const bool filled = (i < cfg->location_count);
+    p += snprintf(p, end - p,
+                  "<details class=loc%s><summary><span class=lt>Sted %d</span>"
+                  "<button type=button class=mv data-d=-1 aria-label='Flytt opp'>&#9650;</button>"
+                  "<button type=button class=mv data-d=1 aria-label='Flytt ned'>&#9660;</button>"
+                  "</summary><fieldset data-loc=%d>"
+                  "<label>Finn sted</label><input class=plq type=search autocomplete=off "
+                  "placeholder='S&oslash;k etter sted, f.eks. Nittedal'><div class=hits></div>"
+                  "<label>Navn</label><input name=name%d value=\"",
+                  filled ? "" : " hidden", i + 1, i, i);
+    if (filled) {
+        p = html_escape_append(p, end, cfg->locations[i].name);
+    }
+    p += snprintf(p, end - p, "\"><div class=row><div><label>Breddegrad</label>"
+                  "<input name=lat%d inputmode=decimal value=\"", i);
+    if (filled) {
+        p = html_escape_append(p, end, cfg->locations[i].lat);
+    }
+    p += snprintf(p, end - p, "\"></div><div><label>Lengdegrad</label>"
+                  "<input name=lon%d inputmode=decimal value=\"", i);
+    if (filled) {
+        p = html_escape_append(p, end, cfg->locations[i].lon);
+    }
+    p += snprintf(p, end - p, "\"></div></div><label>Skjermer</label><div class=scr>");
+
+    const int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
+    const int auto_show = filled ? cfg->auto_show[i] : 0;
+    for (size_t k = 0; k < sizeof(SCREENS) / sizeof(SCREENS[0]); k++) {
+        p += snprintf(p, end - p,
+                      "<div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s>%s</label>"
+                      "<label class=rot><input type=checkbox name=%s%d value=1%s>i automatisk bytte</label></div>",
+                      SCREENS[k].vis, i, (show & SCREENS[k].bit) ? " checked" : "", SCREENS[k].label,
+                      SCREENS[k].rot, i, (auto_show & SCREENS[k].bit) ? " checked" : "");
+    }
+
+    p += snprintf(p, end - p,
+                  "</div><div data-need=ac><label>Flyradar (km)</label>"
+                  "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                  "<div data-need=rn><label>Nedb&oslash;rsradar (km)</label>"
+                  "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                  "<div data-need=sh><div class=row><div><label>Skipstrafikk (km)</label>"
+                  "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                  "<div><label>Korteste skip (m)</label>"
+                  "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
+                  "<div class=row><div><label>Indre sone (km)</label>"
+                  "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
+                  "<div><label>Korteste innenfor (m)</label>"
+                  "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
+                  "<small>Kortere skip, og skip som ikke oppgir lengde, vises ikke (0 viser alle). "
+                  "Innenfor den indre sonen (0 = ingen) gjelder en egen korteste lengde.</small></div>"
+                  "<div data-need=dp><label>Avganger</label>"
+                  "<input name=dep%d type=hidden data-max=%d value=\"",
+                  i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
+                  filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT,
+                  i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX,
+                  filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT,
+                  i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX,
+                  filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT,
+                  i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_min_len_m[i] : 0,
+                  i, APP_CONFIG_SHIP_NEAR_KM_MAX, filled ? cfg->ship_near_km[i] : 0,
+                  i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_near_min_len_m[i] : 0,
+                  i, APP_CONFIG_DEPARTURES_MAX - 1);
+    if (filled) {
+        p = html_escape_append(p, end, cfg->departures[i]);
+    }
+    p += snprintf(p, end - p, "\"></div><button type=button class='rm lt2'>Fjern stedet</button>"
+                  "</fieldset></details>");
+    return p;
+}
+
+/* Build the full page into a heap buffer (caller frees). The locations come
+ * first; everything else is in collapsed sections. */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 32768;
+    const size_t cap = 36864;
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -199,8 +217,82 @@ static char *build_page(const app_config_t *cfg)
     char *p = buf;
     char *end = buf + cap;
 
-    p += snprintf(p, end - p, "%s", PAGE_HEAD);
+    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, "</h1><form method=post action=/save id=cf novalidate>"
+                  "<label>Navn p&aring; skjermen</label><input name=devname autocomplete=off maxlength=%d "
+                  "value=\"", APP_CONFIG_DEVNAME_MAX - 1);
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, "\"><small>Skjermen finnes p&aring; <b>http://");
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, ".local/</b> i nettverket. Gi hver skjerm sitt eget navn; bare a-z, "
+                  "0-9 og bindestrek (&aelig;, &oslash;, &aring; blir ae, o, aa).</small>");
 
+    /* Locations. */
+    p += snprintf(p, end - p, "%s", PAGE_LOC_INTRO);
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        p = build_location(p, end, cfg, i);
+    }
+    p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>"
+                  "<h2>Innstillinger</h2>");
+
+    /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
+     * input follows the browser's language and may show AM/PM. */
+    p += snprintf(p, end - p,
+                  "<details class=sec><summary>Visning</summary>"
+                  "<label>Tema</label><select name=theme>"
+                  "<option value=0%s>Lyst</option><option value=1%s>M&oslash;rkt</option></select>"
+                  "<label>Natt</label><div class=chk>"
+                  "<label><input type=checkbox name=dimon value=1%s>Nattmodus</label></div>"
+                  "<div class=row><div><label>Fra</label>"
+                  "<input name=dimstart inputmode=numeric maxlength=5 placeholder=22:00 value=%02u:%02u></div>"
+                  "<div><label>Til</label>"
+                  "<input name=dimend inputmode=numeric maxlength=5 placeholder=07:00 value=%02u:%02u></div></div>"
+                  "<select name=nightoff style='margin-top:.5rem'>"
+                  "<option value=0%s>Demp skjermen</option><option value=1%s>Sl&aring; av skjermen</option></select>"
+                  "<small>Lokal tid, 24 timer. Dempet er skjermen fortsatt lesbar, bare m&oslash;rkere. "
+                  "Avsl&aring;tt lyser den i ett minutt n&aring;r du tar p&aring; den.</small>",
+                  cfg->theme == APP_THEME_DARK ? "" : " selected", cfg->theme == APP_THEME_DARK ? " selected" : "",
+                  cfg->dim_enabled ? " checked" : "",
+                  cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
+                  cfg->night_off ? "" : " selected", cfg->night_off ? " selected" : "");
+    p += snprintf(p, end - p,
+                  "<fieldset><legend>Skrift</legend>"
+                  "<div class=row><div><label>Stedsnavn (px)</label>"
+                  "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u>"
+                  "<div class=chk><label><input type=checkbox name=titlebold value=1%s>Fet</label></div></div>"
+                  "<div><label>Annen tekst (px)</label>"
+                  "<input name=textpx type=number inputmode=numeric min=%d max=%d value=%u>"
+                  "<div class=chk><label><input type=checkbox name=textbold value=1%s>Fet</label></div></div></div>"
+                  "<small>Stedsnavnet st&aring;r &oslash;verst p&aring; hver skjerm; annen tekst er "
+                  "alt annet. Standard: %d og %d px, ikke fet.</small></fieldset></details>",
+                  APP_CONFIG_TITLE_PX_MIN, APP_CONFIG_TITLE_PX_MAX, cfg->title_px, cfg->title_bold ? " checked" : "",
+                  APP_CONFIG_TEXT_PX_MIN, APP_CONFIG_TEXT_PX_MAX, cfg->text_px, cfg->text_bold ? " checked" : "",
+                  APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
+
+    p += snprintf(p, end - p,
+                  "<details class=sec><summary>Automatisk bytte</summary>"
+                  "<div class=row><div><label>Etter (min uten trykk)</label>"
+                  "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
+                  "<div><label>Per skjerm (s)</label>"
+                  "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
+                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Ta med oversikten</label>"
+                  "<label><input type=checkbox name=autonight value=1%s>Stopp om natta</label></div>"
+                  "<small>Etter s&aring; mange minutter uten trykk g&aring;r skjermen videre til neste "
+                  "skjerm som er krysset av for <i>i automatisk bytte</i> under stedene (og oversikten, "
+                  "om den er tatt med), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
+                  "det til skjermen har v&aelig;rt i fred s&aring; lenge igjen. 0 minutter sl&aring;r det "
+                  "av.</small></details>",
+                  APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
+                  APP_CONFIG_AUTO_DWELL_S_MIN, APP_CONFIG_AUTO_DWELL_S_MAX, cfg->auto_dwell_s,
+                  cfg->auto_overview ? " checked" : "", cfg->auto_night_pause ? " checked" : "");
+
+    /* Access and passwords, collapsed - open in the setup portal, where
+     * the WiFi is what's being set up. */
+    p += snprintf(p, end - p, "<details class=sec%s><summary>Tilgang og passord</summary>",
+                  s_sta_up ? "" : " open");
     p += snprintf(p, end - p, "<label>WiFi-nett</label>"
                   "<input name=ssid list=nets autocomplete=off value=\"");
     p = html_escape_append(p, end, cfg->wifi_ssid);
@@ -215,62 +307,6 @@ static char *build_page(const app_config_t *cfg)
                   cfg->wifi_pass[0] ? "La st&aring; tomt for &aring; beholde det lagrede. Et nytt nett uten "
                                       "passord: la st&aring; tomt."
                                     : "La st&aring; tomt for et &aring;pent nett");
-
-    p += snprintf(p, end - p,
-                  "<label>Tema</label><select name=theme>"
-                  "<option value=0%s>Lyst</option>"
-                  "<option value=1%s>M&oslash;rkt</option></select>",
-                  cfg->theme == APP_THEME_DARK ? "" : " selected",
-                  cfg->theme == APP_THEME_DARK ? " selected" : "");
-
-    p += snprintf(p, end - p,
-                  "<label>Natt</label><div class=chk>"
-                  "<label><input type=checkbox name=dimon value=1%s>Nattmodus</label></div>"
-                  "<div class=row><div><label>Fra</label>"
-                  "<input name=dimstart type=time value=%02u:%02u></div>"
-                  "<div><label>Til</label>"
-                  "<input name=dimend type=time value=%02u:%02u></div></div>"
-                  "<select name=nightoff style='margin-top:.5rem'>"
-                  "<option value=0%s>Demp skjermen</option>"
-                  "<option value=1%s>Sl&aring; av skjermen</option></select>"
-                  "<small>Lokal tid. Dempet er skjermen fortsatt lesbar, bare m&oslash;rkere. Avsl&aring;tt "
-                  "lyser den i ett minutt n&aring;r du tar p&aring; den.</small>",
-                  cfg->dim_enabled ? " checked" : "",
-                  cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
-                  cfg->night_off ? "" : " selected", cfg->night_off ? " selected" : "");
-
-    p += snprintf(p, end - p,
-                  "<fieldset><legend>Skrift</legend>"
-                  "<div class=row><div><label>Stedsnavn (px)</label>"
-                  "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u>"
-                  "<div class=chk><label><input type=checkbox name=titlebold value=1%s>Fet</label></div></div>"
-                  "<div><label>Annen tekst (px)</label>"
-                  "<input name=textpx type=number inputmode=numeric min=%d max=%d value=%u>"
-                  "<div class=chk><label><input type=checkbox name=textbold value=1%s>Fet</label></div></div></div>"
-                  "<small>Stedsnavnet st&aring;r &oslash;verst p&aring; hver skjerm; annen tekst er "
-                  "alt annet. Standard: %d og %d px, ikke fet.</small></fieldset>",
-                  APP_CONFIG_TITLE_PX_MIN, APP_CONFIG_TITLE_PX_MAX, cfg->title_px,
-                  cfg->title_bold ? " checked" : "",
-                  APP_CONFIG_TEXT_PX_MIN, APP_CONFIG_TEXT_PX_MAX, cfg->text_px,
-                  cfg->text_bold ? " checked" : "",
-                  APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
-
-    p += snprintf(p, end - p,
-                  "<fieldset><legend>Automatisk bytte</legend>"
-                  "<div class=row><div><label>Etter (min uten trykk)</label>"
-                  "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
-                  "<div><label>Per skjerm (s)</label>"
-                  "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
-                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Ta med oversikten</label>"
-                  "<label><input type=checkbox name=autonight value=1%s>Stopp om natta</label></div>"
-                  "<small>Etter s&aring; mange minutter uten trykk g&aring;r skjermen videre til neste "
-                  "skjerm som er krysset av under <i>Bytt automatisk</i> nedenfor (og oversikten, "
-                  "om den er tatt med), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
-                  "det til skjermen har v&aelig;rt i fred s&aring; lenge igjen. 0 minutter sl&aring;r det "
-                  "av.</small></fieldset>",
-                  APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
-                  APP_CONFIG_AUTO_DWELL_S_MIN, APP_CONFIG_AUTO_DWELL_S_MAX, cfg->auto_dwell_s,
-                  cfg->auto_overview ? " checked" : "", cfg->auto_night_pause ? " checked" : "");
 
     p += snprintf(p, end - p,
                   "<label>Kontakt-e-post for yr</label>"
@@ -305,12 +341,13 @@ static char *build_page(const app_config_t *cfg)
         p += snprintf(p, end - p, "<div class=chk><label><input type=checkbox name=webpassoff>"
                                   "Fjern passordet</label></div>");
     }
-    p += snprintf(p, end - p, "</fieldset>");
+    p += snprintf(p, end - p, "</fieldset></details>");
 
     /* Firmware updates (main/updater.c): the settings are saved with the
      * form; the status line and the buttons talk to /ota/status, /ota/check
-     * and /ota/install (see PAGE_TAIL), which only exist once connected. */
+     * and /ota/install (see PAGE_SCRIPTS), which only exist once connected. */
     p += snprintf(p, end - p,
+                  "<details class=sec><summary>Vedlikehold</summary>"
                   "<fieldset><legend>Programvareoppdatering</legend>"
                   "<div class=chk><label><input type=checkbox name=otaauto value=1%s>"
                   "Installer ny programvare automatisk</label></div>"
@@ -322,120 +359,12 @@ static char *build_page(const app_config_t *cfg)
                   "testversjoner. Ny programvare installeres om natta, mellom 03:30 og 05:00. Bare "
                   "programvare signert med prosjektets n&oslash;kkel godtas.</small>"
                   "<p id=otast style='margin:.6rem 0 0'><small>Sjekker...</small></p><div id=otanew></div>"
-                  "<div class=row><div><button type=button id=otachk>Sjekk n&aring;</button></div>"
-                  "<div><button type=button id=otains hidden>Installer n&aring;</button></div></div></fieldset>");
-
-    p += snprintf(p, end - p,
-                  "<p style='margin:1.4rem 0 .2rem'><small>Ett eller flere "
-                  "steder. Skjermen viser ett om gangen; trykk p&aring; h&oslash;yre "
-                  "halvdel for neste, venstre for forrige, i rekkef&oslash;lgen "
-                  "nedenfor (&#9650;/&#9660; flytter et sted). La en blokk st&aring; "
-                  "tom for &aring; hoppe over den. Finn stedet med s&oslash;ket, eller "
-                  "skriv inn breddegrad og lengdegrad. For hvert sted velger du "
-                  "v&aelig;r, uke, flyradar, skipstrafikk, nedb&oslash;rsradar, avganger og luft "
-                  "(vist i den rekkef&oslash;lgen), hvor langt radarene ser, og "
-                  "korteste skip som vises: kortere skip, og skip som ikke "
-                  "oppgir lengde, skjules (0 viser alle). Innenfor den valgfrie "
-                  "indre sonen (0 km = ingen) gjelder en egen korteste lengde, "
-                  "f.eks. alle b&aring;ter n&aelig;r, men bare store skip lenger ute. "
-                  "Avganger viser kollektivtrafikk i sanntid (Entur): s&oslash;k "
-                  "etter holdeplasser under feltet og kryss av linjer (ingen = "
-                  "alle) og retninger (ingen = begge). S&oslash;kene trenger "
-                  "internett, s&aring; de virker ikke p&aring; skjermens eget "
-                  "oppsettnett. Feltet inneholder resultatet som "
-                  "<code>holdeplass=linje,linje/ut;holdeplass</code> og kan "
-                  "redigeres for h&aring;nd.</small>");
-
-    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-        bool filled = (i < cfg->location_count);
-        p += snprintf(p, end - p,
-                      "<fieldset data-loc=%d><legend>Sted %d"
-                      "<button type=button class=mv data-d=-1 aria-label='Flytt opp'%s>&#9650;</button>"
-                      "<button type=button class=mv data-d=1 aria-label='Flytt ned'%s>&#9660;</button></legend>"
-                      "<label>Finn sted</label><input class=plq type=search autocomplete=off "
-                      "placeholder='S&oslash;k etter sted, f.eks. Nittedal'><div class=hits></div>"
-                      "<label>Navn</label><input name=name%d value=\"",
-                      i, i + 1, i == 0 ? " disabled" : "", i == APP_CONFIG_MAX_LOCATIONS - 1 ? " disabled" : "", i);
-        if (filled) {
-            p = html_escape_append(p, end, cfg->locations[i].name);
-        }
-        p += snprintf(p, end - p, "\"><div class=row><div><label>Breddegrad</label>"
-                      "<input name=lat%d inputmode=decimal value=\"", i);
-        if (filled) {
-            p = html_escape_append(p, end, cfg->locations[i].lat);
-        }
-        p += snprintf(p, end - p, "\"></div><div><label>Lengdegrad</label>"
-                      "<input name=lon%d inputmode=decimal value=\"", i);
-        if (filled) {
-            p = html_escape_append(p, end, cfg->locations[i].lon);
-        }
-        int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
-        int auto_show = filled ? cfg->auto_show[i] : 0;
-        int km = filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT;
-        int ship_km = filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT;
-        int min_len = filled ? cfg->ship_min_len_m[i] : 0;
-        int near_km = filled ? cfg->ship_near_km[i] : 0;
-        int near_len = filled ? cfg->ship_near_min_len_m[i] : 0;
-        int rain_km = filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
-        p += snprintf(p, end - p, "\"></div></div>"
-                      "<label>Vis</label><div class=chk>"
-                      "<label><input type=checkbox name=wx%d value=1%s>V&aelig;r</label>"
-                      "<label><input type=checkbox name=uk%d value=1%s>Uke</label>"
-                      "<label><input type=checkbox name=ac%d value=1%s>Fly</label>"
-                      "<label><input type=checkbox name=sh%d value=1%s>Skip</label>"
-                      "<label><input type=checkbox name=rn%d value=1%s>Nedb&oslash;r</label>"
-                      "<label><input type=checkbox name=dp%d value=1%s>Avganger</label>"
-                      "<label><input type=checkbox name=lq%d value=1%s>Luft</label></div>"
-                      "<label>Bytt automatisk</label><div class=chk>"
-                      "<label><input type=checkbox name=aw%d value=1%s>V&aelig;r</label>"
-                      "<label><input type=checkbox name=au%d value=1%s>Uke</label>"
-                      "<label><input type=checkbox name=aa%d value=1%s>Fly</label>"
-                      "<label><input type=checkbox name=as%d value=1%s>Skip</label>"
-                      "<label><input type=checkbox name=ar%d value=1%s>Nedb&oslash;r</label>"
-                      "<label><input type=checkbox name=ad%d value=1%s>Avganger</label>"
-                      "<label><input type=checkbox name=al%d value=1%s>Luft</label></div>"
-                      "<div class=row><div><label>Flyradar (km)</label>"
-                      "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                      "<div><label>Nedb&oslash;rsradar (km)</label>"
-                      "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div></div>"
-                      "<div class=row><div><label>Skipstrafikk (km)</label>"
-                      "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                      "<div><label>Korteste skip (m)</label>"
-                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
-                      "<div class=row><div><label>Indre sone (km)</label>"
-                      "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
-                      "<div><label>Korteste innenfor (m)</label>"
-                      "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
-                      "<label>Avganger (holdeplasser og linjer)</label>"
-                      "<input name=dep%d autocomplete=off spellcheck=false maxlength=%d value=\"",
-                      i, (show & APP_SHOW_WEATHER) ? " checked" : "",
-                      i, (show & APP_SHOW_WEEK) ? " checked" : "",
-                      i, (show & APP_SHOW_RADAR) ? " checked" : "",
-                      i, (show & APP_SHOW_SHIPS) ? " checked" : "",
-                      i, (show & APP_SHOW_RAIN) ? " checked" : "",
-                      i, (show & APP_SHOW_DEPARTURES) ? " checked" : "",
-                      i, (show & APP_SHOW_AIR) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_WEATHER) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_WEEK) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_RADAR) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_SHIPS) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_RAIN) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_DEPARTURES) ? " checked" : "",
-                      i, (auto_show & APP_SHOW_AIR) ? " checked" : "",
-                      i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX, km,
-                      i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX, rain_km,
-                      i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX, ship_km,
-                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, min_len,
-                      i, APP_CONFIG_SHIP_NEAR_KM_MAX, near_km,
-                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, near_len,
-                      i, APP_CONFIG_DEPARTURES_MAX - 1);
-        if (filled) {
-            p = html_escape_append(p, end, cfg->departures[i]);
-        }
-        p += snprintf(p, end - p, "\"></fieldset>");
+                  "<div class=row><div><button type=button id=otachk class=lt2>Sjekk n&aring;</button></div>"
+                  "<div><button type=button id=otains class=lt2 hidden>Installer n&aring;</button></div></div></fieldset>");
+    p += snprintf(p, end - p, "%s%s", PAGE_MAINT, PAGE_SCRIPTS);
+    if (p >= end - 1) {
+        ESP_LOGE(TAG, "Setup page cut short (%u bytes)", (unsigned)cap);
     }
-
-    p += snprintf(p, end - p, "%s", PAGE_TAIL);
     return buf;
 }
 
@@ -776,6 +705,15 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
         cfg->auto_night_pause = form_field(body, "autonight", val, sizeof(val)) ? 1 : 0;
     }
+    /* The display's name: made into a host name; blank keeps the old one. */
+    char devname[APP_CONFIG_DEVNAME_MAX * 2];
+    if (form_field(body, "devname", devname, sizeof(devname))) {
+        char host[APP_CONFIG_DEVNAME_MAX];
+        app_config_hostname(devname, host, sizeof(host));
+        if (host[0]) {
+            snprintf(cfg->device_name, sizeof(cfg->device_name), "%s", host);
+        }
+    }
     /* Firmware updates: the address is always sent, the checkbox only when
      * ticked. Blank turns checking off; anything but http(s) is refused. */
     char url[APP_CONFIG_OTA_URL_MAX];
@@ -1033,16 +971,35 @@ static esp_err_t h_config_put(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* The departure picker script (components/setup_departures.js, embedded). */
-static esp_err_t h_dep_js(httpd_req_t *req)
+/* An embedded text file (EMBED_TXTFILES in main/CMakeLists.txt). */
+static esp_err_t send_asset(httpd_req_t *req, const char *type, const char *text)
 {
     if (!authorized(req)) {
         return ESP_OK;
     }
-    extern const char dep_js_start[] asm("_binary_setup_departures_js_start");
-    httpd_resp_set_type(req, "text/javascript");
+    httpd_resp_set_type(req, type);
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    return httpd_resp_sendstr(req, dep_js_start);
+    return httpd_resp_sendstr(req, text);
+}
+
+/* The departure picker (components/setup_departures.js). */
+static esp_err_t h_dep_js(httpd_req_t *req)
+{
+    extern const char dep_js_start[] asm("_binary_setup_departures_js_start");
+    return send_asset(req, "text/javascript", dep_js_start);
+}
+
+/* The setup page's look and behaviour (components/setup_page.css/.js). */
+static esp_err_t h_setup_css(httpd_req_t *req)
+{
+    extern const char css_start[] asm("_binary_setup_page_css_start");
+    return send_asset(req, "text/css", css_start);
+}
+
+static esp_err_t h_setup_js(httpd_req_t *req)
+{
+    extern const char js_start[] asm("_binary_setup_page_js_start");
+    return send_asset(req, "text/javascript", js_start);
 }
 
 /* Any other GET (captive-portal probes: /generate_204, /hotspot-detect.html,
@@ -1060,7 +1017,7 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     /* The POST body and the app_config_t are on the heap (see h_save). */
     config.stack_size = 6144;
-    config.max_uri_handlers = 20;
+    config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -1073,6 +1030,10 @@ static void start_web_server(void)
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/ota", .method = HTTP_POST, .handler = h_ota });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/scan", .method = HTTP_GET, .handler = h_scan });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js });
+    httpd_register_uri_handler(s_httpd,
+                               &(httpd_uri_t){ .uri = "/setup.css", .method = HTTP_GET, .handler = h_setup_css });
+    httpd_register_uri_handler(s_httpd,
+                               &(httpd_uri_t){ .uri = "/setup.js", .method = HTTP_GET, .handler = h_setup_js });
     httpd_register_uri_handler(s_httpd,
                                &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_GET, .handler = h_config_get });
     httpd_register_uri_handler(s_httpd,
@@ -1247,7 +1208,7 @@ static void net_common_init(void)
 
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
     esp_netif_create_default_wifi_ap();
 
     wifi_init_config_t ic = WIFI_INIT_CONFIG_DEFAULT();
@@ -1279,6 +1240,8 @@ static bool sta_try_connect(const app_config_t *cfg)
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+    /* The name the router lists it under (DHCP), like its .local name. */
+    esp_netif_set_hostname(s_sta_netif, s_hostname);
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "Connecting to SSID '%s'...", cfg->wifi_ssid);
@@ -1354,18 +1317,20 @@ static void portal_run(bool retry_sta)
     }
 }
 
-/* Announce the setup page as http://multidisplay.local/ on the home
- * network. */
+/* Announce the setup page as http://<name>.local/ on the home network, the
+ * name set on the setup page (so several displays can share a network). */
 static void mdns_announce(void)
 {
     if (mdns_init() != ESP_OK) {
         ESP_LOGW(TAG, "mDNS didn't start");
         return;
     }
-    mdns_hostname_set("multidisplay");
-    mdns_instance_name_set("MultiDisplay");
-    mdns_service_add("MultiDisplay", "_http", "_tcp", 80, NULL, 0);
-    ESP_LOGI(TAG, "Announced as multidisplay.local");
+    char instance[48];
+    snprintf(instance, sizeof(instance), "MultiDisplay %s", s_hostname);
+    mdns_hostname_set(s_hostname);
+    mdns_instance_name_set(instance);
+    mdns_service_add(instance, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "Announced as %s.local", s_hostname);
 }
 
 esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_fn status_fn)
@@ -1376,6 +1341,7 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
 
     bool force_portal = boot_button_held();
     snprintf(s_web_pass, sizeof(s_web_pass), "%s", cfg->web_pass);
+    snprintf(s_hostname, sizeof(s_hostname), "%s", cfg->device_name);
     s_auth_bypass = force_portal;
     if (force_portal) {
         ESP_LOGW(TAG, "BOOT held - forcing setup portal");

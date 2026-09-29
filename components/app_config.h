@@ -68,6 +68,11 @@
 /* Contact email put in the User-Agent sent to api.met.no (yr). */
 #define APP_CONFIG_EMAIL_MAX 64
 
+/* The display's name on the network (app_config_t.device_name): its
+ * <name>.local address and the host name the router sees. */
+#define APP_CONFIG_DEVNAME_MAX     33
+#define APP_CONFIG_DEVNAME_DEFAULT "multidisplay"
+
 /* Firmware updates: the manifest URL the updater checks (see
  * main/updater.c). */
 #define APP_CONFIG_OTA_URL_MAX 201
@@ -159,6 +164,9 @@ typedef struct {
      * "Check now" on the setup page checks. */
     uint8_t ota_auto;
     char ota_url[APP_CONFIG_OTA_URL_MAX];
+    /* A valid host name (see app_config_hostname); per display, so not in
+     * settings backups. */
+    char device_name[APP_CONFIG_DEVNAME_MAX];
 } app_config_t;
 
 /**
@@ -187,6 +195,13 @@ bool app_config_is_provisioned(void);
  * touched here; wifi_provision always re-applies from app_config_t.)
  */
 esp_err_t app_config_erase(void);
+
+/**
+ * `in` made into a host name in `out`: lower case, æ/ø/å as ae/o/aa, spaces
+ * and other separators as '-', anything else left out, no '-' at either
+ * end, at most out_len - 1 characters. "" if nothing usable is left.
+ */
+void app_config_hostname(const char *in, char *out, size_t out_len);
 
 /**
  * Bring every setting into its allowed range (as app_config_load does).

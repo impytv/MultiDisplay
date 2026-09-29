@@ -18,20 +18,20 @@
                      airport: 'fly', coachStation: 'buss', liftStation: 'heis' };
 
   var css =
-    '.dp{margin-top:.5rem}.dp .dp-card{border:1px solid #ccc;border-radius:.5rem;padding:.5rem .7rem;margin:.5rem 0;background:#fff}' +
+    '.dp{margin-top:.5rem}.dp .dp-card{border:1px solid var(--line,#ccc);border-radius:.5rem;padding:.5rem .7rem;margin:.5rem 0;background:var(--in,#fff)}' +
     '.dp header{display:flex;justify-content:space-between;align-items:center;font-weight:600}' +
-    '.dp button{width:auto;margin:0;padding:.2rem .6rem;background:transparent;color:#666;font-size:1rem}' +
+    '.dp button{width:auto;margin:0;padding:.2rem .6rem;background:transparent;color:var(--dim,#666);font-size:1rem}' +
     '.dp .dp-result{display:flex;width:100%;justify-content:space-between;gap:.6rem;text-align:left;' +
-    'border:1px solid #ccc;border-radius:0;margin-top:-1px;background:#fff;color:#222;padding:.5rem}' +
-    '.dp .dp-result:disabled{opacity:.5}.dp .dp-kind{color:#666;font-size:.85em;white-space:nowrap}' +
+    'border:1px solid var(--line,#ccc);border-radius:0;margin-top:-1px;background:var(--in,#fff);color:var(--fg,#222);padding:.5rem}' +
+    '.dp .dp-result:disabled{opacity:.5}.dp .dp-kind{color:var(--dim,#666);font-size:.85em;white-space:nowrap}' +
     '.dp label{display:flex;align-items:center;gap:.5rem;margin:.15rem 0;font-weight:400;cursor:pointer}' +
     '.dp label input{width:auto;margin:0;flex:none}' +
-    '.dp .dp-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#666;font-size:.9rem}' +
+    '.dp .dp-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim,#666);font-size:.9rem}' +
     '.dp .dp-dirs{margin:0 0 .3rem 2rem;font-size:.9rem}' +
     '.dp .dp-dirs span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
     '.dp .badge{flex:none;min-width:2.6em;padding:2px 6px;border-radius:5px;text-align:center;font-weight:700;' +
     'background:#2d5a86;color:#fff}' +
-    '.dp .dp-hint{color:#666;font-size:.85rem;margin:.1rem 0 .3rem}.dp .dp-err{color:#c4161c;font-size:.85rem}';
+    '.dp .dp-hint{color:var(--dim,#666);font-size:.85rem;margin:.1rem 0 .3rem}.dp .dp-err{color:var(--err,#c4161c);font-size:.85rem}';
   document.head.appendChild(el('style', {}, css));
 
   // el('div', { class: 'x' }, child, 'text', ...)

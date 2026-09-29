@@ -50,7 +50,7 @@ idf.py -p PORT coast-flash
 ### Updating over WiFi
 
 After the first USB flash, new firmware can go over WiFi. Upload
-`build/multi_display.bin` under **Last opp programvare** on the setup page, or:
+`build/multi_display.bin` under **Vedlikehold → Last opp programvare** on the setup page, or:
 
 ```bash
 curl --data-binary @build/multi_display.bin http://DEVICE-IP/ota
@@ -71,7 +71,7 @@ was signed with a key that has since been lost.
 The display can fetch new firmware by itself from an update site on the
 home network (see `docs/auto-update-plan.md` for the design).
 
-- **On the display:** the setup page's **Programvareoppdatering** section has the
+- **On the display:** the setup page's **Vedlikehold → Programvareoppdatering** section has the
   update address (default `http://192.168.0.119:8070/manifest.json`) and
   **Installer ny programvare automatisk** (off by default). When ticked, a
   newer release is installed at night between 03:30 and 05:00. **Sjekk
@@ -126,7 +126,7 @@ with a throwaway key, so displays won't accept it.
   board). On the device's address, behind the setup password if one is set:
   - `/status`: version, uptime, why it last restarted, WiFi signal, memory,
     and each service's last success and error. The setup page shows it under
-    **Driftsstatus**.
+    **Vedlikehold → Driftsstatus**.
   - `/log`: the last 16 KB of the log.
   - `/coredump`: the crash dump from the last crash, if any. Decode it with
     `idf.py coredump-info -c coredump.bin`, using the build of that same
@@ -134,12 +134,17 @@ with a throwaway key, so displays won't accept it.
     The crash dump partition comes with the partition table; a board flashed
     before 1.1.0 needs `idf.py -p PORT partition-table-flash` once (it only
     adds a partition at the end).
-- The display announces itself as **`multidisplay.local`**.
+- **Name:** **Navn på skjermen** at the top of the setup page (default
+  `multidisplay`) is the display's address on the home network,
+  **`http://<name>.local/`**, and the name the router lists it under. Give
+  each display its own name to have several on one network. Only a-z, 0-9
+  and '-' are used: "Kjøkken" becomes `kjokken`. The name belongs to the
+  display, so settings backups leave it out.
 - **Clock:** set by NTP - the router's server if its DHCP answer names one,
   then pool.ntp.org and time.cloudflare.com - or, until NTP answers, from
   the Date of the first response from MET. "Klokken er ikke stilt" shows
   bottom left if it still isn't set ten minutes after start.
-- **Settings backup:** under **Sikkerhetskopi** on the setup page, download
+- **Settings backup:** under **Vedlikehold → Sikkerhetskopi** on the setup page, download
   the settings as a file (everything except the WiFi network and the
   passwords/secrets) and restore it, e.g. onto a new board. Restoring keeps
   the display's own WiFi and secrets and restarts it. Also
@@ -286,7 +291,7 @@ the device does no date or geometry filtering of its own.
 
 The setup page's **Automatisk bytte** section makes the display page
 through screens on its own when nobody is using it. After **Etter (min uten trykk)** minutes without a touch it moves to the next screen ticked in a
-location's **Bytt automatisk** row (plus the overview, if **Ta med oversikten**
+location's **i automatisk bytte** boxes, next to its ticked screens (plus the overview, if **Ta med oversikten**
 is ticked), in the normal screen order, and moves on every **Per skjerm
 (s)** seconds. A touch stops it until the display has been left alone that
 long again. 0 minutes (the default) turns it off, and nothing is ticked by
@@ -323,7 +328,7 @@ Tick **Luft** for a location to get a screen with:
 
 ### Night
 
-Under **Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
+Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
 times (local time, default 22:00–07:00) either dims the screen (**Demp
 skjermen**: a dark layer over it, as the backlight can't be dimmed) or
 switches it off (**Slå av skjermen**). When it's off, a touch lights it for a
@@ -360,6 +365,18 @@ first), tick lines (none = all) and, for a line, a direction (none = both);
 the field fills in as you go. For trains the picker works out the directions
 from the order of the stops and names them by where the trains go. The picker calls Entur from the browser, so it
 needs internet and doesn't work on the device's own setup WiFi.
+
+### The setup page
+
+The locations come first, each a closed row showing its name and screens;
+open one to change it. Only the fields its ticked screens need are shown,
+**+ Legg til sted** adds one and **Fjern stedet** removes it. The rest is
+in closed sections: **Visning** (theme, night, text size), **Automatisk
+bytte**, **Tilgang og passord** (WiFi, setup password, BarentsWatch, yr
+contact) and **Vedlikehold** (updates, firmware upload, backup, status).
+Changes are marked "Ulagrede endringer" until saved, and mistakes are shown
+by the field before anything is saved. Times are 24-hour (TT:MM). The page
+follows the browser's light or dark mode.
 
 ### Setup portal (WiFi + locations)
 

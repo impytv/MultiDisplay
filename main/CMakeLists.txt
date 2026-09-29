@@ -38,6 +38,8 @@ idf_component_register(
     # The setup page's departure picker, served as /dep.js (wifi_provision.c).
     EMBED_TXTFILES
         "../components/setup_departures.js"
+        "../components/setup_page.css"
+        "../components/setup_page.js"
     PRIV_REQUIRES
         esp_wifi
         esp_netif

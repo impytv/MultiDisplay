@@ -11,6 +11,7 @@ void test_config(void)
     CHECK_INT(a.location_count, 1);
     CHECK_STR(a.locations[0].name, "Oslo");
     CHECK_INT(a.ota_auto, 0);
+    CHECK_STR(a.device_name, "multidisplay");
 
     /* Save and load again: everything comes back. */
     snprintf(a.wifi_ssid, sizeof(a.wifi_ssid), "home");
@@ -80,6 +81,36 @@ void test_config(void)
     CHECK(!app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,\"locations\":[]}",
                                 &c, err, sizeof(err)));
     CHECK(memcmp(&before, &c, sizeof(c)) == 0);
+
+    /* Display names become host names. */
+    char host[APP_CONFIG_DEVNAME_MAX];
+    app_config_hostname("Kj\xC3\xB8kken", host, sizeof(host));
+    CHECK_STR(host, "kjokken");
+    app_config_hostname("  Stua 2. etg ", host, sizeof(host));
+    CHECK_STR(host, "stua-2-etg");
+    app_config_hostname("\xC3\x86rfugl_\xC3\x85sen!", host, sizeof(host));
+    CHECK_STR(host, "aerfugl-aasen");
+    app_config_hostname("--", host, sizeof(host));
+    CHECK_STR(host, "");
+    char small[6];
+    app_config_hostname("abcd-efgh", small, sizeof(small));
+    CHECK_STR(small, "abcd");                       /* no '-' left at the end */
+
+    /* The name is saved, but stays out of a backup and isn't restored. */
+    snprintf(c.device_name, sizeof(c.device_name), "kjokken");
+    CHECK(app_config_save(&c) == ESP_OK);
+    static app_config_t d;
+    app_config_load(&d);
+    CHECK_STR(d.device_name, "kjokken");
+    char *j2 = app_config_to_json(&d);
+    CHECK(j2 != NULL && strstr(j2, "kjokken") == NULL);
+    snprintf(d.device_name, sizeof(d.device_name), "stua");
+    CHECK(app_config_from_json(j2, &d, err, sizeof(err)));
+    CHECK_STR(d.device_name, "stua");
+    cJSON_free(j2);
+    snprintf(d.device_name, sizeof(d.device_name), "Bad Name!");
+    app_config_sanitize(&d);
+    CHECK_STR(d.device_name, "bad-name");
 
     /* Out-of-range values are brought back in range. */
     CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,"

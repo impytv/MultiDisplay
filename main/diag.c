@@ -296,6 +296,7 @@ static esp_err_t h_status(httpd_req_t *req)
     if (o == NULL) {
         return httpd_resp_send_500(req);
     }
+    cJSON_AddStringToObject(o, "navn", g_cfg->device_name);
     cJSON_AddStringToObject(o, "versjon", esp_app_get_description()->version);
     cJSON_AddNumberToObject(o, "oppetid_s", (double)(esp_timer_get_time() / 1000000));
     const char *trip = wd_boot_trip();

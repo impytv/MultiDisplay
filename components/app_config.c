@@ -77,6 +77,9 @@ static void sanitize_view_settings(app_config_t *c)
     c->auto_overview = c->auto_overview ? 1 : 0;
     c->auto_night_pause = c->auto_night_pause ? 1 : 0;
     c->ota_auto = c->ota_auto ? 1 : 0;
+    char host[APP_CONFIG_DEVNAME_MAX];
+    app_config_hostname(c->device_name, host, sizeof(host));
+    snprintf(c->device_name, sizeof(c->device_name), "%s", host[0] ? host : APP_CONFIG_DEVNAME_DEFAULT);
     c->title_bold = c->title_bold ? 1 : 0;
     c->text_bold = c->text_bold ? 1 : 0;
 }
@@ -97,6 +100,7 @@ static void seed_defaults(app_config_t *out)
     out->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
     out->auto_night_pause = 1;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
+    snprintf(out->device_name, sizeof(out->device_name), "%s", APP_CONFIG_DEVNAME_DEFAULT);
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
         out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
@@ -208,6 +212,7 @@ esp_err_t app_config_load(app_config_t *out)
     load_str(h, "webpass", out->web_pass, sizeof(out->web_pass));
     nvs_get_u8(h, "otaauto", &out->ota_auto); /* off if never saved */
     load_str(h, "otaurl", out->ota_url, sizeof(out->ota_url)); /* keeps the default if never saved */
+    load_str(h, "devname", out->device_name, sizeof(out->device_name));
     if (!app_config_email_valid(out->yr_email)) {
         out->yr_email[0] = '\0';
     }
@@ -234,7 +239,8 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "auto rotation: after %u min idle, %u s per screen, overview %s, %s at night",
              out->auto_idle_min, out->auto_dwell_s, out->auto_overview ? "included" : "not included",
              out->auto_night_pause ? "paused" : "running");
-    ESP_LOGI(TAG, "firmware updates: %s from '%s'", out->ota_auto ? "automatic" : "manual", out->ota_url);
+    ESP_LOGI(TAG, "firmware updates: %s from '%s'; name '%s'", out->ota_auto ? "automatic" : "manual", out->ota_url,
+             out->device_name);
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
                  "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%02x",
@@ -289,6 +295,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "webpass", cfg->web_pass);
     if (err == ESP_OK) err = nvs_set_u8(h, "otaauto", cfg->ota_auto ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "otaurl", cfg->ota_url);
+    if (err == ESP_OK) err = nvs_set_str(h, "devname", cfg->device_name);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);
@@ -356,6 +363,44 @@ esp_err_t app_config_erase(void)
     nvs_close(h);
     ESP_LOGW(TAG, "configuration erased");
     return err;
+}
+
+void app_config_hostname(const char *in, char *out, size_t out_len)
+{
+    size_t n = 0;
+    bool dash = false; /* a '-' is due before the next letter */
+    for (const unsigned char *p = (const unsigned char *)in; *p && n + 1 < out_len; p++) {
+        const char *add = NULL;
+        char one[2] = { 0, 0 };
+        if (*p >= 'A' && *p <= 'Z') {
+            one[0] = (char)(*p - 'A' + 'a');
+        } else if ((*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9')) {
+            one[0] = (char)*p;
+        } else if (p[0] == 0xC3 && p[1] != 0) { /* æ ø å Æ Ø Å in UTF-8 */
+            const unsigned char c = p[1] | 0x20;
+            add = (c == 0xA6) ? "ae" : (c == 0xB8) ? "o" : (c == 0xA5) ? "aa" : NULL;
+            p++;
+        } else if (*p == ' ' || *p == '-' || *p == '_' || *p == '.') {
+            dash = n > 0;
+            continue;
+        } else {
+            continue; /* anything else: left out */
+        }
+        if (add == NULL) {
+            add = one;
+        }
+        if (dash && n + 1 < out_len) {
+            out[n++] = '-';
+        }
+        dash = false;
+        for (; *add && n + 1 < out_len; add++) {
+            out[n++] = *add;
+        }
+    }
+    while (n > 0 && out[n - 1] == '-') {
+        n--;
+    }
+    out[n] = '\0';
 }
 
 void app_config_sanitize(app_config_t *cfg)
