@@ -158,6 +158,10 @@ int draw_text_lines(const char *txt, int w, int max_lines)
 
 void draw_text_wrap(lv_layer_t *layer, const char *txt, int x, int y, int w, int lines, lv_color_t color)
 {
+    if (lines <= 1) {
+        draw_text_fit(layer, txt, x, y, w, color); /* one line, ".." if cut */
+        return;
+    }
     const int h = lines * lv_font_get_line_height(g_font_body);
     if (!draw_visible(layer, x, y, x + w - 1, y + h - 1)) {
         return;
@@ -169,8 +173,17 @@ void draw_text_wrap(lv_layer_t *layer, const char *txt, int x, int y, int w, int
     d.text = txt;
     d.text_local = 1;
     d.align = LV_TEXT_ALIGN_LEFT;
-    lv_area_t a = { x, y, x + w - 1, y + h - 1 }; /* LVGL wraps; what's past `lines` is cut */
-    lv_draw_label(layer, &d, &a);
+    lv_area_t a = { x, y, x + w - 1, y + h - 1 };
+    /* LVGL wraps, but draws the lines past the area too: clip to it (a draw
+     * task takes the layer's clip area when it is created). */
+    const lv_area_t clip = layer->_clip_area;
+    const lv_area_t cut = { LV_MAX(clip.x1, a.x1), LV_MAX(clip.y1, a.y1), LV_MIN(clip.x2, a.x2),
+                            LV_MIN(clip.y2, a.y2) };
+    if (cut.x1 <= cut.x2 && cut.y1 <= cut.y2) {
+        layer->_clip_area = cut;
+        lv_draw_label(layer, &d, &a);
+        layer->_clip_area = clip;
+    }
 }
 
 int draw_text_w(const char *txt)

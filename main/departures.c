@@ -133,6 +133,41 @@ static void dep_note_mark(lv_layer_t *layer, int x, int y, int d, int k)
     draw_text(layer, num, x, y + (d - lh) / 2, d, LV_TEXT_ALIGN_CENTER, lv_color_white());
 }
 
+/* Whether group `grp` has a departure still to come. */
+static bool dep_group_upcoming(const entur_group_t *grp, time_t now)
+{
+    for (int c = 0; c < grp->call_count; c++) {
+        if (now <= PLAUSIBLE_EPOCH_S || dep_call_upcoming(&grp->calls[c], now)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The height all the stops and rows take at row height `row_h` (as the
+ * draw loop below lays them out), with a row's own notice under it unless
+ * it is one of the `n_shared` listed at the bottom. */
+static int dep_rows_height(int row_h, int lh, const char *const *shared, int n_shared, time_t now)
+{
+    int h = 0;
+    for (int si = 0; si < s_dep_data->stop_count; si++) {
+        if (s_dep_data->stop_count > 1) {
+            h += lh + 6;
+        }
+        bool any = false;
+        for (int g = 0; g < s_dep_data->group_count; g++) {
+            const entur_group_t *grp = &s_dep_data->groups[g];
+            if (grp->stop != si || !dep_group_upcoming(grp, now)) {
+                continue;
+            }
+            any = true;
+            h += row_h + (grp->notice[0] && dep_shared_index(shared, n_shared, grp->notice) < 0 ? lh : 0);
+        }
+        h += (any ? 0 : row_h) + 6;
+    }
+    return h;
+}
+
 static void dep_draw_cb(lv_event_t *e)
 {
     if (!s_dep_valid) {
@@ -140,7 +175,7 @@ static void dep_draw_cb(lv_event_t *e)
     }
     lv_layer_t *layer = lv_event_get_layer(e);
     const int lh = lv_font_get_line_height(g_font_body);
-    const int row_h = lh + 12;
+    int row_h = lh + 12;
     int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
     const int x_t2 = EXAMPLE_LCD_H_RES - DEP_X;
     const int x_t1 = x_t2 - DEP_TIME_W - 12;
@@ -178,12 +213,23 @@ static void dep_draw_cb(lv_event_t *e)
             }
         }
     }
-    /* Up to two lines each. */
+    /* The shared notices get up to two lines each - unless the departures
+     * wouldn't all fit then: one line each, then the rows closer together.
+     * Departures come before the notices' full text. */
     const int note_x = DEP_X + (lh - 4) + 8, note_w = x_t2 - note_x;
     int note_lines[DEP_SHARED_MAX], notes_h = 0;
-    for (int k = 0; k < n_shared; k++) {
-        note_lines[k] = draw_text_lines(shared[k], note_w, 2);
-        notes_h += note_lines[k] * lh + 2;
+    for (int max_lines = 2; max_lines >= 1; max_lines--) {
+        notes_h = 0;
+        for (int k = 0; k < n_shared; k++) {
+            note_lines[k] = draw_text_lines(shared[k], note_w, max_lines);
+            notes_h += note_lines[k] * lh + 2;
+        }
+        if (DEP_BODY_Y + dep_rows_height(row_h, lh, shared, n_shared, now) <= bottom - notes_h) {
+            break;
+        }
+    }
+    if (DEP_BODY_Y + dep_rows_height(row_h, lh, shared, n_shared, now) > bottom - notes_h) {
+        row_h = lh + 6;
     }
     bottom -= notes_h;
 
