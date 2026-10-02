@@ -240,3 +240,40 @@ to 52 KB).
 - [x] **41. One language.** The screens are Norwegian and the setup page is
   English; pick one for both (or a language setting). *Done: the setup page, its messages, the update statuses and the update site's index page are Norwegian. The serial log stays English.*
 
+
+## Third review: memory (October 2026)
+
+Static internal DRAM was already clean (no app array over 2 KB left in it);
+these are the runtime allocations and the code placed in internal RAM. Before:
+65 KB internal free and 30 KB lowest after 8 minutes on 1.4.2. After 42-44:
+161 KB free and 114 KB lowest after 10 minutes of the normal rotation;
+with all seven screen types on all five locations and one full rotation
+(36 screens, 13 minutes), 159-164 KB free, 116 KB lowest, largest block
+117 KB, PSRAM lowest 690 KB.
+
+- [x] **42. LVGL's small allocations in internal DRAM.** LVGL used the C
+  library's `malloc`, so everything under the 1 KB PSRAM threshold - every
+  widget, style, label text and FreeType glyph-cache entry (FreeType
+  allocates through LVGL) - came from internal DRAM. *Done: LVGL's own
+  allocator (`CONFIG_LV_USE_CUSTOM_MALLOC`, `main/lv_mem_psram.c`) prefers
+  PSRAM and falls back to internal DRAM.*
+- [x] **43. Task stacks in PSRAM.** *Partly done: only the setup portal's
+  DNS task (3 KB) moved. The weather task and the web server keep internal
+  stacks: flash reads and writes are fine from a PSRAM stack here, but the
+  OTA functions memory-map flash, which freezes the cache and asserts on a
+  PSRAM stack - moving the weather task crash-looped the device (see
+  docs/lessons-learned.md). The reboot task is short-lived and left alone.*
+- [x] **44. WiFi code in internal RAM.** `ESP_WIFI_IRAM_OPT` and
+  `ESP_WIFI_RX_IRAM_OPT` put ~19 KB of WiFi library code in internal RAM,
+  shared with the heap on the S3, for throughput the display doesn't need.
+  *Done: both off; `idf.py size` DIRAM 150.7 KB → 132.7 KB.*
+- [ ] **45. Unused JPEG decoder in IRAM.** `esp_lv_decoder` always links
+  `esp_new_jpeg`, whose assembly (6.3 KB) is placed in internal RAM; only
+  PNG is used. Removing it needs a local copy of the decoder component.
+- [ ] **46. LVGL's partial draw buffer.** `esp_lvgl_adapter` always puts the
+  800×10 draw buffer (16 KB) in internal DRAM, whatever `use_psram` says
+  (`display_manager.c`). Moving it needs a patched adapter, and drawing
+  would be slower.
+- [ ] **47. Stack use in `/status`.** Nothing shows how much of each task's
+  stack is used, so stack sizes are guesses. Add each task's high-water mark
+  (needs `CONFIG_FREERTOS_USE_TRACE_FACILITY`) and size the stacks from it.

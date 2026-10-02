@@ -13,6 +13,7 @@ idf_component_register(
         "clock.c"
         "air.c"
         "week.c"
+        "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
         "../components/app_config_json.c"
@@ -76,6 +77,10 @@ endif()
 if(lvgl_lib)
     target_compile_options(${lvgl_lib} PRIVATE -Wno-format)
 endif()
+
+# LVGL's allocator (lv_mem_psram.c) is only referenced from the LVGL
+# library, which links after this one; make sure the linker keeps it.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-u lv_malloc_core")
 
 # Package the FreeType fonts (Montserrat Medium and Bold; see fonts/OFL.txt
 # for their license) and the MET Norway weather icons (fonts/*.png, from

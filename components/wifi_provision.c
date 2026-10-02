@@ -7,6 +7,7 @@
 #include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_app_desc.h"
 #include "esp_image_format.h"
@@ -1039,6 +1040,9 @@ static void start_web_server(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     /* The POST body and the app_config_t are on the heap (see h_save). */
     config.stack_size = 6144;
+    /* The stack stays in internal RAM (the default task_caps): the update
+     * and restore handlers call the OTA functions, which memory-map flash
+     * and assert on a PSRAM stack (see main.c, yr_weather). */
     config.max_uri_handlers = 24;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
@@ -1105,7 +1109,7 @@ static void dns_task(void *arg)
     (void)arg;
     int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock < 0) {
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
     struct sockaddr_in addr = {
@@ -1115,7 +1119,7 @@ static void dns_task(void *arg)
     };
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(sock);
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
     ip4_addr_t portal_ip;
@@ -1309,7 +1313,7 @@ static void portal_run(bool retry_sta)
              retry_sta ? "\n\nPr\xC3\xB8ver lagret WiFi igjen hvert minutt" : "");
     status(msg);
 
-    xTaskCreate(dns_task, "captdns", 3072, NULL, 4, NULL);
+    xTaskCreateWithCaps(dns_task, "captdns", 3072, NULL, 4, NULL, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     start_web_server();
 
     /* Otherwise nothing more to do here - h_save reboots the device once the

@@ -826,9 +826,10 @@ void app_main(void)
     }
     wd_start();
 
-    /* This task must keep its stack in internal RAM: it calls
-     * nvs_flash_init()/esp_wifi via wifi_connect_sta(), and flash/NVS
-     * access briefly freezes the cache, which asserts that the calling
-     * task's own stack isn't in PSRAM (it would become unreadable). */
+    /* This task must keep its stack in internal RAM. With the app running
+     * from PSRAM, plain flash reads and writes (NVS) leave the cache on, but
+     * memory-mapping flash still freezes it - and the OTA functions map the
+     * otadata partition (keep_firmware(), updates), which asserts that the
+     * calling task's stack isn't in PSRAM (crash-looped when tried). */
     xTaskCreate(yr_weather_task, "yr_weather", YR_TASK_STACK_SIZE, NULL, tskIDLE_PRIORITY + 1, &s_yr_task);
 }

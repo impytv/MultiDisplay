@@ -9,7 +9,8 @@ went wrong, why, and what to do next time.
 - [ ] **Internal RAM:** compare `idf.py size` (the DIRAM line) with the
   previous release, and look at `/status` (free and lowest internal DRAM)
   after a few minutes on the device. Large static arrays get
-  `EXT_RAM_BSS_ATTR` (PSRAM) from the start.
+  `EXT_RAM_BSS_ATTR` (PSRAM) from the start. A task stack in PSRAM only
+  for tasks that never call OTA functions or memory-map flash.
 - [ ] **Dependencies:** read the `dependencies.lock` diff after adding or
   changing a component, and pin anything the build is sensitive to.
 - [ ] **Sequences, not just features:** test what people do in a row -
@@ -127,6 +128,22 @@ with æøå (6 bytes each when encoded) were cut short and could end in a
 broken escape. Found while writing the host tests; fixed by decoding first
 and cutting at a whole UTF-8 character.
 *Lesson:* pure code with small tests catches bugs a device test won't.
+
+### A PSRAM stack and the flash cache
+
+In the October 2026 memory review the weather task's stack was moved to
+PSRAM: ESP-IDF's code showed that, with the app running from PSRAM, flash
+reads and writes leave the cache on (`SPI_FLASH_CACHE_NO_DISABLE`), and the
+LVGL task already read fonts from flash on a PSRAM stack. The device then
+crash-looped a few seconds after every start: `keep_firmware()` calls
+`esp_ota_get_state_partition()`, which *memory-maps* the otadata partition,
+and mapping still freezes the cache and asserts that the stack is internal.
+The crash dump showed it at once; the weather task and the web server
+(update and restore handlers) went back to internal stacks.
+*Lesson:* "flash access" isn't one thing - reads and writes, mapping and
+OTA calls behave differently. Before moving a task's stack to PSRAM, follow
+every flash call it can make (OTA functions map flash), and flash the device
+and watch `/status` for a few minutes before building on it.
 
 ## What worked
 
