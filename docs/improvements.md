@@ -274,6 +274,14 @@ with all seven screen types on all five locations and one full rotation
   800×10 draw buffer (16 KB) in internal DRAM, whatever `use_psram` says
   (`display_manager.c`). Moving it needs a patched adapter, and drawing
   would be slower.
-- [ ] **47. Stack use in `/status`.** Nothing shows how much of each task's
+- [x] **47. Stack use in `/status`.** Nothing shows how much of each task's
   stack is used, so stack sizes are guesses. Add each task's high-water mark
   (needs `CONFIG_FREERTOS_USE_TRACE_FACILITY`) and size the stacks from it.
+  *Done: `/status` lists every task's lowest free stack in bytes
+  (`stabler`, tightest first, with whether it is in PSRAM); +2.3 KB internal
+  RAM for the trace functions. Least free, after 10 minutes of the normal
+  rotation and after a full rotation with every screen type on all five
+  locations: httpd 1056 B (of 6 KB) at worst, tiT 1080 B (3 KB), yr_weather
+  4140 B (8 KB), lvgl 6712 B (12 KB, PSRAM), swdraw 13856 B (32 KB, PSRAM),
+  esp_timer 3048 B (3.5 KB). No stack is resized yet: yr_weather and
+  esp_timer have room, but stacks have overflowed here before.*

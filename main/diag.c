@@ -7,6 +7,7 @@
  *  - /coredump: the crash dump in the "coredump" partition, if any, for
  *    `idf.py coredump-info -c <file>`; POST /coredump/erase removes it;
  *  - /status: firmware, uptime, why it last restarted, WiFi signal, memory,
+ *    each task's lowest free stack,
  *    and each service's last success and failure, as JSON for the setup
  *    page. */
 
@@ -14,6 +15,7 @@
 #include "sdkconfig.h"
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -23,12 +25,14 @@
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #include "app.h"
 #include "clock.h"
@@ -290,6 +294,36 @@ static void when_text(char *out, size_t n, time_t at, int64_t us)
     }
 }
 
+/* Each task's stack: the least it has had free since it started (the
+ * high-water mark, in bytes) and whether it is in PSRAM, tightest first -
+ * for sizing the stacks on evidence rather than guesses. */
+#define STACK_TASKS_MAX 40
+
+static int stack_cmp(const void *a, const void *b)
+{
+    const TaskStatus_t *x = a, *y = b;
+    return (int)x->usStackHighWaterMark - (int)y->usStackHighWaterMark;
+}
+
+static void add_stacks(cJSON *o)
+{
+    TaskStatus_t *ts = heap_caps_malloc(STACK_TASKS_MAX * sizeof(*ts), MALLOC_CAP_SPIRAM);
+    if (ts == NULL) {
+        return;
+    }
+    const UBaseType_t n = uxTaskGetSystemState(ts, STACK_TASKS_MAX, NULL);
+    qsort(ts, n, sizeof(*ts), stack_cmp);
+    cJSON *arr = cJSON_AddArrayToObject(o, "stabler");
+    for (UBaseType_t i = 0; i < n; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddStringToObject(e, "navn", ts[i].pcTaskName);
+        cJSON_AddNumberToObject(e, "lavest_ledig", ts[i].usStackHighWaterMark);
+        cJSON_AddBoolToObject(e, "psram", esp_ptr_external_ram(ts[i].pxStackBase));
+        cJSON_AddItemToArray(arr, e);
+    }
+    heap_caps_free(ts);
+}
+
 static esp_err_t h_status(httpd_req_t *req)
 {
     cJSON *o = cJSON_CreateObject();
@@ -357,6 +391,7 @@ static esp_err_t h_status(httpd_req_t *req)
         }
         cJSON_AddItemToArray(svcs, e);
     }
+    add_stacks(o);
     char *text = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
     if (text == NULL) {
