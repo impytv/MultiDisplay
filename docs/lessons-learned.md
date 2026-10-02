@@ -26,7 +26,9 @@ went wrong, why, and what to do next time.
 - [ ] **The new version is running:** after installing, check the version
   in `/status` (and that there's no crash dump) before testing on it.
 - [ ] **Widest content:** size text columns for the widest possible value
-  ("WWW", "-88°"), not a typical one.
+  ("WWW", "-88°"), not a typical one, measured with `draw_text_w` at the
+  font size set; a `draw_text` that is too narrow wraps onto the next line,
+  so text of unknown length goes through `draw_text_fit`.
 - [ ] **Tests prove what they claim:** start from a clean state (erased slot,
   empty cache), and check that a "refused" case fails for the intended
   reason.

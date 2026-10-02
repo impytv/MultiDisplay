@@ -55,6 +55,11 @@ char *app_config_to_json(const app_config_t *c)
     cJSON_AddBoolToObject(upd, "automatic", c->ota_auto);
     cJSON_AddStringToObject(upd, "url", c->ota_url);
 
+    /* The calendar's addresses are secrets, so not here. */
+    cJSON *cal = cJSON_AddObjectToObject(root, "calendar");
+    cJSON_AddBoolToObject(cal, "show", c->cal_show);
+    cJSON_AddBoolToObject(cal, "rotate", c->cal_rotate);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -186,6 +191,9 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     if (c->ota_url[0] != '\0' && strncmp(c->ota_url, "http://", 7) != 0 && strncmp(c->ota_url, "https://", 8) != 0) {
         snprintf(c->ota_url, sizeof(c->ota_url), "%s", cfg->ota_url);
     }
+    const cJSON *cal = cJSON_GetObjectItemCaseSensitive(root, "calendar");
+    get_bool(cal, "show", &c->cal_show);
+    get_bool(cal, "rotate", &c->cal_rotate);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

@@ -45,6 +45,12 @@ esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char 
 esp_err_t esp_http_client_perform(esp_http_client_handle_t c) { return ESP_FAIL; }
 int esp_http_client_get_status_code(esp_http_client_handle_t c) { return 0; }
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c) { return ESP_OK; }
+esp_err_t esp_http_client_open(esp_http_client_handle_t c, int n) { return ESP_FAIL; }
+int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) { return -1; }
+esp_err_t esp_http_client_set_redirection(esp_http_client_handle_t c) { return ESP_FAIL; }
+int esp_http_client_read(esp_http_client_handle_t c, char *b, int n) { return -1; }
+bool esp_http_client_is_complete_data_received(esp_http_client_handle_t c) { return false; }
+esp_err_t esp_http_client_close(esp_http_client_handle_t c) { return ESP_OK; }
 
 /* NVS: one namespace's keys in a list, which is all app_config needs. */
 typedef struct entry {

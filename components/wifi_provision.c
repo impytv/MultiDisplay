@@ -129,7 +129,7 @@ static const struct {
     { "wx", "aw", "V&aelig;r", APP_SHOW_WEATHER }, { "uk", "au", "Uke", APP_SHOW_WEEK },
     { "ac", "aa", "Fly", APP_SHOW_RADAR },         { "sh", "as", "Skip", APP_SHOW_SHIPS },
     { "rn", "ar", "Nedb&oslash;r", APP_SHOW_RAIN }, { "dp", "ad", "Avganger", APP_SHOW_DEPARTURES },
-    { "lq", "al", "Luft", APP_SHOW_AIR },
+    { "lq", "al", "Luft", APP_SHOW_AIR },          { "td", "at", "Tidevann", APP_SHOW_TIDE },
 };
 
 /* A screen's own settings, right under its checkboxes; shown only while
@@ -227,6 +227,36 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
     return p;
 }
 
+/* The calendar screen: one for the display. The addresses are secrets, so
+ * never sent back: a blank field keeps the saved one (see save_form_into). */
+static char *build_calendar(char *p, char *end, const app_config_t *cfg)
+{
+    static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
+    p += snprintf(p, end - p,
+                  "<h2>Kalender</h2><div class=chk><label><input type=checkbox name=calshow value=1%s>"
+                  "Vis kalenderen</label><label><input type=checkbox name=calrot value=1%s>"
+                  "i automatisk bytte</label></div>"
+                  "<small>De neste to ukene fra opptil tre kalendere, hver i sin farge, som en egen "
+                  "skjerm etter oversikten. Bruk kalenderens hemmelige iCal-adresse: i Google Kalender "
+                  "under innstillingene for kalenderen, <i>Hemmelig adresse i iCal-format</i>; i Outlook "
+                  "under <i>Delte kalendere</i>, <i>Publiser en kalender</i> (ICS-lenken).</small>",
+                  cfg->cal_show ? " checked" : "", cfg->cal_rotate ? " checked" : "");
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        const bool set = cfg->cal_url[i][0] != '\0';
+        p += snprintf(p, end - p,
+                      "<label><span style='display:inline-block;width:.7em;height:.7em;border-radius:50%%;"
+                      "background:%s;margin-right:.4em'></span>Kalender %d</label>"
+                      "<input name=calurl%d autocomplete=off inputmode=url maxlength=%d placeholder=\"%s\">",
+                      COLOUR[i], i + 1, i, APP_CONFIG_CAL_URL_MAX - 1,
+                      set ? "Lagret - la st&aring; tomt for &aring; beholde" : "https://...ics");
+        if (set) {
+            p += snprintf(p, end - p, "<div class=chk><label><input type=checkbox name=caloff%d value=1>"
+                                      "Fjern kalenderen</label></div>", i);
+        }
+    }
+    return p;
+}
+
 /* Build the full page into a heap buffer (caller frees). The locations come
  * first; everything else is in collapsed sections. */
 static char *build_page(const app_config_t *cfg)
@@ -257,8 +287,9 @@ static char *build_page(const app_config_t *cfg)
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         p = build_location(p, end, cfg, i);
     }
-    p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>"
-                  "<h2>Innstillinger</h2>");
+    p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>");
+    p = build_calendar(p, end, cfg);
+    p += snprintf(p, end - p, "<h2>Innstillinger</h2>");
 
     /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
      * input follows the browser's language and may show AM/PM. */
@@ -553,7 +584,7 @@ static void reboot_task(void *arg)
     esp_restart();
 }
 
-#define SAVE_BODY_MAX 8192
+#define SAVE_BODY_MAX 12288
 
 static esp_err_t save_form(httpd_req_t *req, const char *body);
 
@@ -759,6 +790,35 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         !app_config_email_valid(cfg->yr_email)) {
         cfg->yr_email[0] = '\0'; /* blank or malformed: fall back to the default */
     }
+    /* The calendar: its address fields are always sent, the checkboxes
+     * only when ticked. A blank address keeps the saved one. */
+    char *cal = malloc(APP_CONFIG_CAL_URL_MAX);
+    if (cal == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    if (form_field(body, "calurl0", cal, APP_CONFIG_CAL_URL_MAX)) {
+        char val[4];
+        cfg->cal_show = form_field(body, "calshow", val, sizeof(val)) ? 1 : 0;
+        cfg->cal_rotate = form_field(body, "calrot", val, sizeof(val)) ? 1 : 0;
+        for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+            char key[] = "calurl0", off[] = "caloff0";
+            key[6] = off[6] = (char)('0' + i);
+            if (form_field(body, off, val, sizeof(val))) {
+                cfg->cal_url[i][0] = '\0';
+            } else if (form_field(body, key, cal, APP_CONFIG_CAL_URL_MAX) && cal[0] != '\0') {
+                if (!app_config_cal_url_valid(cal)) {
+                    free(cal);
+                    httpd_resp_set_type(req, "text/html");
+                    httpd_resp_set_status(req, "400 Bad Request");
+                    return httpd_resp_sendstr(req, "<meta charset=utf-8><p>Ugyldig kalenderadresse: den m&aring; "
+                                                   "begynne med https://, http:// eller webcal://."
+                                                   "<p><a href=/>Tilbake</a>");
+                }
+                snprintf(cfg->cal_url[i], sizeof(cfg->cal_url[i]), "%s", cal);
+            }
+        }
+    }
+    free(cal);
 
     httpd_resp_set_type(req, "text/html");
     if (cfg->wifi_ssid[0] == '\0') {
@@ -835,12 +895,15 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_WEEK : 0;
         snprintf(key, sizeof(key), "lq%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_AIR : 0;
+        snprintf(key, sizeof(key), "td%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_TIDE : 0;
         snprintf(key, sizeof(key), "dep%d", i);
         form_field(body, key, deps[n], APP_CONFIG_DEPARTURES_MAX);
         show[n] = sh ? sh : APP_SHOW_WEATHER;
         static const struct { const char *key; uint8_t bit; } rot[] = {
             { "aw%d", APP_SHOW_WEATHER }, { "aa%d", APP_SHOW_RADAR }, { "as%d", APP_SHOW_SHIPS },
             { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES }, { "al%d", APP_SHOW_AIR }, { "au%d", APP_SHOW_WEEK },
+            { "at%d", APP_SHOW_TIDE },
         };
         for (int r = 0; r < (int)(sizeof(rot) / sizeof(rot[0])); r++) {
             snprintf(key, sizeof(key), rot[r].key, i);

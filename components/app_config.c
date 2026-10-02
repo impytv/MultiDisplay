@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,6 +83,14 @@ static void sanitize_view_settings(app_config_t *c)
     snprintf(c->device_name, sizeof(c->device_name), "%s", host[0] ? host : APP_CONFIG_DEVNAME_DEFAULT);
     c->title_bold = c->title_bold ? 1 : 0;
     c->text_bold = c->text_bold ? 1 : 0;
+    c->cal_show = c->cal_show ? 1 : 0;
+    c->cal_rotate = c->cal_rotate ? 1 : 0;
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        c->cal_url[i][APP_CONFIG_CAL_URL_MAX - 1] = '\0';
+        if (!app_config_cal_url_valid(c->cal_url[i])) {
+            c->cal_url[i][0] = '\0';
+        }
+    }
 }
 
 static void seed_defaults(app_config_t *out)
@@ -225,6 +234,13 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "titlebold", &out->title_bold);
     nvs_get_u8(h, "textpx", &out->text_px);
     nvs_get_u8(h, "textbold", &out->text_bold);
+    nvs_get_u8(h, "calshow", &out->cal_show); /* no calendar if never saved */
+    nvs_get_u8(h, "calrot", &out->cal_rotate);
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        char key[] = "calurl0";
+        key[6] = (char)('0' + i);
+        load_str(h, key, out->cal_url[i], sizeof(out->cal_url[i]));
+    }
     nvs_close(h);
     sanitize_view_settings(out);
 
@@ -241,8 +257,14 @@ esp_err_t app_config_load(app_config_t *out)
              out->auto_night_pause ? "paused" : "running");
     ESP_LOGI(TAG, "firmware updates: %s from '%s'; name '%s'", out->ota_auto ? "automatic" : "manual", out->ota_url,
              out->device_name);
+    int feeds = 0;
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        feeds += out->cal_url[i][0] != '\0';
+    }
+    ESP_LOGI(TAG, "calendar: %s%s, %d calendar(s)", out->cal_show ? "shown" : "not shown",
+             out->cal_rotate ? ", in the rotation" : "", feeds);
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
                  "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%02x",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
@@ -250,6 +272,9 @@ esp_err_t app_config_load(app_config_t *out)
                  (out->show[i] & APP_SHOW_SHIPS) ? " ships" : "",
                  (out->show[i] & APP_SHOW_RAIN) ? " rain" : "",
                  (out->show[i] & APP_SHOW_DEPARTURES) ? " departures" : "",
+                 (out->show[i] & APP_SHOW_WEEK) ? " week" : "",
+                 (out->show[i] & APP_SHOW_AIR) ? " air" : "",
+                 (out->show[i] & APP_SHOW_TIDE) ? " tide" : "",
                  out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i],
                  out->ship_near_min_len_m[i], out->ship_near_km[i], out->rain_km[i],
                  out->departures[i], out->auto_show[i]);
@@ -305,6 +330,13 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "titlebold", cfg->title_bold ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "textpx", cfg->text_px);
     if (err == ESP_OK) err = nvs_set_u8(h, "textbold", cfg->text_bold ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "calshow", cfg->cal_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "calrot", cfg->cal_rotate ? 1 : 0);
+    for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
+        char key[] = "calurl0";
+        key[6] = (char)('0' + i);
+        err = nvs_set_str(h, key, cfg->cal_url[i]);
+    }
     /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
     nvs_erase_key(h, "radar");
     nvs_erase_key(h, "radarkm");
@@ -420,6 +452,20 @@ bool app_config_coord_valid(const char *text, bool is_latitude)
     }
     double limit = is_latitude ? 90.0 : 180.0;
     return v >= -limit && v <= limit;
+}
+
+bool app_config_cal_url_valid(const char *text)
+{
+    if (text == NULL || (strncmp(text, "https://", 8) != 0 && strncmp(text, "http://", 7) != 0 &&
+                         strncmp(text, "webcal://", 9) != 0)) {
+        return false;
+    }
+    for (const char *c = text; *c; c++) {
+        if ((unsigned char)*c <= ' ' || (unsigned char)*c >= 0x7f) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool app_config_email_valid(const char *text)

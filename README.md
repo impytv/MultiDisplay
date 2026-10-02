@@ -327,6 +327,33 @@ Tick **Luft** for a location to get a screen with:
   differ from NAAF's official pollen forecast (whose API needs an agreement
   with NAAF). Out of season it says *Ingen pollen i lufta nå*.
 
+### Tides
+
+Tick **Tidevann** for a location on the coast to get the water level from
+Kartverket's [tide API](https://vannstand.kartverket.no/tideapi_no.html), for
+the nearest permanent station (named above the chart): the level now and
+whether it is rising or falling, how much the weather adds or takes away
+(*Vær og vind*), the next four high and low tides, and a chart from six hours
+ago to 30 hours ahead with Kartverket's forecast (tide and weather), the tide
+alone and what the station measured. Heights are in cm over chart datum
+(*sjøkartnull*). Fetched every 30 minutes. Inland there is no data, and the
+screen says so.
+
+### Calendar
+
+One calendar screen for the whole display, right after the overview: under
+**Kalender** on the setup page, tick **Vis kalenderen** (and **i automatisk
+bytte** for the rotation) and paste up to three secret iCal addresses -
+Google Calendar's *Hemmelig adresse i iCal-format*, a published Outlook
+calendar's ICS link, or any `https://`/`webcal://` `.ics` address. The next
+two weeks are shown as an agenda in two columns, a heading per day and a
+coloured bar per calendar. Fetched every 15 minutes, read as it streams in,
+so a calendar of several MB is fine; the server's certificate is checked.
+Recurring events (daily, weekly, monthly, yearly, with exceptions and moved
+instances) are expanded; times with a time zone are taken as Norwegian time.
+The addresses are secret, so they are never shown on the page again (a blank
+field keeps the saved one) and are left out of settings backups.
+
 ### Night
 
 Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**

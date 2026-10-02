@@ -208,6 +208,8 @@ static const char *const SERVICE_NAMES[DIAG_SERVICE_COUNT] = {
     [DIAG_ROUTES] = "Flyruter",
     [DIAG_AIR] = "Luftkvalitet",
     [DIAG_POLLEN] = "Pollen",
+    [DIAG_TIDE] = "Tidevann",
+    [DIAG_CALENDAR] = "Kalender",
 };
 
 typedef struct {

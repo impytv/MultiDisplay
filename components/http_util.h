@@ -35,6 +35,15 @@ esp_err_t http_buf_append(http_buf_t *b, const void *data, size_t len, const cha
 esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
                         const char *tag);
 
+/* A GET whose body is handed to `chunk` piece by piece as it arrives,
+ * rather than collected - for replies too big to hold (a calendar of
+ * several MB). Redirects are followed; with `verify` the server's
+ * certificate is checked against the bundle. ESP_OK once the whole body of
+ * an HTTP 200 has been passed on; a body over `max` bytes, or `chunk`
+ * returning false, stops it with ESP_FAIL. */
+esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
+                          bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag);
+
 /* MET's terms (api.met.no) ask clients to wait until a response's Expires
  * before asking again, and then to ask with If-Modified-Since. One of these
  * per resource and location, kept with the data it describes. */

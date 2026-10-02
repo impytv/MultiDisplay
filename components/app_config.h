@@ -24,8 +24,15 @@
 #define APP_SHOW_DEPARTURES 0x10
 #define APP_SHOW_AIR     0x20 /* air quality and pollen */
 #define APP_SHOW_WEEK    0x40 /* the week ahead */
+#define APP_SHOW_TIDE    0x80 /* tides and water level (the last free bit) */
 #define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN | \
-                          APP_SHOW_DEPARTURES | APP_SHOW_AIR | APP_SHOW_WEEK)
+                          APP_SHOW_DEPARTURES | APP_SHOW_AIR | APP_SHOW_WEEK | APP_SHOW_TIDE)
+
+/* The calendar screen (one for the display, not per location): up to this
+ * many iCal addresses, merged. Secret, like a password: whoever has one can
+ * read the calendar. */
+#define APP_CONFIG_CAL_FEEDS   3
+#define APP_CONFIG_CAL_URL_MAX 400
 
 /* Public transport departures: which stops and lines a location shows, as
  * the text entur_parse_selection() reads (see entur_client.h). */
@@ -167,6 +174,11 @@ typedef struct {
     /* A valid host name (see app_config_hostname); per display, so not in
      * settings backups. */
     char device_name[APP_CONFIG_DEVNAME_MAX];
+    /* The calendar screen: shown, in the rotation, and its calendars' iCal
+     * addresses ("" = unused; see app_config_cal_url_valid). */
+    uint8_t cal_show;
+    uint8_t cal_rotate;
+    char cal_url[APP_CONFIG_CAL_FEEDS][APP_CONFIG_CAL_URL_MAX];
 } app_config_t;
 
 /**
@@ -210,8 +222,8 @@ void app_config_sanitize(app_config_t *cfg);
 
 /**
  * The settings as JSON, for a backup (caller frees). The WiFi network and
- * every secret - WiFi password, BarentsWatch secret, setup password - are
- * left out. NULL if out of memory.
+ * every secret - WiFi password, BarentsWatch secret, setup password, calendar
+ * addresses - are left out. NULL if out of memory.
  */
 char *app_config_to_json(const app_config_t *cfg);
 
@@ -229,6 +241,12 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
  * lie within [-90, 90] / [-180, 180].
  */
 bool app_config_coord_valid(const char *text, bool is_latitude);
+
+/**
+ * An iCal address the calendar screen can fetch: http://, https:// or
+ * webcal:// (fetched as https://), with nothing that isn't printable ASCII.
+ */
+bool app_config_cal_url_valid(const char *text);
 
 /**
  * Loose check of a contact email for the api.met.no User-Agent: one '@' with

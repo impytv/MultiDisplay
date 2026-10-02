@@ -29,6 +29,11 @@ void test_config(void)
     a.night_off = 1;
     a.dim_start = 22 * 60 + 23;
     a.ota_auto = 1;
+    a.show[0] = APP_SHOW_WEATHER | APP_SHOW_TIDE;
+    a.cal_show = 1;
+    a.cal_rotate = 1;
+    snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
+    snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
     CHECK(app_config_save(&a) == ESP_OK);
     CHECK(app_config_is_provisioned());
     app_config_load(&b);
@@ -58,6 +63,14 @@ void test_config(void)
     CHECK_STR(c.locations[1].name, "Kval\xC3\xB8ysletta");
     CHECK_INT(c.ship_km[1], 30);
     CHECK_STR(c.departures[1], "58858=VYG:Line:R31/v502");
+    CHECK_INT(c.show[0], APP_SHOW_WEATHER | APP_SHOW_TIDE);
+    CHECK(c.cal_show && c.cal_rotate && c.cal_url[0][0] == '\0'); /* the calendar addresses aren't in it */
+
+    CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
+    CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));
+    CHECK(!app_config_cal_url_valid("ftp://x.example/cal.ics"));
+    CHECK(!app_config_cal_url_valid("https://x.example/a b.ics"));
+    CHECK(!app_config_cal_url_valid(""));
     CHECK_INT(c.night_off, 1);
     CHECK_INT(c.dim_start, 22 * 60 + 23);
     CHECK_INT(c.ota_auto, 1);

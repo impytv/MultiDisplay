@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -230,4 +231,76 @@ esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms,
                         const char *tag)
 {
     return http_get_body_cached(url, user_agent, timeout_ms, max, body, tag, NULL, false);
+}
+
+#define STREAM_PIECE     2048
+#define STREAM_REDIRECTS 5
+
+esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
+                          bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag)
+{
+    const esp_http_client_config_t config = {
+        .url = url,
+        .timeout_ms = timeout_ms,
+        .crt_bundle_attach = verify ? esp_crt_bundle_attach : NULL,
+        .buffer_size = 2048,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL) {
+        return ESP_FAIL;
+    }
+    esp_http_client_set_header(client, "User-Agent", user_agent);
+    char *piece = heap_caps_malloc(STREAM_PIECE, MALLOC_CAP_SPIRAM);
+    esp_err_t err = piece ? ESP_OK : ESP_ERR_NO_MEM;
+    int status = 0;
+    for (int hop = 0; err == ESP_OK && hop <= STREAM_REDIRECTS; hop++) {
+        if ((err = esp_http_client_open(client, 0)) != ESP_OK) {
+            break;
+        }
+        esp_http_client_fetch_headers(client);
+        status = esp_http_client_get_status_code(client);
+        if (status >= 301 && status <= 308 && status != 304 && hop < STREAM_REDIRECTS) {
+            esp_http_client_set_redirection(client); /* the Location becomes the URL */
+            esp_http_client_close(client);
+            continue;
+        }
+        break;
+    }
+    size_t total = 0;
+    if (err == ESP_OK && status == 200) {
+        for (;;) {
+            const int n = esp_http_client_read(client, piece, STREAM_PIECE);
+            if (n < 0) {
+                err = ESP_FAIL;
+                ESP_LOGE(tag, "Reading the reply failed");
+                break;
+            }
+            if (n == 0) {
+                if (!esp_http_client_is_complete_data_received(client)) {
+                    err = ESP_FAIL;
+                    ESP_LOGE(tag, "The reply ended early");
+                }
+                break;
+            }
+            total += (size_t)n;
+            if (total > max) {
+                ESP_LOGE(tag, "Reply over %u bytes, stopping", (unsigned)max);
+                err = ESP_FAIL;
+                break;
+            }
+            if (!chunk(piece, (size_t)n, ctx)) {
+                err = ESP_FAIL;
+                break;
+            }
+        }
+    } else if (err == ESP_OK) {
+        ESP_LOGE(tag, "Unexpected HTTP status %d", status);
+        err = ESP_FAIL;
+    } else {
+        ESP_LOGE(tag, "HTTP request failed: %s", esp_err_to_name(err));
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    heap_caps_free(piece);
+    return err;
 }

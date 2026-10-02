@@ -224,10 +224,18 @@ to 52 KB).
 - [ ] **37. Electricity prices.** Today's and tomorrow's hourly spot price
   for the chosen price area (NO1–NO5) from hvakosterstrommen.no, as a bar
   chart with the current hour marked and the cheapest hours highlighted.
-- [ ] **38. More screens from open Norwegian data.** *Air quality and pollen
+- [x] **38. More screens from open Norwegian data.** *Air quality and pollen
   done (1.3.0): a "Luft" screen per location with MET's air quality
   forecast and CAMS pollen via Open-Meteo (NAAF's own API needs an
-  agreement). Tides and a calendar remain.*
+  agreement). Tides and a calendar done (October 2026): a "Tidevann" screen
+  per location (Kartverket's forecast, tide and measured level for the
+  nearest station, the next high and low tides; "too far from the coast"
+  inland), and one "Kalender" screen for the display after the overview,
+  merging up to three secret iCal addresses (two weeks as an agenda;
+  streamed, so any size; recurring events expanded; addresses kept out of
+  backups). Tide took the last free bit of the per-location screen flags
+  (`show[]` is a uint8_t): another per-location screen needs them widened,
+  with a settings migration.*
   - Tides and water level (Kartverket's API) for coastal locations.
   - Air quality (MET's airqualityforecast).
   - Pollen in season.
