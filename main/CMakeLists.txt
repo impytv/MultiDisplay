@@ -29,6 +29,7 @@ idf_component_register(
         "../components/air_client.c"
         "../components/http_util.c"
         "../components/ota_writer.c"
+        "../components/restart.c"
     INCLUDE_DIRS
         "."
         "../components"

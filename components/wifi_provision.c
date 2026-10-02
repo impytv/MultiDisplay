@@ -24,6 +24,7 @@
 #include "form_util.h"
 #include "cJSON.h"
 #include "mdns.h"
+#include "restart.h"
 
 static const char *TAG = "wifi_provision";
 
@@ -531,7 +532,8 @@ static esp_err_t h_scan(httpd_req_t *req)
 }
 
 /* It may mark the running firmware as good first, which writes flash and
- * logs: 2 KB overflowed doing that (seen as a crash dump). */
+ * logs: 2 KB overflowed doing that (seen as a crash dump). Pinned to core 0,
+ * where esp_restart() doesn't hang (see restart.c). */
 #define REBOOT_TASK_STACK 4096
 
 static void reboot_task(void *arg)
@@ -639,7 +641,7 @@ static esp_err_t h_ota(httpd_req_t *req)
     ESP_LOGI(TAG, "Firmware update written - restarting");
     status("Programvare oppdatert.\nStarter p\xC3\xA5 nytt...");
     httpd_resp_sendstr(req, "Oppdatert - starter p\xC3\xA5 nytt\n");
-    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL, 0);
     return ESP_OK;
 }
 
@@ -905,7 +907,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         "Lagret. Starter p&aring; nytt&hellip;"
         "<p style='font-family:system-ui;text-align:center'>"
         "<a href=/>Tilbake til oppsettsiden</a></p>");
-    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL, 0);
     return ESP_OK;
 }
 
@@ -987,7 +989,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
     }
     ESP_LOGI(TAG, "Settings restored from a backup - restarting");
     httpd_resp_sendstr(req, "Innstillingene er gjenopprettet. Starter p\xC3\xA5 nytt...");
-    xTaskCreate(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL, 0);
     return ESP_OK;
 }
 
@@ -1322,7 +1324,7 @@ static void portal_run(bool retry_sta)
             ESP_LOGI(TAG, "Saved network is back - restarting");
             status("WiFi tilkoblet \xE2\x80\x93 starter p\xC3\xA5 nytt...");
             vTaskDelay(pdMS_TO_TICKS(1000));
-            esp_restart();
+            restart_device();
         }
         wifi_sta_list_t clients;
         if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num > 0) {

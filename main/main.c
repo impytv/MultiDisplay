@@ -37,6 +37,7 @@
 #include "weather.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
+#include "restart.h"
 
 static const char *TAG = "main";
 
@@ -555,7 +556,7 @@ static void nightly_housekeeping(void)
                  lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
     } else if (now_wall >= next_nightly_reboot) {
         ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
-        esp_restart();
+        restart_device();
     }
 
     /* Night dimming - see s_tap_layer / NIGHT_DIM_OPA. A window that ends

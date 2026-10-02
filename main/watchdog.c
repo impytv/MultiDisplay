@@ -17,6 +17,7 @@
 
 #include "app.h"
 #include "watchdog.h"
+#include "restart.h"
 
 static const char *TAG = "watchdog";
 
@@ -128,7 +129,7 @@ static void wd_check_cb(void *arg)
         return;
     }
     ESP_LOGE(TAG, "Watchdog: %s - restarting", trip_reason(s_wd_tripped));
-    esp_restart();
+    restart_device();
 }
 
 /* Start watching, and report whether the watchdog caused this boot. */

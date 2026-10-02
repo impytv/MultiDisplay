@@ -43,6 +43,7 @@
 #include "version_util.h"
 #include "watchdog.h"
 #include "wifi_provision.h"
+#include "restart.h"
 
 static const char *TAG = "updater";
 
@@ -313,7 +314,7 @@ static bool run_check(bool install, bool automatic)
                 set_result("%s installert, starter p\xC3\xA5" " nytt", o->version);
                 show_status("Programvare oppdatert.\nStarter p\xC3\xA5 nytt...");
                 vTaskDelay(pdMS_TO_TICKS(1500));
-                esp_restart();
+                restart_device();
             }
             char msg[128];
             snprintf(msg, sizeof(msg), "installering av %s feilet: %s", o->version, why);

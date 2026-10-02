@@ -17,6 +17,8 @@ went wrong, why, and what to do next time.
   and a power cut or restart in the middle of things.
 - [ ] **Real settings:** test with the display's actual settings (21 px text,
   five locations, night mode on) as well as the defaults.
+- [ ] **Restart reason:** after installing or restarting, `/status`
+  should say "omstart fra programmet", not a watchdog.
 - [ ] **Stacks:** when adding work to a task, check its stack size; anything
   that writes flash or logs needs more than 2 KB. When a struct grows,
   look for it as a local on a task stack.
@@ -96,6 +98,20 @@ PSRAM.
 *Lesson:* when a struct grows, look for it as a local variable (and as a
 value copy) on task stacks; after installing, check that `/status` really
 shows the new version before testing anything on it.
+
+### Restarts hung on core 1
+
+Since at least 1.4.0, about one restart in three (after an update, a saved
+setting or a restored backup) hung inside `esp_restart()` until the RTC
+watchdog reset the chip: `/status` said "vakthund i maskinvaren" instead
+of "omstart fra programmet". It went unnoticed because the new firmware
+still came up. The serial log showed WiFi shutting down and then nothing
+until `RTCWDT_RTC_RST`; logging the core showed every hang came from a
+restart task that ran on core 1. Restarting from core 0 never hung, so
+`restart_device()` (components/restart.c) now hands the restart to core 0.
+*Lesson:* after installing, read the restart reason in `/status`, not just
+the version. A serial log is easier to get than it looks: open the port
+with DTR and RTS off and keep it open, since opening it resets the board.
 
 ### Measure text with the widest letters
 
