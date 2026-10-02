@@ -10,7 +10,9 @@ went wrong, why, and what to do next time.
   previous release, and look at `/status` (free and lowest internal DRAM)
   after a few minutes on the device. Large static arrays get
   `EXT_RAM_BSS_ATTR` (PSRAM) from the start. A task stack in PSRAM only
-  for tasks that never call OTA functions or memory-map flash.
+  for tasks that never call OTA functions or memory-map flash. After moving
+  anything to PSRAM, watch the rain radar for a few minutes (PSRAM
+  bandwidth feeds the display).
 - [ ] **Dependencies:** read the `dependencies.lock` diff after adding or
   changing a component, and pin anything the build is sensitive to.
 - [ ] **Sequences, not just features:** test what people do in a row -
@@ -146,6 +148,19 @@ The crash dump showed it at once; the weather task and the web server
 OTA calls behave differently. Before moving a task's stack to PSRAM, follow
 every flash call it can make (OTA functions map flash), and flash the device
 and watch `/status` for a few minutes before building on it.
+
+### PSRAM is shared with the display
+
+Moving work into PSRAM (LVGL's allocations, and WiFi's code by turning
+off its IRAM options) freed ~100 KB of internal RAM in 1.4.3 - and made the
+picture jump sideways now and then on the rain radar, which redraws every
+500 ms. The RGB panel is fed from its frame buffer in PSRAM through two
+small bounce buffers refilled in an interrupt; with more traffic on PSRAM a
+refill came late. 1.5.1 doubled the bounce buffers to 20 lines, made the
+panel resynchronise every frame, and put WiFi's code back in IRAM.
+*Lesson:* internal RAM isn't the only budget - PSRAM bandwidth is, too.
+After moving things to PSRAM, watch the busiest screen (the rain radar) for
+a few minutes, through a download, not only `/status`.
 
 ## What worked
 

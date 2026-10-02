@@ -274,7 +274,11 @@ with all seven screen types on all five locations and one full rotation
 - [x] **44. WiFi code in internal RAM.** `ESP_WIFI_IRAM_OPT` and
   `ESP_WIFI_RX_IRAM_OPT` put ~19 KB of WiFi library code in internal RAM,
   shared with the heap on the S3, for throughput the display doesn't need.
-  *Done: both off; `idf.py size` DIRAM 150.7 KB → 132.7 KB.*
+  *Done in 1.4.3 (both off; `idf.py size` DIRAM 150.7 KB → 132.7 KB), undone
+  in 1.5.1: with WiFi's code running from PSRAM, the RGB panel's feed from
+  PSRAM was refilled late and the picture jumped on the rain radar. 1.5.1
+  also doubles the panel's bounce buffers (20 lines) and resynchronises it
+  every frame (`CONFIG_LCD_RGB_RESTART_IN_VSYNC`).*
 - [ ] **45. Unused JPEG decoder in IRAM.** `esp_lv_decoder` always links
   `esp_new_jpeg`, whose assembly (6.3 KB) is placed in internal RAM; only
   PNG is used. Removing it needs a local copy of the decoder component.

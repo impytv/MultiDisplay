@@ -57,11 +57,12 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
 # high-throughput link; this display just makes an HTTPS GET every few
 # minutes, so 8 is ample and frees ~13KB of internal DRAM.
 CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
-# The WiFi "IRAM speed optimization"s put ~19 KB of the WiFi libraries' code
-# in internal RAM, which on the S3 comes out of the same memory as the heap.
-# They only raise throughput, which a few JSON and PNG downloads don't need.
-CONFIG_ESP_WIFI_IRAM_OPT=n
-CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+# The WiFi "IRAM speed optimization"s stay on (~19 KB of internal RAM):
+# turned off in 1.4.3, WiFi's code ran from PSRAM and competed with the RGB
+# panel's feed from PSRAM, and the picture jumped on the rain radar.
+# The RGB panel: resynchronise every frame, so a late refill from PSRAM
+# (the picture jumping sideways) can't last.
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
 
 # Deliberately skip TLS server certificate verification for the yr_client
 # fetch (see components/yr_client.c) - verifying api.met.no's 4096-bit RSA

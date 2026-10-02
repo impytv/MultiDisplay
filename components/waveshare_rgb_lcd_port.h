@@ -46,7 +46,12 @@
 #define EXAMPLE_LCD_BIT_PER_PIXEL       (16)
 #define EXAMPLE_RGB_BIT_PER_PIXEL       (16)
 #define EXAMPLE_RGB_DATA_WIDTH          (16)
-#define EXAMPLE_RGB_BOUNCE_LINES        10
+/* The panel is fed from the frame buffer in PSRAM through two bounce
+ * buffers in internal RAM, refilled in an interrupt. 20 lines (2 x 32 KB)
+ * leave the refill time to wait for PSRAM while the screen is being drawn;
+ * with 10 the rain radar's redraw every 500 ms made the picture jump. Must
+ * divide the screen height. */
+#define EXAMPLE_RGB_BOUNCE_LINES        20
 #define EXAMPLE_RGB_BOUNCE_BUFFER_SIZE  (EXAMPLE_LCD_H_RES * EXAMPLE_RGB_BOUNCE_LINES)
 #define EXAMPLE_LCD_IO_RGB_DISP         (-1)             // -1 if not used
 #define EXAMPLE_LCD_IO_RGB_VSYNC        (GPIO_NUM_3)
