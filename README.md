@@ -206,8 +206,9 @@ blank to send the build-time **YR API User-Agent** instead.
 
 For each location on the setup page, tick what it shows: **Vær**,
 **Fly** and/or **Skip** (shown in that order: Oslo weather, Oslo
-aircraft, Oslo ships, next location, ...). Each location also has its own
-**Flyradar (km)** (kilometres, 10-185, default 40). A location without
+aircraft, Oslo ships, next location, ...). Ticking **Fly** shows its own
+**Radius (km)** right under it (kilometres, 10-185, default 40); every
+screen's settings sit under its checkboxes the same way. A location without
 weather has no weather screen and isn't a row in the overview table (the overview lists only the locations that show weather, and
 is empty of rows - but still shown, for its IP address - if none do).
 
@@ -241,7 +242,7 @@ location with a hull-shaped marker along each ship's heading and a 10-minute
 course vector (moored or anchored ships are plain dots), name tags for the
 nearest ones, and a table of the nearest 14: name, type (Last, Tank, Pass,
 Fiske, Fritid, Slep, Annet - also the marker colour), speed in knots and
-distance in kilometres. Each location has its own **Skipstrafikk (km)** (kilometres,
+distance in kilometres. Each location has its own **Radius (km)** under **Skip** (kilometres,
 2-100, default 20).
 
 Positions come from the [BarentsWatch Live AIS

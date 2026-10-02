@@ -14,10 +14,11 @@ fieldset{margin:.9rem 0;padding:.2rem .8rem .8rem;border:1px solid var(--line);b
 legend{padding:0 .4rem;color:var(--dim);font-weight:600}
 .mv{width:auto;margin:0 0 0 .4rem;padding:.05rem .5rem;font-size:.85rem;background:var(--accs);color:var(--acc)}
 .mv:disabled{opacity:.35}
-.chk{display:flex;gap:1.2rem;flex-wrap:wrap}.chk label,.scr label{display:flex;align-items:center;gap:.35rem;margin:.2rem 0;font-weight:400}
-.chk input,.scr input{width:auto;margin:0}
-.scr .sr{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding:.1rem 0}
-.scr .sr:last-child{border-bottom:0}.scr .rot{color:var(--dim);font-size:.9rem}
+.chk{display:flex;gap:1.2rem;flex-wrap:wrap}.chk label,.scr .sr label{display:flex;align-items:center;gap:.35rem;margin:.2rem 0;font-weight:400}
+.chk input,.scr .sr input{width:auto;margin:0}
+.scr .sg{border-bottom:1px solid var(--line);padding:.1rem 0}.scr .sg:last-child{border-bottom:0}
+.scr .sr{display:flex;justify-content:space-between;align-items:center}
+.scr [data-need]{margin:0 0 .5rem 1.6rem}.scr [data-need]>label,.scr [data-need] .row label{margin-top:.3rem}.scr .rot{color:var(--dim);font-size:.9rem}
 details{margin:.9rem 0;border:1px solid var(--line);border-radius:.5rem;background:var(--card)}
 details>summary{padding:.6rem .8rem;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:.3rem;list-style:none}
 details>summary::-webkit-details-marker{display:none}

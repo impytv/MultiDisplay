@@ -130,9 +130,58 @@ static const struct {
     { "lq", "al", "Luft", APP_SHOW_AIR },
 };
 
+/* A screen's own settings, right under its checkboxes; shown only while
+ * the screen is ticked (data-need, see PAGE_SCRIPTS). */
+static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, int i, uint8_t bit)
+{
+    const bool filled = (i < cfg->location_count);
+    switch (bit) {
+    case APP_SHOW_RADAR:
+        p += snprintf(p, end - p, "<div data-need=ac><label>Radius (km)</label>"
+                      "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>",
+                      i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
+                      filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT);
+        break;
+    case APP_SHOW_RAIN:
+        p += snprintf(p, end - p, "<div data-need=rn><label>Radius (km)</label>"
+                      "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>",
+                      i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX,
+                      filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT);
+        break;
+    case APP_SHOW_SHIPS:
+        p += snprintf(p, end - p,
+                      "<div data-need=sh><div class=row><div><label>Radius (km)</label>"
+                      "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
+                      "<div><label>Korteste skip (m)</label>"
+                      "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
+                      "<div class=row><div><label>Indre sone (km)</label>"
+                      "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
+                      "<div><label>Korteste innenfor (m)</label>"
+                      "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
+                      "<small>Kortere skip, og skip som ikke oppgir lengde, vises ikke (0 viser alle). "
+                      "Innenfor den indre sonen (0 = ingen) gjelder en egen korteste lengde.</small></div>",
+                      i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX,
+                      filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT,
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_min_len_m[i] : 0,
+                      i, APP_CONFIG_SHIP_NEAR_KM_MAX, filled ? cfg->ship_near_km[i] : 0,
+                      i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_near_min_len_m[i] : 0);
+        break;
+    case APP_SHOW_DEPARTURES:
+        p += snprintf(p, end - p, "<div data-need=dp><input name=dep%d type=hidden data-max=%d value=\"",
+                      i, APP_CONFIG_DEPARTURES_MAX - 1);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->departures[i]);
+        }
+        p += snprintf(p, end - p, "\"></div>");
+        break;
+    default:
+        break;
+    }
+    return p;
+}
+
 /* One location's block: collapsed, hidden when not in use (the page's "+ Legg
- * til sted" shows it). Only the fields its ticked screens need are shown
- * (data-need, see PAGE_SCRIPTS). */
+ * til sted" shows it). Each screen's settings follow its checkboxes. */
 static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
 {
     const bool filled = (i < cfg->location_count);
@@ -164,43 +213,14 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
     const int auto_show = filled ? cfg->auto_show[i] : 0;
     for (size_t k = 0; k < sizeof(SCREENS) / sizeof(SCREENS[0]); k++) {
         p += snprintf(p, end - p,
-                      "<div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s>%s</label>"
+                      "<div class=sg><div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s>%s</label>"
                       "<label class=rot><input type=checkbox name=%s%d value=1%s>i automatisk bytte</label></div>",
                       SCREENS[k].vis, i, (show & SCREENS[k].bit) ? " checked" : "", SCREENS[k].label,
                       SCREENS[k].rot, i, (auto_show & SCREENS[k].bit) ? " checked" : "");
+        p = build_screen_settings(p, end, cfg, i, SCREENS[k].bit);
+        p += snprintf(p, end - p, "</div>");
     }
-
-    p += snprintf(p, end - p,
-                  "</div><div data-need=ac><label>Flyradar (km)</label>"
-                  "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                  "<div data-need=rn><label>Nedb&oslash;rsradar (km)</label>"
-                  "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                  "<div data-need=sh><div class=row><div><label>Skipstrafikk (km)</label>"
-                  "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
-                  "<div><label>Korteste skip (m)</label>"
-                  "<input name=shipminlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
-                  "<div class=row><div><label>Indre sone (km)</label>"
-                  "<input name=shipnearkm%d type=number inputmode=numeric min=0 max=%d value=%d></div>"
-                  "<div><label>Korteste innenfor (m)</label>"
-                  "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
-                  "<small>Kortere skip, og skip som ikke oppgir lengde, vises ikke (0 viser alle). "
-                  "Innenfor den indre sonen (0 = ingen) gjelder en egen korteste lengde.</small></div>"
-                  "<div data-need=dp><label>Avganger</label>"
-                  "<input name=dep%d type=hidden data-max=%d value=\"",
-                  i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
-                  filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT,
-                  i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX,
-                  filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT,
-                  i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX,
-                  filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT,
-                  i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_min_len_m[i] : 0,
-                  i, APP_CONFIG_SHIP_NEAR_KM_MAX, filled ? cfg->ship_near_km[i] : 0,
-                  i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_near_min_len_m[i] : 0,
-                  i, APP_CONFIG_DEPARTURES_MAX - 1);
-    if (filled) {
-        p = html_escape_append(p, end, cfg->departures[i]);
-    }
-    p += snprintf(p, end - p, "\"></div><button type=button class='rm lt2'>Fjern stedet</button>"
+    p += snprintf(p, end - p, "</div><button type=button class='rm lt2'>Fjern stedet</button>"
                   "</fieldset></details>");
     return p;
 }
