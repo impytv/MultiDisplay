@@ -182,15 +182,18 @@ The site is hosted on the Raspberry Pi that builds the firmware
 
 - **Transport:** plain HTTP is fine, because the signature is what protects
   the image. The display doesn't verify TLS certificates anyway.
-- **Web server:** nginx, from `apt install nginx`. No web server runs on the
-  Pi today.
-  - It uses a site on its own port, **8070**, so port 80 stays free for
-    anything else.
-  - It serves `/srv/multidisplay` read-only with directory listing off.
-  - `server/nginx-multidisplay.conf` is checked in. It goes into
-    `/etc/nginx/sites-enabled/`.
-  - nginx starts on boot and restarts itself, which a hand-started
-    `python3 -m http.server` would not do.
+- **Web server:** nginx in a Docker container
+  (`nginxinc/nginx-unprivileged`), from `server/compose.yaml`. It moved
+  there from a host nginx in October 2026; the URL stayed the same.
+  - It uses its own port, **8070**, so port 80 stays free for anything
+    else.
+  - It serves `/srv/multidisplay`, mounted read-only, with directory listing
+    off. The folder is mounted rather than single files, because the publish
+    script replaces files by renaming.
+  - `server/nginx.conf` is checked in and mounted into the container.
+  - The container runs as a non-root user with a read-only filesystem and
+    no capabilities, and `restart: unless-stopped` brings it back after a
+    reboot.
 - **Address:** the display uses the IP address, not `raspberrypi5.local`.
   ESP-IDF's HTTP client does not resolve mDNS names without extra
   components. This means the Pi's address must not change: give it a DHCP
@@ -266,7 +269,7 @@ so a specific version can be installed through the manual upload.
    and scheduling.
 5. **Settings.** Add the config fields, the setup page fieldset and the
    `/ota/check` endpoint.
-6. **Website.** Install nginx on the Pi, add `server/nginx-multidisplay.conf`
+6. **Website.** Run nginx on the Pi, add `server/nginx.conf`
    and `publish_firmware.py`.
 7. **Tests on the device:**
    - A normal update.
@@ -280,7 +283,8 @@ so a specific version can be installed through the manual upload.
 
 ## Decided
 
-- **Hosting:** nginx on the Raspberry Pi, LAN only, plain HTTP on port 8070.
+- **Hosting:** nginx in Docker on the Raspberry Pi, LAN only, plain HTTP on
+  port 8070.
   The display uses the Pi's IP address (192.168.0.119) for now. The URL can
   be changed on the setup page if the address changes.
 - **Automatic install:** off by default.
@@ -299,7 +303,7 @@ so a specific version can be installed through the manual upload.
 
 - **Code:** `components/ota_writer.c` (shared image writer),
   `main/updater.c` (manifest, download, schedule, `/ota/*` endpoints),
-  `scripts/publish_firmware.py`, `server/nginx-multidisplay.conf`,
+  `scripts/publish_firmware.py`, `server/compose.yaml`, `server/nginx.conf`,
   `version.txt`.
 - **Erase first:** the writer erases the image's size plus one more sector
   before writing, instead of erasing as it goes. The extra sector is where

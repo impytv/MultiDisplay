@@ -1,0 +1,27 @@
+# The firmware update site in Docker (docs/auto-update-plan.md):
+#
+#   cd server && docker compose up -d
+#
+# nginx serves the site folder that scripts/publish_firmware.py writes,
+# read-only, on port 8070 - the address the displays already use. The
+# container starts again by itself after a restart of the Pi.
+
+services:
+  update-site:
+    image: nginxinc/nginx-unprivileged:1.29-alpine
+    container_name: multidisplay-update-site
+    restart: unless-stopped
+    ports:
+      - "8070:8080"
+    volumes:
+      # The folder, not single files: the publish script replaces files by
+      # renaming, which a mount of one file would not see.
+      - ${MULTIDISPLAY_SITE:-/srv/multidisplay}:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true

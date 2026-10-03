@@ -85,15 +85,18 @@ home network (see `docs/auto-update-plan.md` for the design).
 - **Test releases:** point a display at `manifest-test.json` instead to get
   releases before the others.
 
-The site is static files served by nginx on the Raspberry Pi. Once:
+The site is static files served by nginx in a Docker container on the
+Raspberry Pi (`server/compose.yaml`), on port 8070. Once:
 
 ```bash
-sudo apt install nginx
+sudo apt install docker.io docker-compose
+sudo usermod -aG docker $USER        # then log in again
 sudo mkdir -p /srv/multidisplay && sudo chown $USER: /srv/multidisplay
-sudo cp server/nginx-multidisplay.conf /etc/nginx/sites-available/multidisplay
-sudo ln -s /etc/nginx/sites-available/multidisplay /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
+cd server && docker compose up -d
 ```
+
+The container mounts `/srv/multidisplay` read-only and starts again by
+itself after a restart.
 
 To publish, raise the version in `version.txt`, commit, and run:
 
