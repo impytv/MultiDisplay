@@ -159,6 +159,7 @@ typedef struct {
     uint16_t auto_idle_min;
     uint16_t auto_dwell_s;
     uint8_t auto_overview;
+    uint8_t ov_show; /* the overview is one of the screens (on unless unticked) */
     uint8_t auto_night_pause;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];

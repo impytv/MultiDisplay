@@ -288,6 +288,13 @@ static char *build_page(const app_config_t *cfg)
         p = build_location(p, end, cfg, i);
     }
     p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>");
+    p += snprintf(p, end - p,
+                  "<h2>Oversikt</h2><div class=chk><label><input type=checkbox name=ovshow value=1%s>"
+                  "Vis oversikten</label><label><input type=checkbox name=autoov value=1%s>"
+                  "i automatisk bytte</label></div>"
+                  "<small>Tabellen med v&aelig;ret for alle stedene, f&oslash;rst av skjermene. Uten den "
+                  "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small>",
+                  cfg->ov_show ? " checked" : "", cfg->auto_overview ? " checked" : "");
     p = build_calendar(p, end, cfg);
     p += snprintf(p, end - p, "<h2>Innstillinger</h2>");
 
@@ -331,16 +338,15 @@ static char *build_page(const app_config_t *cfg)
                   "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
                   "<div><label>Per skjerm (s)</label>"
                   "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
-                  "<div class=chk><label><input type=checkbox name=autoov value=1%s>Ta med oversikten</label>"
-                  "<label><input type=checkbox name=autonight value=1%s>Stopp om natta</label></div>"
+                  "<div class=chk><label><input type=checkbox name=autonight value=1%s>Stopp om natta</label></div>"
                   "<small>Etter s&aring; mange minutter uten trykk g&aring;r skjermen videre til neste "
-                  "skjerm som er krysset av for <i>i automatisk bytte</i> under stedene (og oversikten, "
-                  "om den er tatt med), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
+                  "skjerm som er krysset av for <i>i automatisk bytte</i> (under stedene, oversikten og "
+                  "kalenderen), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
                   "det til skjermen har v&aelig;rt i fred s&aring; lenge igjen. 0 minutter sl&aring;r det "
                   "av.</small></details>",
                   APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
                   APP_CONFIG_AUTO_DWELL_S_MIN, APP_CONFIG_AUTO_DWELL_S_MAX, cfg->auto_dwell_s,
-                  cfg->auto_overview ? " checked" : "", cfg->auto_night_pause ? " checked" : "");
+                  cfg->auto_night_pause ? " checked" : "");
 
     /* Access and passwords, collapsed - open in the setup portal, where
      * the WiFi is what's being set up. */
@@ -757,6 +763,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
             cfg->auto_dwell_s = (uint16_t)v;
         }
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
+        cfg->ov_show = form_field(body, "ovshow", val, sizeof(val)) ? 1 : 0;
         cfg->auto_night_pause = form_field(body, "autonight", val, sizeof(val)) ? 1 : 0;
     }
     /* The display's name: made into a host name; blank keeps the old one. */

@@ -83,11 +83,9 @@ const lv_font_t *g_font_large;
 lv_obj_t *g_status_label;
 
 /* The screens a tap cycles through, in order (see build_stops): the overview
- * table (always present, even with zero or one weather location - it's the
- * only place the device's IP address is shown, needed to reach the setup
- * portal for further configuration), the calendar if shown, then for each
- * location whichever of its weather, week, aircraft, ships, rain, departures,
- * air and tide screens are enabled, in that order. */
+ * table and the calendar if shown, then for each location whichever of its
+ * weather, week, aircraft, ships, rain, departures, air and tide screens are
+ * enabled, in that order. */
 typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
@@ -205,9 +203,9 @@ static void init_fonts(void)
 static void build_stops(void)
 {
     s_stop_count = 0;
-    /* Always a stop, regardless of location_count: it's the only screen that
-     * shows the device's IP address, so it must always be reachable by tap. */
-    s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
+    if (g_cfg->ov_show) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
+    }
     if (g_cfg->cal_show) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_CALENDAR, 0 };
     }
@@ -239,6 +237,10 @@ static void build_stops(void)
         if (g_cfg->show[i] & APP_SHOW_TIDE) {
             s_any_tide = true;
         }
+    }
+    /* Every location shows at least one screen; just in case, never none. */
+    if (s_stop_count == 0) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };
     }
 }
 

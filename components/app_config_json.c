@@ -42,6 +42,9 @@ char *app_config_to_json(const app_config_t *c)
     cJSON_AddNumberToObject(fonts, "text_px", c->text_px);
     cJSON_AddBoolToObject(fonts, "text_bold", c->text_bold);
 
+    cJSON *ov = cJSON_AddObjectToObject(root, "overview");
+    cJSON_AddBoolToObject(ov, "show", c->ov_show);
+
     cJSON *rot = cJSON_AddObjectToObject(root, "rotation");
     cJSON_AddNumberToObject(rot, "idle_min", c->auto_idle_min);
     cJSON_AddNumberToObject(rot, "per_screen_s", c->auto_dwell_s);
@@ -170,6 +173,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(fonts, "title_bold", &c->title_bold);
     get_u8(fonts, "text_px", &c->text_px);
     get_bool(fonts, "text_bold", &c->text_bold);
+    get_bool(cJSON_GetObjectItemCaseSensitive(root, "overview"), "show", &c->ov_show);
     const cJSON *rot = cJSON_GetObjectItemCaseSensitive(root, "rotation");
     get_u16(rot, "idle_min", &c->auto_idle_min);
     get_u16(rot, "per_screen_s", &c->auto_dwell_s);

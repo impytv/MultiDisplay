@@ -186,13 +186,11 @@ around):
 
 1. **Oversikt** – an overview table with one row per location that shows
    weather and 6-hour columns, each showing the weather icon, temperature and
-   the precipitation summed over that 6-hour block, plus the device's IP
-   address in the bottom-right corner (for reaching the setup portal later).
-   This is always the first stop, even with only one location or a purely
-   radar-only setup - it's the only screen showing the IP address, so it must
-   always stay reachable by tap.
-2. For each location in order, whichever of its weather screen (chart + wind),
-   aircraft radar, ship traffic, rain radar and departure board are enabled.
+   the precipitation summed over that 6-hour block. Shown unless **Vis
+   oversikten** under **Oversikt** on the setup page is unticked (its **i
+   automatisk bytte** puts it in the rotation).
+2. **Kalender**, if shown (see [Calendar](#calendar)).
+3. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -210,7 +208,7 @@ aircraft, Oslo ships, next location, ...). Ticking **Fly** shows its own
 **Radius (km)** right under it (kilometres, 10-185, default 40); every
 screen's settings sit under its checkboxes the same way. A location without
 weather has no weather screen and isn't a row in the overview table (the overview lists only the locations that show weather, and
-is empty of rows - but still shown, for its IP address - if none do).
+is empty of rows if none do).
 
 The screen shows a sonar-style plot centred on the location (north up, range
 rings at quarter steps, a heading triangle and a 60-second speed vector per
@@ -292,8 +290,8 @@ the device does no date or geometry filtering of its own.
 
 The setup page's **Automatisk bytte** section makes the display page
 through screens on its own when nobody is using it. After **Etter (min uten trykk)** minutes without a touch it moves to the next screen ticked in a
-location's **i automatisk bytte** boxes, next to its ticked screens (plus the overview, if **Ta med oversikten**
-is ticked), in the normal screen order, and moves on every **Per skjerm
+location's **i automatisk bytte** boxes, next to its ticked screens (plus the overview and the
+calendar, if theirs are ticked), in the normal screen order, and moves on every **Per skjerm
 (s)** seconds. A touch stops it until the display has been left alone that
 long again. 0 minutes (the default) turns it off, and nothing is ticked by
 default. With **Stopp om natta** (on by default) it stands
@@ -425,9 +423,10 @@ network, and restarts normally once it's back:
    **Sted** blocks (name + latitude/longitude). Leave a block empty to
    skip it. Press **Lagre og start på nytt** — the device reboots and connects.
 
-Once connected, the same page is reachable at the device's IP on your LAN
-(shown on the overview screen, in the router's client list, or the serial
-log: `Got IP: …`) for later edits.
+Once connected, the same page is reachable at `http://<name>.local/`
+(`http://multidisplay.local/` unless renamed) or the device's IP on your LAN
+(in the router's client list, or the serial log: `Got IP: …`) for later
+edits.
 
 The page can have a password (**Passord for oppsettsiden**; none by default).
 The browser then asks for it, with any user name; it covers the page, the

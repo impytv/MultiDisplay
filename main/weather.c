@@ -22,7 +22,6 @@
 #include "met_alerts_client.h"
 #include "watchdog.h"
 #include "weather.h"
-#include "wifi_provision.h"
 #include "yr_client.h"
 
 static const char *TAG = "weather";
@@ -157,8 +156,6 @@ static fetch_stamp_t s_wx_shown_at[APP_CONFIG_MAX_LOCATIONS];
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
-static lv_obj_t *s_ov_ip_label;   /* bottom-right: the address to browse to for setup */
-static lv_obj_t *s_ov_heap_label; /* bottom-left: free internal-DRAM bytes */
 static lv_obj_t *s_ov_hdr[OV_COLS];
 static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
 static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
@@ -318,8 +315,7 @@ static void set_weather_icon(lv_obj_t *img, const char *symbol_code)
 /* The overview table: a title, a header row of clock hours
  * (filled in each refresh), then one row per location with a name cell and
  * OV_COLS cells of {weather icon, temperature, precipitation}. Always called;
- * the row loop below is simply empty when no location shows weather - the IP
- * and free-heap footnotes are the only content in that case. */
+ * the row loop below is simply empty when no location shows weather. */
 lv_obj_t *overview_build(lv_obj_t *screen)
 {
     lv_obj_t *root = s_overview_root = screen_root_create(screen);
@@ -327,8 +323,6 @@ lv_obj_t *overview_build(lv_obj_t *screen)
      * style property on ~30 widgets, which matters for internal DRAM. */
     lv_obj_set_style_text_align(root, LV_TEXT_ALIGN_CENTER, 0);
 
-    const lv_color_t footnote = (g_cfg->theme == APP_THEME_DARK)
-        ? lv_palette_main(LV_PALETTE_GREY) : lv_palette_darken(LV_PALETTE_GREY, 2);
     s_ov_title = lv_label_create(root);
     lv_obj_set_style_text_font(s_ov_title, g_font_large, 0);
     lv_obj_set_pos(s_ov_title, OV_X, OV_TITLE_Y);
@@ -389,22 +383,6 @@ lv_obj_t *overview_build(lv_obj_t *screen)
             lv_label_set_text(s_ov_cell[i][c], "");
         }
     }
-
-    /* The address to browse to for WiFi/location setup (see wifi_provision).
-     * Text is filled in each refresh by update_overview(); muted so it reads
-     * as a footnote, not another data row. */
-    s_ov_ip_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_ip_label, footnote, 0);
-    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4);
-    lv_label_set_text(s_ov_ip_label, "");
-
-    /* Free internal-DRAM bytes, the figure this project's memory work has
-     * been tracking throughout - a running diagnostic, not user-facing data,
-     * so it's a footnote like the IP label. */
-    s_ov_heap_label = lv_label_create(root);
-    lv_obj_set_style_text_color(s_ov_heap_label, footnote, 0);
-    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4);
-    lv_label_set_text(s_ov_heap_label, "");
 
     return root;
 }
@@ -1086,8 +1064,7 @@ static bool any_cache_valid(void)
 
 /* Whether the overview is still waiting on its first forecast. False (nothing
  * to wait for) when no location shows weather at all - e.g. a radar-only
- * setup - so the overview never gets stuck on "Henter oversikt..." forever;
- * the IP/heap footnotes render regardless via update_overview(). */
+ * setup - so the overview never gets stuck on "Henter oversikt..." forever. */
 static bool overview_loading(void)
 {
     return s_weather_count > 0 && !any_cache_valid();
@@ -1164,13 +1141,6 @@ static void update_overview_alerts(void)
 static void update_overview(void)
 {
     update_overview_alerts();
-
-    lv_label_set_text(s_ov_ip_label, wifi_provision_get_ip());
-    lv_obj_align(s_ov_ip_label, LV_ALIGN_BOTTOM_RIGHT, -OV_X, -4); /* re-anchor: text width changed */
-
-    lv_label_set_text_fmt(s_ov_heap_label, "%u",
-                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    lv_obj_align(s_ov_heap_label, LV_ALIGN_BOTTOM_LEFT, OV_X, -4); /* re-anchor: text width changed */
 
     int64_t now_epoch = 0;
     for (int i = 0; i < g_cfg->location_count; i++) {
@@ -1570,8 +1540,6 @@ void weather_enter(int loc)
 
 void overview_enter(void)
 {
-    /* Always render: the IP/heap footnotes must show up right away, not only
-     * once a forecast lands. */
     update_overview();
     lv_label_set_text(g_status_label, overview_loading() ? "Henter oversikt..." : "");
 }

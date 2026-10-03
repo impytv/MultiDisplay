@@ -12,6 +12,7 @@ void test_config(void)
     CHECK_STR(a.locations[0].name, "Oslo");
     CHECK_INT(a.ota_auto, 0);
     CHECK_STR(a.device_name, "multidisplay");
+    CHECK_INT(a.ov_show, 1); /* the overview is shown unless unticked */
 
     /* Save and load again: everything comes back. */
     snprintf(a.wifi_ssid, sizeof(a.wifi_ssid), "home");
@@ -31,6 +32,7 @@ void test_config(void)
     a.ota_auto = 1;
     a.show[0] = APP_SHOW_WEATHER | APP_SHOW_TIDE;
     a.cal_show = 1;
+    a.ov_show = 0;
     a.cal_rotate = 1;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
@@ -65,6 +67,7 @@ void test_config(void)
     CHECK_STR(c.departures[1], "58858=VYG:Line:R31/v502");
     CHECK_INT(c.show[0], APP_SHOW_WEATHER | APP_SHOW_TIDE);
     CHECK(c.cal_show && c.cal_rotate && c.cal_url[0][0] == '\0'); /* the calendar addresses aren't in it */
+    CHECK_INT(c.ov_show, 0);
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
     CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));
