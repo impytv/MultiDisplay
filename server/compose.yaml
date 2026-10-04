@@ -23,6 +23,8 @@ services:
       # renaming, which a mount of one file would not see.
       - ${MULTIDISPLAY_SITE:-/srv/multidisplay}:/usr/share/nginx/html:ro
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Calendar feeds straight from the repo, so an edit is live at once.
+      - ./kalender:/usr/share/nginx/html/kalender:ro
     read_only: true
     tmpfs:
       - /tmp
