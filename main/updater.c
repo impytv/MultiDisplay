@@ -8,11 +8,12 @@
  * name the same version; at the end its size and SHA-256 must match, and
  * ota_writer has esp_ota_end() check its signature. Only then is it booted.
  *
- * When: 10 minutes after boot (a check only, for the setup page), then every
- * night between 03:30 and 05:00 - the only time it installs by itself, and
- * only when ticked on the setup page. A failed check is retried after an
- * hour, then two, ... up to a day. "Check now" and "Install now" on the
- * setup page run straight away. */
+ * When: 10 minutes after boot (a check only, for the setup page), then at
+ * the time set on the setup page and every so many hours from there (03:30
+ * every 24 hours unless changed; see update_schedule.h) - the only checks
+ * that install by themselves, and only when ticked on the setup page. A
+ * failed check is retried after an hour, then two, ... up to a day. "Check
+ * now" and "Install now" on the setup page run straight away. */
 
 #include "esp_attr.h"
 #include <stdio.h>
@@ -39,6 +40,7 @@
 #include "http_util.h"
 #include "ota_writer.h"
 #include "rain_client.h"
+#include "update_schedule.h"
 #include "updater.h"
 #include "version_util.h"
 #include "watchdog.h"
@@ -48,11 +50,11 @@
 static const char *TAG = "updater";
 
 #define UPD_FIRST_CHECK_S  (10 * 60)
-#define UPD_DAILY_S        (24 * 3600)   /* between checks if the clock never syncs */
 #define UPD_RETRY_MIN_S    3600
 #define UPD_RETRY_MAX_S    (24 * 3600)
-#define UPD_NIGHT_FROM     (3 * 60 + 30) /* the install window, local minutes after midnight */
-#define UPD_NIGHT_TO       (5 * 60)
+/* A scheduled check is still made this long into its period (at most half
+ * of it), e.g. after a restart; later, it waits for the next. */
+#define UPD_WINDOW_MIN     90
 #define UPD_MANIFEST_MAX   4096
 #define UPD_CHUNK          4096
 #define UPD_TIMEOUT_MS     15000
@@ -84,7 +86,12 @@ static TaskHandle_t s_task;
 static volatile request_t s_request;
 static int64_t s_next_us;    /* esp_timer time of the next scheduled check */
 static int s_failures;
-static int s_night_done_yday = -1; /* the night whose window has had its check */
+/* The scheduled period (see update_schedule.h) whose check has been made,
+ * and the schedule it was counted in; UPD_NONE = none yet. */
+#define UPD_NONE INT64_MIN
+static int64_t s_period_done = UPD_NONE;
+static uint16_t s_period_at;
+static uint8_t s_period_every_h;
 
 /* --------------------------------------------------------------------------
  * Helpers
@@ -297,7 +304,17 @@ static bool run_check(bool install, bool automatic)
             set_result("%s gikk tilbake til forrige programvare etter installering; venter p\xC3\xA5" " en nyere",
                        o->version);
         } else if (!install) {
-            set_result(g_cfg->ota_auto ? "%s er tilgjengelig og installeres i natt" : "%s er tilgjengelig", o->version);
+            if (g_cfg->ota_auto && s_period_done != UPD_NONE) {
+                const int m = upd_period_start_min(s_period_done + 1, g_cfg->ota_at, g_cfg->ota_every_h);
+                char msg[sizeof(o->version) + 48];
+                snprintf(msg, sizeof(msg), "%s er tilgjengelig og installeres kl. %02d:%02d", o->version, m / 60,
+                         m % 60);
+                set_result("%s", msg);
+            } else {
+                set_result(g_cfg->ota_auto ? "%s er tilgjengelig og installeres ved neste planlagte sjekk"
+                                           : "%s er tilgjengelig",
+                           o->version);
+            }
         } else {
             ESP_LOGI(TAG, "Installing %s over %s", o->version, running);
             /* Free what the screens' idle connections hold. */
@@ -336,14 +353,15 @@ static bool run_check(bool install, bool automatic)
         s_next_us = now + (wait_s < UPD_RETRY_MAX_S ? wait_s : UPD_RETRY_MAX_S) * 1000000LL;
         s_failures++;
     } else {
-        s_next_us = now + UPD_DAILY_S * 1000000LL;
+        s_next_us = now + (int64_t)g_cfg->ota_every_h * 3600 * 1000000LL; /* matters only without a clock */
         s_failures = 0;
     }
     return drew;
 }
 
-/* Whether local time is inside tonight's install window; *yday is today. */
-static bool in_night_window(int *yday)
+/* Where local time is in the schedule: the period, how far into it and
+ * the seconds until the next; false without a clock. */
+static bool schedule_now(int64_t *period, int *into_min, int64_t *next_s)
 {
     const time_t now = time(NULL);
     if (now <= PLAUSIBLE_EPOCH_S) {
@@ -351,9 +369,9 @@ static bool in_night_window(int *yday)
     }
     struct tm lt;
     localtime_r(&now, &lt);
-    *yday = lt.tm_yday;
-    const int min = lt.tm_hour * 60 + lt.tm_min;
-    return min >= UPD_NIGHT_FROM && min < UPD_NIGHT_TO;
+    *period = upd_period(upd_local_min(&lt), g_cfg->ota_at, g_cfg->ota_every_h, into_min);
+    *next_s = ((int64_t)g_cfg->ota_every_h * 60 - *into_min) * 60 - lt.tm_sec;
+    return true;
 }
 
 bool updater_poll(uint32_t *wait_ms)
@@ -369,22 +387,39 @@ bool updater_poll(uint32_t *wait_ms)
         }
         return false;
     }
-    int yday = -1;
-    const bool night = in_night_window(&yday);
-    const bool auto_install = g_cfg->ota_auto && night;
+    int64_t period = 0, next_s = 0;
+    int into = 0;
+    const bool clock = schedule_now(&period, &into, &next_s);
+    int window = g_cfg->ota_every_h * 30;
+    if (window > UPD_WINDOW_MIN) {
+        window = UPD_WINDOW_MIN;
+    }
+    const bool in_window = clock && into < window;
+    if (clock && (s_period_done == UPD_NONE || s_period_at != g_cfg->ota_at ||
+                  s_period_every_h != g_cfg->ota_every_h)) {
+        /* Just started, or the schedule changed: this period's check is
+         * still to come only if it has just begun. */
+        s_period_done = in_window ? period - 1 : period;
+        s_period_at = g_cfg->ota_at;
+        s_period_every_h = g_cfg->ota_every_h;
+    }
+    const bool auto_install = g_cfg->ota_auto && in_window;
     bool drew = false;
 
     if (req != REQ_NONE) {
         drew = run_check(req == REQ_INSTALL || auto_install, req != REQ_INSTALL);
-    } else if (night && yday != s_night_done_yday) {
-        /* The nightly check - the one that installs, when allowed. */
-        s_night_done_yday = yday;
-        drew = run_check(auto_install, true);
+    } else if (clock && period != s_period_done) {
+        /* The scheduled check - the one that installs, when allowed. */
+        s_period_done = period;
+        drew = run_check(g_cfg->ota_auto, true);
     } else if (esp_timer_get_time() >= s_next_us) {
         drew = run_check(auto_install, true);
     }
 
-    const int64_t left_ms = (s_next_us - esp_timer_get_time()) / 1000;
+    int64_t left_ms = (s_next_us - esp_timer_get_time()) / 1000;
+    if (clock && next_s * 1000 < left_ms) {
+        left_ms = next_s * 1000;
+    }
     if (left_ms < (int64_t)*wait_ms) {
         *wait_ms = left_ms > 0 ? (uint32_t)left_ms : 0;
     }

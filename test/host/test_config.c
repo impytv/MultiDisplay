@@ -13,6 +13,8 @@ void test_config(void)
     CHECK_INT(a.ota_auto, 0);
     CHECK_STR(a.device_name, "multidisplay");
     CHECK_INT(a.ov_show, 1); /* the overview is shown unless unticked */
+    CHECK_INT(a.ota_at, 3 * 60 + 30);
+    CHECK_INT(a.ota_every_h, 24);
 
     /* Save and load again: everything comes back. */
     snprintf(a.wifi_ssid, sizeof(a.wifi_ssid), "home");
@@ -30,6 +32,8 @@ void test_config(void)
     a.night_off = 1;
     a.dim_start = 22 * 60 + 23;
     a.ota_auto = 1;
+    a.ota_at = 13 * 60 + 5;
+    a.ota_every_h = 6;
     a.show[0] = APP_SHOW_WEATHER | APP_SHOW_TIDE;
     a.cal_show = 1;
     a.ov_show = 0;
@@ -77,6 +81,8 @@ void test_config(void)
     CHECK_INT(c.night_off, 1);
     CHECK_INT(c.dim_start, 22 * 60 + 23);
     CHECK_INT(c.ota_auto, 1);
+    CHECK_INT(c.ota_at, 13 * 60 + 5);
+    CHECK_INT(c.ota_every_h, 6);
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");

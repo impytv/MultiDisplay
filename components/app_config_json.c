@@ -56,6 +56,8 @@ char *app_config_to_json(const app_config_t *c)
 
     cJSON *upd = cJSON_AddObjectToObject(root, "updates");
     cJSON_AddBoolToObject(upd, "automatic", c->ota_auto);
+    add_hhmm(upd, "at", c->ota_at);
+    cJSON_AddNumberToObject(upd, "every_hours", c->ota_every_h);
     cJSON_AddStringToObject(upd, "url", c->ota_url);
 
     /* The calendar's addresses are secrets, so not here. */
@@ -191,6 +193,8 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     }
     const cJSON *upd = cJSON_GetObjectItemCaseSensitive(root, "updates");
     get_bool(upd, "automatic", &c->ota_auto);
+    get_hhmm(upd, "at", &c->ota_at);
+    get_u8(upd, "every_hours", &c->ota_every_h);
     ok &= get_str(upd, "url", c->ota_url, sizeof(c->ota_url));
     if (c->ota_url[0] != '\0' && strncmp(c->ota_url, "http://", 7) != 0 && strncmp(c->ota_url, "https://", 8) != 0) {
         snprintf(c->ota_url, sizeof(c->ota_url), "%s", cfg->ota_url);

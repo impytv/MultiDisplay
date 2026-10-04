@@ -79,6 +79,12 @@ static void sanitize_view_settings(app_config_t *c)
     c->ov_show = c->ov_show ? 1 : 0;
     c->auto_night_pause = c->auto_night_pause ? 1 : 0;
     c->ota_auto = c->ota_auto ? 1 : 0;
+    if (c->ota_at >= 24 * 60) {
+        c->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
+    }
+    if (c->ota_every_h < APP_CONFIG_OTA_EVERY_H_MIN || c->ota_every_h > APP_CONFIG_OTA_EVERY_H_MAX) {
+        c->ota_every_h = APP_CONFIG_OTA_EVERY_H_DEFAULT;
+    }
     char host[APP_CONFIG_DEVNAME_MAX];
     app_config_hostname(c->device_name, host, sizeof(host));
     snprintf(c->device_name, sizeof(c->device_name), "%s", host[0] ? host : APP_CONFIG_DEVNAME_DEFAULT);
@@ -111,6 +117,8 @@ static void seed_defaults(app_config_t *out)
     out->auto_night_pause = 1;
     out->ov_show = 1;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
+    out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
+    out->ota_every_h = APP_CONFIG_OTA_EVERY_H_DEFAULT;
     snprintf(out->device_name, sizeof(out->device_name), "%s", APP_CONFIG_DEVNAME_DEFAULT);
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         out->show[i] = APP_SHOW_WEATHER;
@@ -223,6 +231,8 @@ esp_err_t app_config_load(app_config_t *out)
     load_str(h, "yremail", out->yr_email, sizeof(out->yr_email));
     load_str(h, "webpass", out->web_pass, sizeof(out->web_pass));
     nvs_get_u8(h, "otaauto", &out->ota_auto); /* off if never saved */
+    nvs_get_u16(h, "otaat", &out->ota_at);     /* 03:30 every 24 hours if never saved */
+    nvs_get_u8(h, "otaevery", &out->ota_every_h);
     load_str(h, "otaurl", out->ota_url, sizeof(out->ota_url)); /* keeps the default if never saved */
     load_str(h, "devname", out->device_name, sizeof(out->device_name));
     if (!app_config_email_valid(out->yr_email)) {
@@ -324,6 +334,8 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "yremail", cfg->yr_email);
     if (err == ESP_OK) err = nvs_set_str(h, "webpass", cfg->web_pass);
     if (err == ESP_OK) err = nvs_set_u8(h, "otaauto", cfg->ota_auto ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u16(h, "otaat", cfg->ota_at);
+    if (err == ESP_OK) err = nvs_set_u8(h, "otaevery", cfg->ota_every_h);
     if (err == ESP_OK) err = nvs_set_str(h, "otaurl", cfg->ota_url);
     if (err == ESP_OK) err = nvs_set_str(h, "devname", cfg->device_name);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);

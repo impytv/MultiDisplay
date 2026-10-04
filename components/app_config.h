@@ -83,6 +83,12 @@
 /* Firmware updates: the manifest URL the updater checks (see
  * main/updater.c). */
 #define APP_CONFIG_OTA_URL_MAX 201
+/* When to check for (and, if allowed, install) firmware updates: at
+ * ota_at (local minutes after midnight), then every ota_every_h hours. */
+#define APP_CONFIG_OTA_AT_DEFAULT      (3 * 60 + 30)
+#define APP_CONFIG_OTA_EVERY_H_DEFAULT 24
+#define APP_CONFIG_OTA_EVERY_H_MIN     1
+#define APP_CONFIG_OTA_EVERY_H_MAX     168
 
 /* Colour theme for every screen: app_config_t.theme. */
 #define APP_THEME_LIGHT 0
@@ -167,10 +173,13 @@ typedef struct {
     char yr_email[APP_CONFIG_EMAIL_MAX];
     /* The setup page's password; empty = none (see wifi_provision.c). */
     char web_pass[APP_CONFIG_PASS_MAX];
-    /* Firmware updates: install new firmware from ota_url automatically, at
-     * night (off unless ticked on the setup page). ota_url is also what
-     * "Check now" on the setup page checks. */
+    /* Firmware updates: install new firmware from ota_url automatically
+     * (off unless ticked on the setup page), at the scheduled checks: at
+     * ota_at local time and every ota_every_h hours from then. ota_url is
+     * also what "Check now" on the setup page checks. */
     uint8_t ota_auto;
+    uint16_t ota_at;
+    uint8_t ota_every_h;
     char ota_url[APP_CONFIG_OTA_URL_MAX];
     /* A valid host name (see app_config_hostname); per display, so not in
      * settings backups. */

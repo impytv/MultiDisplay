@@ -162,9 +162,15 @@ hand. Only the automatic updater requires a newer version.
   overlaps a forecast or radar fetch.
   - A first check 10 minutes after boot. It only records what is available
     for the setup page and never installs.
-  - Then one check a day at 03:30, while the screen is dimmed and after
-    the 02:00 nightly restart, so memory is fresh. **This is the only time an automatic install
-    happens.** A version found earlier in the day waits for this slot.
+  - Then the scheduled checks: at a local time and every so many hours
+    from it, both set on the setup page (October 2026; before, one fixed
+    check a day at 03:30). The default stays 03:30 every 24 hours, while
+    the screen is dimmed and after the 02:00 nightly restart, so memory is
+    fresh. **These are the only checks that install automatically.** A
+    version found in between waits for the next one. A scheduled check
+    missed by a restart is still made up to 90 minutes (at most half the
+    interval) after its time; the schedule is counted from the time of day,
+    so the nightly restart doesn't reset it.
   - When a check fails, the next one is in 1 hour. Every later failure
     doubles the wait, up to 24 hours.
   - "Check now" and "Install now" wake the task.
@@ -295,7 +301,8 @@ so a specific version can be installed through the manual upload.
 - **Signing key:** kept locally on the Pi, never in git or on GitHub.
 - **Manual downgrades:** allowed through the setup page upload, for signed
   images.
-- **Install time:** automatic installs happen only in the 03:30 night slot.
+- **Install time:** automatic installs happen only at the scheduled checks
+  (03:30 every 24 hours unless changed on the setup page).
   "Install now" on the setup page installs straight away.
 - **Test channel:** `manifest-test.json` next to `manifest.json`, and a
   publish script that can promote a release from test to stable.

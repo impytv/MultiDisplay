@@ -410,13 +410,20 @@ static char *build_page(const app_config_t *cfg)
                   "<fieldset><legend>Programvareoppdatering</legend>"
                   "<div class=chk><label><input type=checkbox name=otaauto value=1%s>"
                   "Installer ny programvare automatisk</label></div>"
+                  "<div class=row><div><label>Sjekk kl.</label>"
+                  "<input name=otaat inputmode=numeric maxlength=5 placeholder=03:30 value=%02u:%02u></div>"
+                  "<div><label>Og deretter hver (timer)</label>"
+                  "<input name=otaevery type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
+                  "<small>Lokal tid, 24 timer. 24 timer sjekker &eacute;n gang i d&oslash;gnet; 6 timer fra "
+                  "03:30 sjekker 03:30, 09:30, 15:30 og 21:30. Ny programvare installeres ved disse "
+                  "sjekkene, n&aring;r det er krysset av over.</small>"
                   "<label>Oppdateringsadresse</label><input name=otaurl type=url autocomplete=off value=\"",
-                  cfg->ota_auto ? " checked" : "");
+                  cfg->ota_auto ? " checked" : "", cfg->ota_at / 60, cfg->ota_at % 60, APP_CONFIG_OTA_EVERY_H_MIN,
+                  APP_CONFIG_OTA_EVERY_H_MAX, cfg->ota_every_h);
     p = html_escape_append(p, end, cfg->ota_url);
     p += snprintf(p, end - p,
                   "\"><small>manifest.json p&aring; oppdateringssiden; manifest-test.json der for "
-                  "testversjoner. Ny programvare installeres om natta, mellom 03:30 og 05:00. Bare "
-                  "programvare signert med prosjektets n&oslash;kkel godtas.</small>"
+                  "testversjoner. Bare programvare signert med prosjektets n&oslash;kkel godtas.</small>"
                   "<p id=otast style='margin:.6rem 0 0'><small>Sjekker...</small></p><div id=otanew></div>"
                   "<div class=row><div><button type=button id=otachk class=lt2>Sjekk n&aring;</button></div>"
                   "<div><button type=button id=otains class=lt2 hidden>Installer n&aring;</button></div></div></fieldset>");
@@ -781,6 +788,17 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     if (form_field(body, "otaurl", url, sizeof(url))) {
         char val[4];
         cfg->ota_auto = form_field(body, "otaauto", val, sizeof(val)) ? 1 : 0;
+        char hhmm[8];
+        int m;
+        if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
+            cfg->ota_at = (uint16_t)m;
+        }
+        if (form_field(body, "otaevery", val, sizeof(val))) {
+            long v = strtol(val, NULL, 10);
+            if (v >= APP_CONFIG_OTA_EVERY_H_MIN && v <= APP_CONFIG_OTA_EVERY_H_MAX) {
+                cfg->ota_every_h = (uint8_t)v;
+            }
+        }
         if (url[0] == '\0' || strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
             snprintf(cfg->ota_url, sizeof(cfg->ota_url), "%s", url);
         }

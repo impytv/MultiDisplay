@@ -73,8 +73,11 @@ home network (see `docs/auto-update-plan.md` for the design).
 
 - **On the display:** the setup page's **Vedlikehold → Programvareoppdatering** section has the
   update address (default `http://192.168.0.119:8070/manifest.json`) and
-  **Installer ny programvare automatisk** (off by default). When ticked, a
-  newer release is installed at night between 03:30 and 05:00. **Sjekk
+  **Installer ny programvare automatisk** (off by default). **Sjekk kl.**
+  and **Og deretter hver (timer)** set when the display checks: at that
+  local time and every so many hours from it (03:30 every 24 hours by
+  default; 6 hours from 03:30 checks at 03:30, 09:30, 15:30 and 21:30).
+  When ticked, a newer release is installed at those checks. **Sjekk
   nå** shows what the site offers, with its release notes, and **Installer
   nå** installs it straight away, ticked or not.
 - **What is refused:** a manifest for another project or board, a version
