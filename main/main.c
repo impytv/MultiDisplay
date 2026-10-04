@@ -772,6 +772,27 @@ static void alloc_failed_cb(size_t size, uint32_t caps, const char *function_nam
                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
+/* The panel's bounce buffers are refilled from PSRAM in its DMA interrupt,
+ * which is installed on the core that creates the panel. app_main runs on
+ * core 0 beside WiFi, whose interrupts and critical sections delayed the
+ * refill until it fell a whole buffer behind and the bottom lines showed at
+ * the top. So the panel (and touch) are created from a short task on
+ * core 1. */
+typedef struct {
+    uint8_t fb_count;
+    esp_lcd_panel_handle_t panel;
+    esp_lcd_touch_handle_t touch;
+    TaskHandle_t caller;
+} lcd_init_args_t;
+
+static void lcd_init_task(void *arg)
+{
+    lcd_init_args_t *a = arg;
+    ESP_ERROR_CHECK(waveshare_esp32_s3_rgb_lcd_init(a->fb_count, &a->panel, &a->touch));
+    xTaskNotifyGive(a->caller);
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     diag_init();
@@ -814,13 +835,11 @@ void app_main(void)
     const esp_lv_adapter_tear_avoid_mode_t tear_mode = ESP_LV_ADAPTER_TEAR_AVOID_MODE_DEFAULT_RGB;
     const uint8_t frame_buffer_count = esp_lv_adapter_get_required_frame_buffer_count(tear_mode, rotation);
 
-    esp_lcd_panel_handle_t panel_handle = NULL;
-    esp_lcd_touch_handle_t touch_handle = NULL;
-
-    ESP_ERROR_CHECK(waveshare_esp32_s3_rgb_lcd_init(
-        frame_buffer_count,
-        &panel_handle,
-        &touch_handle));
+    lcd_init_args_t lcd = { .fb_count = frame_buffer_count, .caller = xTaskGetCurrentTaskHandle() };
+    xTaskCreatePinnedToCore(lcd_init_task, "lcd_init", 4096, &lcd, tskIDLE_PRIORITY + 5, NULL, 1);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    esp_lcd_panel_handle_t panel_handle = lcd.panel;
+    esp_lcd_touch_handle_t touch_handle = lcd.touch;
     ESP_ERROR_CHECK(waveshare_rgb_lcd_backlight_on());
 
     esp_lv_adapter_config_t adapter_config = ESP_LV_ADAPTER_DEFAULT_CONFIG();

@@ -60,9 +60,17 @@ CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=8
 # The WiFi "IRAM speed optimization"s stay on (~19 KB of internal RAM):
 # turned off in 1.4.3, WiFi's code ran from PSRAM and competed with the RGB
 # panel's feed from PSRAM, and the picture jumped on the rain radar.
-# The RGB panel: resynchronise every frame, so a late refill from PSRAM
-# (the picture jumping sideways) can't last.
-CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+# The RGB panel must NOT use CONFIG_LCD_RGB_RESTART_IN_VSYNC (on in
+# 1.5.1-1.5.4): with it, ESP-IDF 5.5 never resets its count of bounce-buffer
+# refills, so one missed refill interrupt made it refill the wrong buffer
+# from then on and the picture stayed shifted, its bottom lines at the top.
+# Without it the driver counts the refills each frame and restarts the
+# panel when one is missing.
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=n
+# Its interrupt (and the GDMA one that refills the bounce buffers) in IRAM:
+# with code executing from PSRAM (SPIRAM_XIP_FROM_PSRAM), the handler
+# otherwise fetched its own instructions over the bus it was waiting on.
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
 
 # Deliberately skip TLS server certificate verification for the yr_client
 # fetch (see components/yr_client.c) - verifying api.met.no's 4096-bit RSA

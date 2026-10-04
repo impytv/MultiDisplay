@@ -278,7 +278,12 @@ with all seven screen types on all five locations and one full rotation
   in 1.5.1: with WiFi's code running from PSRAM, the RGB panel's feed from
   PSRAM was refilled late and the picture jumped on the rain radar. 1.5.1
   also doubles the panel's bounce buffers (20 lines) and resynchronises it
-  every frame (`CONFIG_LCD_RGB_RESTART_IN_VSYNC`).*
+  every frame (`CONFIG_LCD_RGB_RESTART_IN_VSYNC`). That setting turned out to
+  cause the bottom lines showing at the top: ESP-IDF 5.5 then never resets
+  its refill count, so one missed refill interrupt shifted the picture by a
+  bounce buffer until the next glitch or restart. 1.5.4 turns it off again,
+  creates the panel on core 1 (away from WiFi) with an IRAM-safe
+  interrupt, and keeps the 16 MHz pixel clock.*
 - [ ] **45. Unused JPEG decoder in IRAM.** `esp_lv_decoder` always links
   `esp_new_jpeg`, whose assembly (6.3 KB) is placed in internal RAM; only
   PNG is used. Removing it needs a local copy of the decoder component.

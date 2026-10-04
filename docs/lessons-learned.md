@@ -162,6 +162,29 @@ panel resynchronise every frame, and put WiFi's code back in IRAM.
 After moving things to PSRAM, watch the busiest screen (the rain radar) for
 a few minutes, through a download, not only `/status`.
 
+The jumping wasn't quite gone: the bottom lines of the picture showed at
+the top, and stayed there for a while. Lowering the pixel clock (1.5.3) and
+moving the panel's interrupts off WiFi's core (1.5.4) didn't stop it. The
+cause was the setting 1.5.1 added: with `CONFIG_LCD_RGB_RESTART_IN_VSYNC`,
+ESP-IDF 5.5 never resets its count of bounce-buffer refills (the reset is
+in the `#else` branch), and it picks the buffer to refill from that count.
+One missed refill interrupt made it refill the buffer being sent instead of
+the finished one, from then on - a lasting shift of one bounce buffer.
+Without the setting the driver checks the count every frame and restarts
+the panel when one is missing. 1.5.4 turns it off, and keeps the panel's
+interrupts on core 1 and IRAM-safe so refills are missed less often.
+*Lesson:* read the driver code behind a Kconfig option before turning it
+on; its help text said "stop permanent desyncs", the code caused one. And
+two guesses that "seemed to fix it" were wrong - a glitch that comes now
+and then isn't fixed until it has stayed away for days.
+
+The optional Cloudflare Tunnel service first required its token with
+`${CLOUDFLARE_TUNNEL_TOKEN:?...}`. Docker Compose checks that even for a
+service whose profile is off, so `docker compose up` failed for the plain
+LAN setup without a tunnel.
+*Lesson:* run `docker compose config` both with and without an optional
+profile before calling a compose change done.
+
 ## What worked
 
 - **Diagnostics over WiFi** (`/log`, `/status`, `/coredump`): the stack
