@@ -67,6 +67,11 @@ q.onkeydown=e=>{if(e.key=='Enter')e.preventDefault()}});
 let dirty=false;function S(){dirty=true;document.getElementById('dirty').textContent='Ulagrede endringer'}
 F.addEventListener('input',e=>{if(!e.target.classList.contains('plq'))S()});F.addEventListener('change',e=>{if(!e.target.classList.contains('plq')&&e.target.type!='file')S()});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
+/* Times: phones' number pads often have no ':', so 2230, 930, 22.30 and
+22,30 are taken as well and shown as 22:30 once the field is left. */
+const TM=['dimstart','dimend','otaat'];
+function hm(v){let m=v.trim().match(/^(\d{1,2})[:.,]?(\d{2})$/);return m&&+m[1]<24&&+m[2]<60?m[1].padStart(2,'0')+':'+m[2]:null}
+TM.forEach(k=>{let x=F.querySelector('[name='+k+']');x.addEventListener('change',()=>{let t=hm(x.value);if(t!==null)x.value=t})});
 /* Checks before saving, shown by the field. */
 function X(el,msg){el.classList.add('bad');let s=document.createElement('span');s.className='err';s.textContent=msg;el.insertAdjacentElement('afterend',s);return el}
 F.addEventListener('submit',e=>{F.querySelectorAll('.err').forEach(x=>x.remove());F.querySelectorAll('.bad').forEach(x=>x.classList.remove('bad'));
@@ -77,7 +82,7 @@ L.forEach(f=>{if(f.parentNode.hidden)return;let a=N(f,'lat'),o=N(f,'lon'),n=N(f,
 if(!n.value.trim()&&!a.value.trim()&&!o.value.trim())return;
 if(!num(a.value)||Math.abs(+a.value.replace(',','.'))>90)bad.push(X(a,'Breddegrad fra -90 til 90.'));
 if(!num(o.value)||Math.abs(+o.value.replace(',','.'))>180)bad.push(X(o,'Lengdegrad fra -180 til 180.'))});
-['dimstart','dimend','otaat'].forEach(k=>{let x=F.querySelector('[name='+k+']');if(!/^([01]?\d|2[0-3])[:.][0-5]\d$/.test(x.value.trim()))bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30.'));else x.value=x.value.trim().replace('.',':')});
+TM.forEach(k=>{let x=F.querySelector('[name='+k+']'),t=hm(x.value);if(t===null)bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30 eller 2230.'));else x.value=t});
 F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;if(v&&!/^(https?|webcal):\/\/\S+$/.test(v))bad.push(X(x,'Adressen må begynne med https://, http:// eller webcal://.'))});
 let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv inn WiFi-nettet.'));
 F.querySelectorAll('[name^=lat],[name^=lon]').forEach(x=>x.value=x.value.replace(',','.'));

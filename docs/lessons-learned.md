@@ -133,6 +133,16 @@ broken escape. Found while writing the host tests; fixed by decoding first
 and cutting at a whole UTF-8 character.
 *Lesson:* pure code with small tests catches bugs a device test won't.
 
+### Times couldn't be typed on a phone
+
+The setup page's time fields (night mode, update check) asked for "TT:MM"
+with `inputmode=numeric`, which on phones gives a number pad without ':'.
+Tested only in a desktop browser, so nobody noticed until the user tried on
+a phone. 1.6.1 also takes 2230, 930, 22.30 and 22,30 (on the page and in
+the device's parser) and shows them as 22:30.
+*Lesson:* check a field's keyboard (`inputmode`) against what it must
+accept, and try the setup page on a phone.
+
 ### A PSRAM stack and the flash cache
 
 In the October 2026 memory review the weather task's stack was moved to

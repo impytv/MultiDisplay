@@ -692,14 +692,27 @@ static esp_err_t h_ota(httpd_req_t *req)
 
 /* "HH:MM" (as an <input type=time> sends it) to minutes after midnight, or
  * -1 if it isn't a valid time. */
+/* "22:30", "22.30", "22,30", "2230" or "930" (phones' number pads often
+ * have no ':') as minutes after midnight; -1 if it isn't a time. */
 static int parse_hhmm(const char *s)
 {
-    int h, m;
-    char extra;
-    if (sscanf(s, "%d:%d%c", &h, &m, &extra) != 2 || h < 0 || h > 23 || m < 0 || m > 59) {
+    int d[4], nd = 0, sep_at = -1;
+    for (; *s != '\0'; s++) {
+        if (*s >= '0' && *s <= '9' && nd < 4) {
+            d[nd++] = *s - '0';
+        } else if ((*s == ':' || *s == '.' || *s == ',') && sep_at < 0 && nd >= 1 && nd <= 2) {
+            sep_at = nd;
+        } else {
+            return -1;
+        }
+    }
+    const int hd = (sep_at >= 0) ? sep_at : nd - 2; /* hour digits; the minutes are the last two */
+    if (nd - hd != 2 || hd < 1 || hd > 2) {
         return -1;
     }
-    return h * 60 + m;
+    const int h = (hd == 2) ? d[0] * 10 + d[1] : d[0];
+    const int m = d[hd] * 10 + d[hd + 1];
+    return (h > 23 || m > 59) ? -1 : h * 60 + m;
 }
 
 static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t *cfg)
