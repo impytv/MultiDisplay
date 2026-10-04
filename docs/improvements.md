@@ -247,6 +247,23 @@ to 52 KB).
   (indoor temperature, door) on the overview.
 - [x] **41. One language.** The screens are Norwegian and the setup page is
   English; pick one for both (or a language setting). *Done: the setup page, its messages, the update statuses and the update site's index page are Norwegian. The serial log stays English.*
+- [ ] **48. Ships from our own receiver.** BarentsWatch leaves out small
+  vessels (fishing boats under 15 m, leisure boats under 45 m). An RTL-SDR
+  dongle and a VHF antenna on the Pi, decoded by
+  [AIS-catcher](https://jvde-github.github.io/AIS-catcher-docs/) (GPLv3,
+  Docker image `ghcr.io/jvde-github/ais-catcher`), would give every ship in
+  range, typically 20–40 km depending on antenna height, with no API key.
+  AIS-catcher can also read network feeds into the same ship table (raw
+  NMEA over TCP, for example Kystverket's open AIS stream, or `wss://`),
+  so places out of the antenna's reach can be covered too. Its web viewer
+  (`-N 8100`) serves every ship at `/api/ships_array.json` along with a
+  live map. A small proxy on the Pi would keep only the ships in each
+  display's circle and answer in BarentsWatch's field names, so
+  `ais_client.c` needs only a plain HTTP GET (no TLS, no token) and a
+  ship source setting. aisstream.io was considered as well: it allows only
+  3 connections per IP and sends nothing on connect, so it too would need
+  the proxy, and AIS-catcher can't read its JSON. Scraping MarineTraffic
+  breaks its terms.
 
 
 ## Third review: memory (October 2026)
