@@ -5,6 +5,11 @@
 # nginx serves the site folder that scripts/publish_firmware.py writes,
 # read-only, on port 8070 - the address the displays already use. The
 # container starts again by itself after a restart of the Pi.
+#
+# Optionally, cloudflared makes the same site reachable from outside the
+# LAN over HTTPS through a Cloudflare Tunnel, without opening a port on the
+# router. It only starts when .env (next to this file, kept out of git)
+# turns it on - see .env.example and the README.
 
 services:
   update-site:
@@ -21,6 +26,25 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.9.3
+    container_name: multidisplay-tunnel
+    profiles:
+      - tunnel
+    restart: unless-stopped
+    # The tunnel's public hostname is set up at Cloudflare and points to
+    # http://update-site:8080 here.
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - update-site
+    read_only: true
     cap_drop:
       - ALL
     security_opt:

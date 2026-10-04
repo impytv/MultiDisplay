@@ -23,3 +23,6 @@ keys/
 
 # Host test binary (test/host)
 test/host/host_tests
+
+# Cloudflare Tunnel token for the update site (server/.env.example)
+server/.env

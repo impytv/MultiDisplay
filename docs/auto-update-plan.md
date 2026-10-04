@@ -283,8 +283,12 @@ so a specific version can be installed through the manual upload.
 
 ## Decided
 
-- **Hosting:** nginx in Docker on the Raspberry Pi, LAN only, plain HTTP on
-  port 8070.
+- **Hosting:** nginx in Docker on the Raspberry Pi, plain HTTP on port 8070
+  on the LAN. Optionally also reachable from outside over HTTPS through a
+  Cloudflare Tunnel (the `tunnel` service in `server/compose.yaml`, turned
+  on by `server/.env`; added October 2026). Nothing is opened on the router.
+  The manifest's image URL is relative, so the same site works at both
+  addresses.
   The display uses the Pi's IP address (192.168.0.119) for now. The URL can
   be changed on the setup page if the address changes.
 - **Automatic install:** off by default.

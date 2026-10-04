@@ -98,6 +98,20 @@ cd server && docker compose up -d
 The container mounts `/srv/multidisplay` read-only and starts again by
 itself after a restart.
 
+To reach the site from outside the LAN as well, over HTTPS through a
+Cloudflare Tunnel (no port opened on the router):
+
+1. In the Cloudflare dashboard, under Zero Trust → Networks → Tunnels,
+   create a tunnel of type Cloudflared and copy its token.
+2. Give the tunnel a public hostname, for example
+   `oppdatering.example.no`, with service `http://update-site:8080`.
+3. `cp server/.env.example server/.env`, put the token in it, and run
+   `docker compose up -d` in `server/` again.
+
+Displays then use `https://oppdatering.example.no/manifest.json` as their
+update address. The firmware doesn't check the server's certificate (see
+`sdkconfig.defaults`); the image signature is what protects an update.
+
 To publish, raise the version in `version.txt`, commit, and run:
 
 ```bash
