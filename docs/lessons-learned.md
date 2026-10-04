@@ -123,7 +123,9 @@ with DTR and RTS off and keep it open, since opening it resets the board.
 The route column was measured with "BGO", and "BOO" didn't fit ("O" is
 wider than "G"). It is now measured with "WWW", the widest any code can be.
 *Lesson:* size columns for the widest possible content, not a typical
-example.
+example. The same happened again on the tide screen: its time column was
+measured with "søn 88:88", and "man 02:43" wrapped ("m" and "0" are
+wider). It now measures the widest weekday with the widest digit.
 
 ### A form bug that tests found
 

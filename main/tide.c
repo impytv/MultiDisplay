@@ -83,9 +83,10 @@ static float level_at(const tide_t *t, int64_t when)
 }
 
 /* "17:06" today, "lør 05:36" on another day. */
+static const char *const WD[] = { "s\xC3\xB8n", "man", "tir", "ons", "tor", "fre", "l\xC3\xB8r" };
+
 static void when_text(char *dst, size_t len, int64_t t, time_t now)
 {
-    static const char *const WD[] = { "s\xC3\xB8n", "man", "tir", "ons", "tor", "fre", "l\xC3\xB8r" };
     const time_t tt = (time_t)t;
     struct tm a, b;
     localtime_r(&tt, &a);
@@ -95,6 +96,31 @@ static void when_text(char *dst, size_t len, int64_t t, time_t now)
     } else {
         snprintf(dst, len, "%s %02d:%02d", WD[a.tm_wday], a.tm_hour, a.tm_min);
     }
+}
+
+/* The widest when_text() can be at the font size set: the widest weekday
+ * with the widest digit in every place ("man 00:00" is wider than
+ * "s\xC3\xB8n 88:88"). */
+static int when_max_w(void)
+{
+    const char *day = WD[0];
+    for (int i = 1; i < 7; i++) {
+        if (draw_text_w(WD[i]) > draw_text_w(day)) {
+            day = WD[i];
+        }
+    }
+    char d[2] = "0", widest = '0';
+    for (char c = '1'; c <= '9'; c++) {
+        d[0] = c;
+        const int w = draw_text_w(d);
+        d[0] = widest;
+        if (w > draw_text_w(d)) {
+            widest = c;
+        }
+    }
+    char txt[16];
+    snprintf(txt, sizeof(txt), "%s %c%c:%c%c", day, widest, widest, widest, widest);
+    return draw_text_w(txt);
 }
 
 static void draw_series(lv_layer_t *layer, const tide_t *t, const float *s, int64_t t0, int64_t t1, float lo,
@@ -150,7 +176,7 @@ static void tide_draw_cb(lv_event_t *e)
     y += lh + 16;
     /* Columns as wide as their widest text at the font size set. */
     const int time_x = TIDE_X + draw_text_w("H\xC3\xB8yvann") + 12;
-    const int time_w = draw_text_w("s\xC3\xB8n 88:88") + 8;
+    const int time_w = when_max_w() + 8;
     int listed = 0;
     for (int i = 0; i < t->extreme_count && listed < TIDE_NEXT; i++) {
         const tide_extreme_t *x = &t->extremes[i];
