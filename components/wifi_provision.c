@@ -427,6 +427,15 @@ static char *build_page(const app_config_t *cfg)
                   "<p id=otast style='margin:.6rem 0 0'><small>Sjekker...</small></p><div id=otanew></div>"
                   "<div class=row><div><button type=button id=otachk class=lt2>Sjekk n&aring;</button></div>"
                   "<div><button type=button id=otains class=lt2 hidden>Installer n&aring;</button></div></div></fieldset>");
+    p += snprintf(p, end - p,
+                  "<fieldset><legend>Skjermbilder</legend>"
+                  "<div class=chk><label><input type=checkbox name=scrctl value=1%s>"
+                  "Tillat &aring; velge skjerm over nettet</label></div>"
+                  "<small>For &aring; ta skjermbilde av en bestemt skjerm: <code>/screen</code> viser "
+                  "skjermene, <code>/screen?vis=3</code> eller <code>/screen?sted=2&amp;type=tidevann</code> "
+                  "bytter til en, og <code>/screen.png</code> er skjermbildet. Et bytte teller som et trykk "
+                  "p&aring; skjermen.</small></fieldset>",
+                  cfg->screen_ctl ? " checked" : "");
     p += snprintf(p, end - p, "%s%s", PAGE_MAINT, PAGE_SCRIPTS);
     if (p >= end - 1) {
         ESP_LOGE(TAG, "Setup page cut short (%u bytes)", (unsigned)cap);
@@ -801,6 +810,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     if (form_field(body, "otaurl", url, sizeof(url))) {
         char val[4];
         cfg->ota_auto = form_field(body, "otaauto", val, sizeof(val)) ? 1 : 0;
+        cfg->screen_ctl = form_field(body, "scrctl", val, sizeof(val)) ? 1 : 0; /* in the same section */
         char hhmm[8];
         int m;
         if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {

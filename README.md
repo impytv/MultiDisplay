@@ -154,6 +154,14 @@ with a throwaway key, so displays won't accept it.
     The crash dump partition comes with the partition table; a board flashed
     before 1.1.0 needs `idf.py -p PORT partition-table-flash` once (it only
     adds a partition at the end).
+  - `/screen.png`: a screenshot of what's on the screen.
+  - `/screen`: the screens a tap cycles through, numbered, and which one is
+    on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
+    one as a tap would (types: `oversikt`, `kalender`, `vaer`, `uke`, `fly`,
+    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`; `sted` counts from 1),
+    so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
+    over nettet** is ticked under **Vedlikehold → Skjermbilder** (off by
+    default; per display, so not in settings backups).
 - **Name:** **Navn på skjermen** at the top of the setup page (default
   `multidisplay`) is the display's address on the home network,
   **`http://<name>.local/`**, and the name the router lists it under. Give

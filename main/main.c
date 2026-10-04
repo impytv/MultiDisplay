@@ -41,6 +41,7 @@
 #include "wifi_provision.h"
 #include "yr_client.h"
 #include "restart.h"
+#include "cJSON.h"
 
 static const char *TAG = "main";
 
@@ -416,6 +417,94 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
     }
 }
 
+/* /screen, when allowed on the setup page (g_cfg->screen_ctl): with no
+ * query, the screens a tap cycles through and which is on show; with
+ * ?vis=N (1-based, as listed) or ?sted=N&type=tidevann, switch to that one
+ * as a tap would, so /screen.png can capture it. */
+static const char *const STOP_NAMES[] = {
+    [STOP_OVERVIEW] = "oversikt", [STOP_WEATHER] = "vaer", [STOP_RADAR] = "fly", [STOP_SHIPS] = "skip",
+    [STOP_RAIN] = "nedbor", [STOP_DEPARTURES] = "avganger", [STOP_AIR] = "luft", [STOP_WEEK] = "uke",
+    [STOP_TIDE] = "tidevann", [STOP_CALENDAR] = "kalender",
+};
+
+static esp_err_t screen_send_list(httpd_req_t *req)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "vises", g_view_index + 1);
+    cJSON *list = cJSON_AddArrayToObject(root, "skjermer");
+    for (int i = 0; i < s_stop_count; i++) {
+        const view_stop_t *st = &s_stops[i];
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "vis", i + 1);
+        cJSON_AddStringToObject(o, "type", STOP_NAMES[st->kind]);
+        if (st->kind != STOP_OVERVIEW && st->kind != STOP_CALENDAR) {
+            cJSON_AddNumberToObject(o, "sted", st->loc + 1);
+            cJSON_AddStringToObject(o, "navn", g_cfg->locations[st->loc].name);
+        }
+        cJSON_AddItemToArray(list, o);
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    return err;
+}
+
+static esp_err_t screen_handler(httpd_req_t *req)
+{
+    if (!g_cfg->screen_ctl) {
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        return httpd_resp_sendstr(req, "Valg av skjerm over nettet er sl\xC3\xA5tt av p\xC3\xA5 oppsettsiden "
+                                       "(Vedlikehold > Skjermbilder).\n");
+    }
+    char q[64], val[16];
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK) {
+        return screen_send_list(req);
+    }
+    int want = -1;
+    if (httpd_query_key_value(q, "vis", val, sizeof(val)) == ESP_OK) {
+        const int n = atoi(val);
+        if (n >= 1 && n <= s_stop_count) {
+            want = n - 1;
+        }
+    } else if (httpd_query_key_value(q, "type", val, sizeof(val)) == ESP_OK) {
+        char loc[8] = "1";
+        httpd_query_key_value(q, "sted", loc, sizeof(loc));
+        const int l = atoi(loc) - 1;
+        for (int i = 0; i < s_stop_count && want < 0; i++) {
+            const view_stop_t *st = &s_stops[i];
+            const bool global = (st->kind == STOP_OVERVIEW || st->kind == STOP_CALENDAR);
+            if (strcmp(STOP_NAMES[st->kind], val) == 0 && (global || st->loc == l)) {
+                want = i;
+            }
+        }
+    }
+    if (want < 0) {
+        httpd_resp_set_status(req, "404 Not Found");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        return httpd_resp_sendstr(req, "Ingen slik skjerm - se /screen for listen.\n");
+    }
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        /* As a tap: hold off the rotation, and light a screen switched off for the night. */
+        s_last_touch_ms = lv_tick_get();
+        s_auto_running = false;
+        if (!s_backlight_on) {
+            s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
+        }
+        if (want != g_view_index) {
+            view_switch(want, false);
+        }
+        esp_lv_adapter_unlock();
+    }
+    return screen_send_list(req);
+}
+
 static void build_ui(lv_obj_t *screen)
 {
     const bool dark = (g_cfg->theme == APP_THEME_DARK);
@@ -639,6 +728,7 @@ static void yr_weather_task(void *arg)
     wifi_provision_before_connect(clock_start);
     wifi_provision_connect(g_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", screenshot_handler);
+    wifi_provision_add_get_handler("/screen", screen_handler);
     diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 

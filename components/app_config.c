@@ -79,6 +79,7 @@ static void sanitize_view_settings(app_config_t *c)
     c->ov_show = c->ov_show ? 1 : 0;
     c->auto_night_pause = c->auto_night_pause ? 1 : 0;
     c->ota_auto = c->ota_auto ? 1 : 0;
+    c->screen_ctl = c->screen_ctl ? 1 : 0;
     if (c->ota_at >= 24 * 60) {
         c->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
     }
@@ -235,6 +236,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "otaevery", &out->ota_every_h);
     load_str(h, "otaurl", out->ota_url, sizeof(out->ota_url)); /* keeps the default if never saved */
     load_str(h, "devname", out->device_name, sizeof(out->device_name));
+    nvs_get_u8(h, "scrctl", &out->screen_ctl); /* off if never saved */
     if (!app_config_email_valid(out->yr_email)) {
         out->yr_email[0] = '\0';
     }
@@ -269,8 +271,8 @@ esp_err_t app_config_load(app_config_t *out)
              out->ov_show ? "shown" : "not shown", out->auto_idle_min, out->auto_dwell_s,
              out->auto_overview ? "included" : "not included",
              out->auto_night_pause ? "paused" : "running");
-    ESP_LOGI(TAG, "firmware updates: %s from '%s'; name '%s'", out->ota_auto ? "automatic" : "manual", out->ota_url,
-             out->device_name);
+    ESP_LOGI(TAG, "firmware updates: %s from '%s'; name '%s'; screen control %s", out->ota_auto ? "automatic" : "manual",
+             out->ota_url, out->device_name, out->screen_ctl ? "on" : "off");
     int feeds = 0;
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         feeds += out->cal_url[i][0] != '\0';
@@ -338,6 +340,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "otaevery", cfg->ota_every_h);
     if (err == ESP_OK) err = nvs_set_str(h, "otaurl", cfg->ota_url);
     if (err == ESP_OK) err = nvs_set_str(h, "devname", cfg->device_name);
+    if (err == ESP_OK) err = nvs_set_u8(h, "scrctl", cfg->screen_ctl ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);

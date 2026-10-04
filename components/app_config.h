@@ -184,6 +184,9 @@ typedef struct {
     /* A valid host name (see app_config_hostname); per display, so not in
      * settings backups. */
     char device_name[APP_CONFIG_DEVNAME_MAX];
+    /* Whether /screen may switch the screen on show, for screenshots of a
+     * given screen (off unless ticked). Per display, so not in backups. */
+    uint8_t screen_ctl;
     /* The calendar screen: shown, in the rotation, and its calendars' iCal
      * addresses ("" = unused; see app_config_cal_url_valid). */
     uint8_t cal_show;
