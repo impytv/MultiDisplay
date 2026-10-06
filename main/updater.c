@@ -322,6 +322,7 @@ static bool run_check(bool install, bool automatic)
             ais_client_close();
             rain_client_close();
             entur_client_close();
+            http_met_close();
             drew = true;
             xSemaphoreTake(s_lock, portMAX_DELAY);
             s_progress = 0;

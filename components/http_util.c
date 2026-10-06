@@ -167,10 +167,68 @@ static esp_err_t get_body_handler(esp_http_client_event_t *evt)
         }
         return ESP_OK;
     }
-    if (evt->event_id != HTTP_EVENT_ON_DATA) {
+    /* Only a 200's body: an error page over the cap would be logged as too
+     * long instead of by its status. */
+    if (evt->event_id != HTTP_EVENT_ON_DATA || esp_http_client_get_status_code(evt->client) != 200) {
         return ESP_OK;
     }
     return http_buf_append(&ctx->buf, evt->data, evt->data_len, "http_util");
+}
+
+/* The kept-alive connection to api.met.no (see http_met_close). */
+#define MET_PREFIX "https://api.met.no/"
+static esp_http_client_handle_t s_met;
+
+void http_met_close(void)
+{
+    if (s_met != NULL) {
+        esp_http_client_cleanup(s_met);
+        s_met = NULL;
+    }
+}
+
+/* One GET of `url` into ctx: over the kept connection for api.met.no,
+ * otherwise a fresh one. ESP_OK and the status in *status, or the
+ * transport error. */
+static esp_err_t get_once(const char *url, const char *user_agent, int timeout_ms, const char *if_modified_since,
+                          get_ctx_t *ctx, int *status)
+{
+    const bool met = strncmp(url, MET_PREFIX, strlen(MET_PREFIX)) == 0;
+    esp_http_client_handle_t client = met ? s_met : NULL;
+    if (client == NULL) {
+        const esp_http_client_config_t config = {
+            .url = url,
+            .event_handler = get_body_handler,
+            .user_data = ctx,
+            .timeout_ms = timeout_ms,
+            .keep_alive_enable = met,
+        };
+        client = esp_http_client_init(&config);
+        if (client == NULL) {
+            return ESP_FAIL;
+        }
+        if (met) {
+            s_met = client;
+        }
+    } else {
+        esp_http_client_set_url(client, url);
+        esp_http_client_set_user_data(client, ctx);
+        esp_http_client_set_timeout_ms(client, timeout_ms);
+    }
+    esp_http_client_set_header(client, "User-Agent", user_agent);
+    if (if_modified_since != NULL && if_modified_since[0] != '\0') {
+        esp_http_client_set_header(client, "If-Modified-Since", if_modified_since);
+    } else {
+        esp_http_client_delete_header(client, "If-Modified-Since");
+    }
+    esp_err_t err = esp_http_client_perform(client);
+    *status = esp_http_client_get_status_code(client);
+    if (!met) {
+        esp_http_client_cleanup(client);
+    } else if (err != ESP_OK) {
+        http_met_close(); /* may be half-dead: start clean next time */
+    }
+    return err;
 }
 
 esp_err_t http_get_body_cached(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
@@ -184,23 +242,18 @@ esp_err_t http_get_body_cached(const char *url, const char *user_agent, int time
     /* The headers of a 304 or a new body replace these. */
     http_cache_t fresh = { 0 };
     get_ctx_t ctx = { .buf = { .max = max }, .cache = cache ? &fresh : NULL };
-    const esp_http_client_config_t config = {
-        .url = url,
-        .event_handler = get_body_handler,
-        .user_data = &ctx,
-        .timeout_ms = timeout_ms,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (client == NULL) {
-        return ESP_FAIL;
+    const char *ims = cache != NULL ? cache->last_modified : NULL;
+    const bool reused = s_met != NULL && strncmp(url, MET_PREFIX, strlen(MET_PREFIX)) == 0;
+    const int64_t started = esp_timer_get_time();
+    int status = 0;
+    esp_err_t err = get_once(url, user_agent, timeout_ms, ims, &ctx, &status);
+    if (err != ESP_OK && http_retry_worthwhile(reused, started)) {
+        /* The server closed the kept connection while it was idle. */
+        http_buf_free(&ctx.buf);
+        ctx = (get_ctx_t){ .buf = { .max = max }, .cache = cache ? &fresh : NULL };
+        fresh = (http_cache_t){ 0 };
+        err = get_once(url, user_agent, timeout_ms, ims, &ctx, &status);
     }
-    esp_http_client_set_header(client, "User-Agent", user_agent);
-    if (cache != NULL && cache->last_modified[0] != '\0') {
-        esp_http_client_set_header(client, "If-Modified-Since", cache->last_modified);
-    }
-    esp_err_t err = esp_http_client_perform(client);
-    const int status = esp_http_client_get_status_code(client);
-    esp_http_client_cleanup(client);
     http_buf_t b = ctx.buf;
 
     if (err == ESP_OK && status == 304 && cache != NULL) {

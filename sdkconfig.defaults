@@ -10,6 +10,11 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
+# -O2 rather than ESP-IDF's default -Og: full redraws 7-12% faster and the
+# forecast parsed in 130 ms instead of 148 (measured on 1.9.1), for 33 KB
+# more flash and 5 KB less internal RAM.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
 # FreeType (via esp_lvgl_adapter) is used to render Norwegian text (ae/oe/aa)
 # correctly - the bundled bitmap Montserrat fonts only cover ASCII plus a
 # small icon-symbol set. LVGL v9's FreeType binding only loads fonts from a
@@ -140,6 +145,11 @@ CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_DEF_REFR_PERIOD=15
 CONFIG_LV_OBJ_STYLE_CACHE=y
+# Decoded images (the weather icons and wind arrows, 9 KB each) kept, in
+# PSRAM: without it every icon was read and decoded again for each 10-line
+# strip it is drawn in.
+CONFIG_LV_CACHE_DEF_SIZE=262144
+CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=32
 # One draw thread instead of two: each needs a 32KB stack once FreeType is
 # enabled, and WiFi's static RX buffers were failing to allocate (ESP_ERR_NO_MEM)
 # with two. Not performance-critical for a mostly-static weather display.

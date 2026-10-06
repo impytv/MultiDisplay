@@ -24,6 +24,9 @@ void diag_start(void);
 void diag_ok(diag_service_t svc);
 void diag_fail(diag_service_t svc, esp_err_t err);
 
+/* Whether any fetch has worked since boot. */
+bool diag_any_ok(void);
+
 typedef enum { DIAG_ONLINE, DIAG_NO_WIFI, DIAG_NO_INTERNET } diag_net_t;
 
 /* Whether the display is online: WiFi down, or WiFi up but every fetch

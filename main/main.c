@@ -40,6 +40,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
 #include "form_util.h"
+#include "http_util.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
 #include "restart.h"
@@ -67,6 +68,11 @@ static const char *TAG = "main";
 /* With the screen switched off at night instead (g_cfg->night_off), a touch
  * lights it for this long. */
 #define NIGHT_WAKE_MS         60000
+
+/* While it is off, the screen on show is polled at most this often (the
+ * aircraft screen would otherwise ask every 5 s all night); lighting it
+ * polls at once. */
+#define DARK_POLL_MS          (5 * 60 * 1000)
 
 /* Warn on screen if the clock still isn't set this long after boot. */
 #define CLOCK_WARN_US         (10 * 60 * 1000000LL)
@@ -127,10 +133,23 @@ static lv_obj_t *s_cal_root;      /* the calendar; only if shown */
 static lv_obj_t *s_sat_root;      /* the satellite image; only if Europe or a close-up is shown */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
-static bool s_backlight_on = true;
+static volatile bool s_backlight_on = true; /* written in the LVGL task, read by the weather task too */
 static lv_obj_t *s_offline_label; /* "Ingen WiFi" / "Ingen internett" in a corner */
 static void night_timer_cb(lv_timer_t *t);
 static void nightly_housekeeping(void);
+
+/* Light the screen (or not), and on lighting have the weather task poll at
+ * once rather than at the end of its slow wait (DARK_POLL_MS). LVGL
+ * context. */
+static void backlight(bool on)
+{
+    if (on != s_backlight_on && waveshare_rgb_lcd_backlight_set(on) == ESP_OK) {
+        s_backlight_on = on;
+        if (on && s_yr_task != NULL) {
+            xTaskNotifyGive(s_yr_task);
+        }
+    }
+}
 
 bool lock_for_view(int for_view)
 {
@@ -361,7 +380,7 @@ static void screen_touch_cb(lv_event_t *e)
 
     /* Switched off for the night: a touch only lights it (see night_timer_cb). */
     if (!s_backlight_on) {
-        s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
+        backlight(true);
         return;
     }
 
@@ -421,6 +440,10 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
     }
     /* Nobody's watching at night: stay put (and fetch for one screen only). */
     if (s_night_dim && g_cfg->auto_night_pause) {
+        return;
+    }
+    /* Switched off: nothing to see, and each switch would fetch. */
+    if (!s_backlight_on) {
         return;
     }
     if (s_auto_running && now - s_auto_switch_ms < (uint32_t)g_cfg->auto_dwell_s * 1000u) {
@@ -485,9 +508,7 @@ static void screen_go(int want)
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         s_last_touch_ms = lv_tick_get();
         s_auto_running = false;
-        if (!s_backlight_on) {
-            s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
-        }
+        backlight(true);
         if (want != g_view_index) {
             view_switch(want, false);
         }
@@ -699,10 +720,7 @@ static void night_apply(void)
     } else {
         lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
     }
-    const bool light = !(s_night_dim && g_cfg->night_off);
-    if (light != s_backlight_on && waveshare_rgb_lcd_backlight_set(light) == ESP_OK) {
-        s_backlight_on = light;
-    }
+    backlight(!(s_night_dim && g_cfg->night_off));
 }
 
 /* Once a second, in the LVGL task: switch the screen off again a while
@@ -711,10 +729,8 @@ static void night_timer_cb(lv_timer_t *t)
 {
     (void)t;
     nightly_housekeeping();
-    if (s_night_dim && g_cfg->night_off && s_backlight_on &&
-        lv_tick_get() - s_last_touch_ms > NIGHT_WAKE_MS &&
-        waveshare_rgb_lcd_backlight_set(false) == ESP_OK) {
-        s_backlight_on = false;
+    if (s_night_dim && g_cfg->night_off && s_backlight_on && lv_tick_get() - s_last_touch_ms > NIGHT_WAKE_MS) {
+        backlight(false);
     }
     const diag_net_t net = diag_net_state();
     if (net != DIAG_ONLINE) {
@@ -767,9 +783,11 @@ static void nightly_housekeeping(void)
     }
 }
 
-/* A full pass, so WiFi, the fetching and the screen all work: keep this
- * firmware. Until then a freshly updated one is on probation, and a restart
- * goes back to the previous (see wifi_provision's h_ota). No-op otherwise. */
+/* Once a full pass has run and some fetch has worked, so WiFi, the fetching
+ * and the screen all do: keep this firmware. Until then a freshly updated
+ * one is on probation, and a restart goes back to the previous (see
+ * wifi_provision's h_ota) - also after a night with no internet, which is
+ * the price of not keeping one that can't fetch at all. No-op otherwise. */
 static void keep_firmware(void)
 {
     static bool done;
@@ -841,6 +859,10 @@ static void yr_weather_task(void *arg)
             if (stop->kind != STOP_DEPARTURES) {
                 entur_client_close();
             }
+            if (stop->kind != STOP_OVERVIEW && stop->kind != STOP_WEATHER && stop->kind != STOP_WEEK &&
+                stop->kind != STOP_AIR) {
+                http_met_close(); /* only these ask api.met.no through http_util */
+            }
 
             if (first) {
                 /* Put the screen's own status back after the WiFi connect's. */
@@ -898,7 +920,14 @@ static void yr_weather_task(void *arg)
             continue;
         }
         wd_weather_beat();
-        keep_firmware();
+        if (diag_any_ok()) {
+            keep_firmware();
+        }
+
+        /* Switched off for the night: nobody sees it, so poll seldom. */
+        if (!s_backlight_on && wait_ms < DARK_POLL_MS) {
+            wait_ms = DARK_POLL_MS;
+        }
 
         /* Firmware updates: a check or install that is due or was asked for
          * on the setup page. The current screen puts its status back after. */

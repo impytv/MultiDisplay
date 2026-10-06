@@ -415,3 +415,92 @@ lives only in the untracked file.
   rotation paused for the night that can be 15 minutes apart. Check them
   from the once-a-second LVGL timer instead (the restart from a task).
   *Done: both run from the once-a-second LVGL timer.*
+
+## Sixth review: a fresh look at failure and speed (October 2026, 1.9.1)
+
+- [x] **61. An unknown flight's route is looked up every 5 s.** For a
+  callsign adsb.lol has no route for, it answers 404 with a 10 KB GitHub
+  Pages error page. That is over the 8 KB cap in `adsb_routes.c`, so the
+  answer counts as a failed request, not as "no route": it isn't cached,
+  the connection is closed, and the lookups for the aircraft after it in
+  the list are skipped. On the aircraft screen, every 5 s poll then opens
+  a new TLS connection for the same callsign and still shows no routes
+  (seen on 1.9.1: six "Response over 8192 bytes" in one poll). Keep only
+  the body of a 200 reply, in `adsb_routes.c` and in `http_util.c`'s
+  `get_body_handler`, where an error page over the cap is logged as "over
+  N bytes" instead of its HTTP status.
+  *Done: both keep a body only from a 200 reply; the routes screen no
+  longer logs "Response over" and the routes service reports OK.*
+- [x] **62. Weather icons are decoded again on every redraw.** LVGL's image
+  cache is off (`CONFIG_LV_CACHE_DEF_SIZE=0`, LVGL's default, never set
+  here), and so is its header cache. Every time an icon is drawn,
+  `esp_lv_decoder` reads its PNG from the font partition and decodes it.
+  With the 10-line draw buffer, a 48 px icon is drawn in five or six
+  strips, each decoding it again. A full redraw of a weather screen
+  decodes around 80 icons and 75 wind arrows; the overview's 20 icons are
+  decoded about 80 times. Give the cache about 256 KB (it is allocated
+  from PSRAM since #42, as an icon is 9 KB decoded) and the header cache
+  32 entries, then compare the redraw time on the device.
+  *Done: 256 KB cache and 32 headers. Full redraws measured on the
+  device (`lv_refr_now` after invalidating the screen, average of five):
+  weather 516 → 180 ms, overview 547 → 160 ms; screens without icons
+  unchanged (aircraft 285 ms, departures 184 ms). PSRAM lowest 1.07 MB
+  after the overview and every weather screen.*
+- [x] **63. The firmware is built for debugging (`-Og`).** No optimization
+  level is set in `sdkconfig.defaults`, so ESP-IDF's default `-Og` is
+  used, for LVGL's software rendering, PNG and JSON decoding and the radar
+  too. Built with `-O2` (`CONFIG_COMPILER_OPTIMIZATION_PERF`): 33 KB more
+  code in flash (the slot is 4 MB, the image 2.6 MB) and 5 KB *less*
+  internal RAM used (DIRAM 154.7 → 149.4 KB). Not measured on the device
+  yet. Check the redraw times and the stack high-water marks in
+  `/status` before adopting it, as `-O2` may use more stack.
+  *Done: adopted. On top of #62: overview 160 → 142 ms, weather 180 →
+  168 ms, aircraft 285 → 266 ms, departures 184 → 169 ms, the forecast's
+  JSON 148 → 130 ms. Lowest free stack after a pass of the screens
+  about as on `-Og`: yr_weather 4336 B (was 4140), lvgl 6288 B (6712),
+  httpd 3024 B.*
+- [x] **64. Every MET request makes a new TLS connection.** Forecasts,
+  alerts, nowcasts, aurora, air quality, tides and satellite images each
+  open a new HTTPS connection (`http_get_body_cached`), with a full
+  handshake each time. Only the rain radar keeps its connection. A
+  weather screen makes two or three requests to api.met.no per poll, and
+  the overview up to ten. One kept-alive client for api.met.no, closed on
+  screens that don't use it (as the others are), would save most of the
+  handshakes.
+  *Done: `http_util` keeps one connection to api.met.no (forecasts,
+  alerts, nowcasts, air quality), retried once on a fresh one if the
+  server closed it, and closed on screens that don't ask MET. On the
+  overview each location's forecast and alerts now take 0.5 s together,
+  while one aurora request on a new connection takes 0.53 s.*
+- [x] **65. An upload and an automatic update can write the same slot.**
+  `POST /ota` (httpd task) and the updater's download (weather task) both
+  write to `esp_ota_get_next_update_partition()`, and `esp_ota_begin` does
+  not refuse a second writer. An upload during the scheduled install
+  interleaves both images. The signature check at the end catches a mixed
+  image, but one writer may already have selected the slot and be
+  restarting while the other erases it. Take one lock (or the updater's
+  `s_busy`) around both.
+  *Done: `ota_writer` lets one writer at a time claim the slot ("En
+  annen oppdatering pågår allerede" for a second), kept after a
+  successful finish until the restart. Two uploads from the web can't
+  overlap anyway (one httpd task); only the updater against an upload
+  could, which can't be shown without a newer release to install.*
+- [x] **66. New firmware is kept even if nothing can be fetched.**
+  `keep_firmware()` marks a new image valid after the first pass of the
+  weather loop, whether or not any fetch in it worked. A release that
+  draws but can't fetch (TLS settings, a broken client) stays installed.
+  Mark it valid on the first successful fetch (diag's first success)
+  instead, without rolling back on failures alone.
+  *Done: kept after the first pass in which any fetch has worked
+  (`diag_any_ok`). Seen: "New firmware works" 5 s after boot, with the
+  departures fetched.*
+- [x] **67. Polling goes on with the screen switched off.** With "screen
+  off at night", the screen on show is still polled all night: the
+  aircraft screen asks adsb.lol every 5 s, and departures every 30 s.
+  While the backlight is off, poll at most every 5 minutes, and right
+  away when a touch lights it.
+  *Done: while the backlight is off the wait is at least 5 minutes, the
+  automatic rotation stands still (it switched screens every 30 s, each
+  fetching, with "Stopp om natta" off), and lighting the screen, by a
+  touch, the web or the end of the night, polls at once. Seen: departures
+  fetched at 21:06 and 21:11 with the screen off, and at once when lit.*

@@ -37,7 +37,8 @@ static http_buf_t s_body = { .max = ROUTE_MAX_BODY };
 
 static esp_err_t on_event(esp_http_client_event_t *evt)
 {
-    if (evt->event_id != HTTP_EVENT_ON_DATA) {
+    /* Only a route's JSON: an unknown callsign's 404 is a 10 KB error page. */
+    if (evt->event_id != HTTP_EVENT_ON_DATA || esp_http_client_get_status_code(evt->client) != 200) {
         return ESP_OK;
     }
     return http_buf_append(&s_body, evt->data, evt->data_len, TAG);

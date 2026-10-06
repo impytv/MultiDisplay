@@ -41,6 +41,9 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
 }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) { return ESP_FAIL; }
 esp_err_t esp_http_client_set_url(esp_http_client_handle_t c, const char *url) { return ESP_FAIL; }
+esp_err_t esp_http_client_set_user_data(esp_http_client_handle_t c, void *data) { return ESP_FAIL; }
+esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t c, int timeout_ms) { return ESP_FAIL; }
+esp_err_t esp_http_client_delete_header(esp_http_client_handle_t c, const char *key) { return ESP_FAIL; }
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int n) { return ESP_FAIL; }
 esp_err_t esp_http_client_perform(esp_http_client_handle_t c) { return ESP_FAIL; }
 int esp_http_client_get_status_code(esp_http_client_handle_t c) { return 0; }

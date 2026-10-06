@@ -1,11 +1,15 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
 #include "spi_flash_mmap.h"
 
 #include "ota_writer.h"
 
 static const char *TAG = "ota_writer";
+
+static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_busy; /* a writer has the slot (see ota_writer.h) */
 
 static const char *fail(ota_writer_t *w, const char *msg)
 {
@@ -17,6 +21,14 @@ static const char *fail(ota_writer_t *w, const char *msg)
 const char *ota_writer_start(ota_writer_t *w, size_t total)
 {
     memset(w, 0, sizeof(*w));
+    portENTER_CRITICAL(&s_mux);
+    w->claimed = !s_busy;
+    s_busy = true;
+    portEXIT_CRITICAL(&s_mux);
+    if (!w->claimed) {
+        ESP_LOGE(TAG, "Firmware update: another one is in progress");
+        return "En annen oppdatering p\xC3\xA5g\xC3\xA5r allerede";
+    }
     w->part = esp_ota_get_next_update_partition(NULL);
     if (w->part == NULL) {
         return fail(w, "Ingen plass til oppdateringen (skriv OTA-partisjonstabellen over USB f\xC3\xB8" "rst)");
@@ -140,5 +152,11 @@ void ota_writer_abort(ota_writer_t *w)
     if (w->active) {
         mbedtls_sha256_free(&w->sha);
         w->active = false;
+    }
+    if (w->claimed) {
+        w->claimed = false;
+        portENTER_CRITICAL(&s_mux);
+        s_busy = false;
+        portEXIT_CRITICAL(&s_mux);
     }
 }

@@ -63,6 +63,12 @@ typedef struct {
 esp_err_t http_get_body_cached(const char *url, const char *user_agent, int timeout_ms, size_t max, char **body,
                                const char *tag, http_cache_t *cache, bool ignore_expires);
 
+/* Requests to api.met.no (forecasts, nowcasts, alerts, air quality) share
+ * one kept-alive connection, so each doesn't pay for a TLS handshake; the
+ * others get a connection of their own. Only from the weather task. This
+ * drops it and its TLS buffers, for screens that don't ask MET. */
+void http_met_close(void);
+
 /* When the clock was set from a response's Date header (see
  * http_get_body_cached): only while it wasn't set yet, so NTP stays in
  * charge once it answers. 0 = never. */

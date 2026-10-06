@@ -252,6 +252,14 @@ void diag_fail(diag_service_t svc, esp_err_t err)
     portEXIT_CRITICAL(&s_svc_mux);
 }
 
+bool diag_any_ok(void)
+{
+    portENTER_CRITICAL(&s_svc_mux);
+    const bool ok = s_any_ok_us != 0;
+    portEXIT_CRITICAL(&s_svc_mux);
+    return ok;
+}
+
 diag_net_t diag_net_state(void)
 {
     if (!wifi_provision_is_up()) {

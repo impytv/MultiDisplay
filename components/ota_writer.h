@@ -13,8 +13,13 @@
  *    docs/auto-update-plan.md).
  *
  * Only once all that passed does the slot become the one booted next. The
- * functions return NULL on success, or a short English message saying what
- * went wrong (the writer is then finished with, and nothing was selected). */
+ * functions return NULL on success, or a short Norwegian message saying
+ * what went wrong (the writer is then finished with, and nothing was
+ * selected).
+ *
+ * One writer at a time: an upload while the updater installs (or the other
+ * way round) would write into the same slot, so a second start is refused.
+ * After a successful finish the slot stays claimed - a restart follows. */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -39,6 +44,7 @@ typedef struct {
     esp_app_desc_t app;      /* valid once ota_writer_app() is non-NULL */
     mbedtls_sha256_context sha;
     bool active;
+    bool claimed;            /* holds the one writer's turn */
 } ota_writer_t;
 
 /* Start an image of `total` bytes (0 = not known yet). */

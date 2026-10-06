@@ -420,7 +420,9 @@ Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**T
 times (local time, default 22:00–07:00) either dims the screen (**Demp
 skjermen**: a dark layer over it, as the backlight can't be dimmed) or
 switches it off (**Slå av skjermen**). When it's off, a touch lights it for a
-minute; that touch only wakes it.
+minute; that touch only wakes it. While it's off, the automatic rotation
+stands still and the screen on show is refreshed at most every 5 minutes;
+lighting it refreshes it at once.
 
 ### Public transport departures
 

@@ -197,6 +197,18 @@ LAN setup without a tunnel.
 *Lesson:* run `docker compose config` both with and without an optional
 profile before calling a compose change done.
 
+### Defaults nobody chose
+
+Up to 1.9.1 every weather icon was decoded again for each 10-line strip it
+was drawn in, and everything was compiled with `-Og`: LVGL's image cache
+size and ESP-IDF's optimization level were never set, so their defaults (0
+and debugging) applied. Setting both made full redraws of the weather
+screens about three times faster.
+*Lesson:* for anything on the drawing or fetching path, read the effective
+value in `sdkconfig`, not only what `sdkconfig.defaults` sets. Measure a
+change with a temporary endpoint that times `lv_refr_now` after
+invalidating the screen, and remove the endpoint afterwards.
+
 ## What worked
 
 - **Diagnostics over WiFi** (`/log`, `/status`, `/coredump`): the stack
