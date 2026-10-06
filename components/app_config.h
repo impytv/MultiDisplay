@@ -193,6 +193,9 @@ typedef struct {
     /* Whether /screen may switch the screen on show, for screenshots of a
      * given screen (off unless ticked). Per display, so not in backups. */
     uint8_t screen_ctl;
+    /* Whether the navigation page is served at / (on unless unticked). Per
+     * display, so not in backups. */
+    uint8_t nav_page;
     /* The calendar screen: shown, in the rotation, and its calendars' iCal
      * addresses ("" = unused; see app_config_cal_url_valid). */
     uint8_t cal_show;

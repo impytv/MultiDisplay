@@ -76,6 +76,9 @@ to 52 KB).
     small icons in the row for its other screens.
   - A "home" screen setting: the screen to return to after the idle time
     when the rotation is off, instead of staying wherever it was left.
+  *From a phone or computer this is solved since October 2026: the
+  navigation page at / has a button per screen (see the README). The
+  display itself still has only the taps.*
 - [x] **9. Rotation at night.** Rotation (and its fetching) continues while the
   screen is dimmed; an option to pause it at night. *Done: "Pause while
   dimmed at night" on the setup page, on by default.*
@@ -348,3 +351,8 @@ with all seven screen types on all five locations and one full rotation
 - [ ] **52. Screenshots hold the display for up to 20 s.** Taps and the
   rotation wait while a slow client downloads. Acceptable for a debugging
   tool; a shorter cap (e.g. 8 s) would bound it.
+- [ ] **53. The setup password is stored in plain text.** It is kept as
+  typed in NVS, readable by anyone with the board and a USB cable. A salted
+  hash (PBKDF2 or similar) would do, as the display only compares it; the
+  login cookie is already derived from it, so it needs a one-time migration
+  of the saved setting.

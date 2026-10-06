@@ -454,14 +454,29 @@ the field fills in as you go. For trains the picker works out the directions
 from the order of the stops and names them by where the trains go. The picker calls Entur from the browser, so it
 needs internet and doesn't work on the device's own setup WiFi.
 
+### The navigation page
+
+**`http://<name>.local/`** (`http://multidisplay.local/` unless renamed) has
+a button for each screen the display has, grouped by location as a tap
+steps through them, with the one on show marked (checked every 5 s, so taps
+on the display show too). A press switches the display as a tap on it would:
+the automatic rotation waits until the display has been left alone for its
+idle time. Touching the display works as before. The setup page is a link
+away, at **`/oppsett`**. **Vis navigasjonssiden** under **Vedlikehold →
+Navigasjonsside** turns it off, and / is then the setup page (per display,
+so not in settings backups).
+
 ### The setup page
 
-The locations come first, each a closed row showing its name and screens;
+At **`/oppsett`** (or / with the navigation page off, and always in the
+setup portal). The locations come first, each a closed row showing its name and screens;
 open one to change it. Only the fields its ticked screens need are shown,
 **+ Legg til sted** adds one and **Fjern stedet** removes it. The rest is
 in closed sections: **Visning** (theme, night, text size), **Automatisk
 bytte**, **Tilgang og passord** (WiFi, setup password, BarentsWatch, yr
-contact) and **Vedlikehold** (updates, firmware upload, backup, status).
+contact) and **Vedlikehold** (the display's name, the navigation page,
+updates, firmware upload, backup, status). The overview, calendar and
+satellite image have closed sections of their own under **Andre skjermer**.
 Changes are marked "Ulagrede endringer" until saved, and mistakes are shown
 by the field before anything is saved. Times are 24-hour (TT:MM). The page
 follows the browser's light or dark mode.
@@ -485,15 +500,21 @@ network, and restarts normally once it's back:
    **Sted** blocks (name + latitude/longitude). Leave a block empty to
    skip it. Press **Lagre og start på nytt** — the device reboots and connects.
 
-Once connected, the same page is reachable at `http://<name>.local/`
-(`http://multidisplay.local/` unless renamed) or the device's IP on your LAN
+Once connected, the same page is reachable at `http://<name>.local/oppsett`
+(`http://multidisplay.local/oppsett` unless renamed) or the device's IP on your LAN
 (in the router's client list, or the serial log: `Got IP: …`) for later
 edits.
 
 The page can have a password (**Passord for oppsettsiden**; none by default).
-The browser then asks for it, with any user name; it covers the page, the
-screenshot and firmware updates (`curl -u x:PASSWORD …`). It travels
-unencrypted, so don't reuse an important one. Holding BOOT while powering on
+It covers both pages, the screenshot, the diagnostics and firmware updates.
+In a browser, the pages ask for it once: the browser is then kept logged in
+by a cookie for a year, or until the password changes or **Logg ut** on the
+navigation page is pressed. The cookie holds an HMAC-SHA256 of the password
+under a random key kept on the display, not the password, and scripts in
+pages can't read it (HttpOnly) or send it from other sites (SameSite).
+curl and scripts give it as HTTP Basic, with any user name
+(`curl -u x:PASSWORD …`). It travels unencrypted, so don't reuse an
+important one. Holding BOOT while powering on
 opens the setup network without it. Saved passwords and secrets are never
 shown in the page: leave a field blank to keep what's saved.
 

@@ -35,3 +35,9 @@ input.bad{border-color:var(--err)}
 .bar{position:sticky;bottom:0;display:flex;align-items:center;gap:.8rem;margin-top:1.2rem;padding:.7rem 0 1rem;background:var(--bg);border-top:1px solid var(--line)}
 .bar button{margin:0;width:auto;flex:none;padding:.7rem 1.1rem}
 #dirty{flex:1;color:var(--warn);font-size:.9rem}
+/* The navigation page (nav_page.js). */
+.navg{display:grid;grid-template-columns:repeat(auto-fill,minmax(7rem,1fr));gap:.5rem}
+.navg button{margin:0;background:var(--accs);color:var(--acc)}
+.navg button.on{background:var(--btn);color:#fff;font-weight:600}
+.navf{display:flex;gap:1.2rem;align-items:center;margin-top:2rem}.navf form{margin:0}
+.navf button{margin:0;width:auto;padding:0;background:none;color:var(--acc);text-decoration:underline}

@@ -39,6 +39,7 @@
 #include "clock.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
+#include "form_util.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
 #include "restart.h"
@@ -476,6 +477,23 @@ static esp_err_t screen_send_list(httpd_req_t *req)
     return err;
 }
 
+/* Switch to stop `want` from the web, as a tap: hold off the rotation, and
+ * light a screen switched off for the night. */
+static void screen_go(int want)
+{
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        s_last_touch_ms = lv_tick_get();
+        s_auto_running = false;
+        if (!s_backlight_on) {
+            s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
+        }
+        if (want != g_view_index) {
+            view_switch(want, false);
+        }
+        esp_lv_adapter_unlock();
+    }
+}
+
 static esp_err_t screen_handler(httpd_req_t *req)
 {
     if (!g_cfg->screen_ctl) {
@@ -511,18 +529,45 @@ static esp_err_t screen_handler(httpd_req_t *req)
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         return httpd_resp_sendstr(req, "Ingen slik skjerm - se /screen for listen.\n");
     }
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        /* As a tap: hold off the rotation, and light a screen switched off for the night. */
-        s_last_touch_ms = lv_tick_get();
-        s_auto_running = false;
-        if (!s_backlight_on) {
-            s_backlight_on = (waveshare_rgb_lcd_backlight_set(true) == ESP_OK);
-        }
-        if (want != g_view_index) {
-            view_switch(want, false);
-        }
-        esp_lv_adapter_unlock();
+    screen_go(want);
+    return screen_send_list(req);
+}
+
+/* The navigation page's (wifi_provision.c, nav_page.js): GET /nav.json is
+ * /screen's list, POST /nav with vis=N switches as /screen?vis=N does. On
+ * unless unticked on the setup page (g_cfg->nav_page). */
+static bool nav_allowed(httpd_req_t *req)
+{
+    if (g_cfg->nav_page) {
+        return true;
     }
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Navigasjonssiden er sl\xC3\xA5tt av p\xC3\xA5 oppsettsiden.\n");
+    return false;
+}
+
+static esp_err_t nav_list_handler(httpd_req_t *req)
+{
+    return nav_allowed(req) ? screen_send_list(req) : ESP_OK;
+}
+
+static esp_err_t nav_go_handler(httpd_req_t *req)
+{
+    if (!nav_allowed(req)) {
+        return ESP_OK;
+    }
+    char body[32] = "", val[8];
+    if (req->content_len > 0 && req->content_len < sizeof(body)) {
+        const int r = httpd_req_recv(req, body, req->content_len);
+        body[r > 0 ? r : 0] = '\0';
+    }
+    const int n = form_field(body, "vis", val, sizeof(val)) ? atoi(val) : 0;
+    if (n < 1 || n > s_stop_count) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "Ingen slik skjerm.");
+    }
+    screen_go(n - 1);
     return screen_send_list(req);
 }
 
@@ -753,6 +798,8 @@ static void yr_weather_task(void *arg)
     wifi_provision_connect(g_cfg, provision_status_cb);
     wifi_provision_add_get_handler("/screen.png", screenshot_handler);
     wifi_provision_add_get_handler("/screen", screen_handler);
+    wifi_provision_add_get_handler("/nav.json", nav_list_handler);
+    wifi_provision_add_post_handler("/nav", nav_go_handler);
     diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 

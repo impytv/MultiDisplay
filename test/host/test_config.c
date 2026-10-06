@@ -16,6 +16,7 @@ void test_config(void)
     CHECK_INT(a.ota_at, 3 * 60 + 30);
     CHECK_INT(a.ota_every_h, 24);
     CHECK_INT(a.screen_ctl, 0); /* off unless ticked */
+    CHECK_INT(a.nav_page, 1);   /* on unless unticked */
 
     /* Save and load again: everything comes back. */
     snprintf(a.wifi_ssid, sizeof(a.wifi_ssid), "home");
@@ -37,6 +38,7 @@ void test_config(void)
     a.ota_at = 13 * 60 + 5;
     a.ota_every_h = 6;
     a.screen_ctl = 1;
+    a.nav_page = 0;
     a.show[0] = APP_SHOW_WEATHER | APP_SHOW_TIDE;
     a.cal_show = 1;
     a.ov_show = 0;
@@ -66,6 +68,7 @@ void test_config(void)
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "me@example.com:client");
     snprintf(c.ais_client_secret, sizeof(c.ais_client_secret), "kept");
     c.location_count = 1;
+    c.nav_page = 1;
     char err[96];
     CHECK(app_config_from_json(json, &c, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "other");
@@ -95,6 +98,7 @@ void test_config(void)
     CHECK_INT(c.ota_at, 13 * 60 + 5);
     CHECK_INT(c.ota_every_h, 6);
     CHECK_INT(c.screen_ctl, 0);                     /* this display's own setting stays */
+    CHECK_INT(c.nav_page, 1);                       /* off in the backup's, on here */
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");

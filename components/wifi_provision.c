@@ -21,6 +21,9 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/md.h"
+#include "esp_random.h"
+#include "nvs.h"
 #include "ota_writer.h"
 #include "form_util.h"
 #include "cJSON.h"
@@ -58,6 +61,9 @@ static char s_web_pass[APP_CONFIG_PASS_MAX];
 static char s_hostname[APP_CONFIG_DEVNAME_MAX] = APP_CONFIG_DEVNAME_DEFAULT; /* <name>.local */
 static esp_netif_t *s_sta_netif;
 static bool s_auth_bypass;
+/* The navigation page is at / (else the setup page is): on the home
+ * network when ticked, never in the setup portal. */
+static bool s_nav;
 
 static void status(const char *msg)
 {
@@ -276,7 +282,8 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->device_name);
     p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, "</h1><form method=post action=/save id=cf novalidate>");
+    p += snprintf(p, end - p, "</h1>%s<form method=post action=/save id=cf novalidate>",
+                  s_nav ? "<p><a href=/>&larr; Navigasjon</a></p>" : "");
 
     /* Locations. */
     p += snprintf(p, end - p, "%s", PAGE_LOC_INTRO);
@@ -455,6 +462,14 @@ static char *build_page(const app_config_t *cfg)
                   "<div class=row><div><button type=button id=otachk class=lt2>Sjekk n&aring;</button></div>"
                   "<div><button type=button id=otains class=lt2 hidden>Installer n&aring;</button></div></div></fieldset>");
     p += snprintf(p, end - p,
+                  "<fieldset><legend>Navigasjonsside</legend>"
+                  "<div class=chk><label><input type=checkbox name=navpage value=1%s>"
+                  "Vis navigasjonssiden</label></div>"
+                  "<small>P&aring; <b>http://%s.local/</b>: knapper for alle skjermene, som bytter skjerm som et "
+                  "trykk p&aring; den. Uten den er denne oppsettsiden der. Oppsettsiden er alltid p&aring; "
+                  "<b>/oppsett</b>.</small></fieldset>",
+                  cfg->nav_page ? " checked" : "", cfg->device_name);
+    p += snprintf(p, end - p,
                   "<fieldset><legend>Skjermbilder</legend>"
                   "<div class=chk><label><input type=checkbox name=scrctl value=1%s>"
                   "Tillat &aring; velge skjerm over nettet</label></div>"
@@ -489,34 +504,156 @@ static bool secret_equal(const char *a, const char *b)
     return diff == 0;
 }
 
-/* Every page and request checks this first: HTTP Basic authentication with
- * the setup password and any user name, unless none is set. When refused,
- * the 401 that makes the browser ask has been sent. */
-static bool authorized(httpd_req_t *req)
+/* Logging in: a browser that has given the password once gets a cookie
+ * holding an HMAC-SHA256 of the password under a random key kept on the
+ * display (made at the first login). It reveals nothing of the password,
+ * can't be made without the display's key, and stops working when the
+ * password changes. HttpOnly keeps it from scripts and SameSite=Strict from
+ * other sites' requests. HTTP Basic still works, for curl and scripts. */
+#define AUTH_COOKIE       "md_auth"
+#define AUTH_COOKIE_AGE_S (365 * 24 * 3600)
+#define AUTH_NVS_NS       "webauth"
+
+static char s_auth_token[65]; /* hex; "" until worked out */
+
+/* The token for the current password, made (with the key, if `create` and
+ * there is none yet) on first use; NULL if there is none. */
+static const char *auth_token(bool create)
+{
+    if (s_auth_token[0] != '\0' || s_web_pass[0] == '\0') {
+        return s_auth_token[0] ? s_auth_token : NULL;
+    }
+    uint8_t key[32];
+    size_t len = sizeof(key);
+    nvs_handle_t h;
+    if (nvs_open(AUTH_NVS_NS, create ? NVS_READWRITE : NVS_READONLY, &h) != ESP_OK) {
+        return NULL;
+    }
+    esp_err_t err = nvs_get_blob(h, "key", key, &len);
+    if ((err != ESP_OK || len != sizeof(key)) && create) {
+        esp_fill_random(key, sizeof(key)); /* WiFi is on: true random */
+        err = nvs_set_blob(h, "key", key, sizeof(key));
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        len = sizeof(key);
+    }
+    nvs_close(h);
+    uint8_t mac[32];
+    if (err != ESP_OK || len != sizeof(key) ||
+        mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, sizeof(key),
+                        (const unsigned char *)s_web_pass, strlen(s_web_pass), mac) != 0) {
+        return NULL;
+    }
+    for (int i = 0; i < (int)sizeof(mac); i++) {
+        snprintf(s_auth_token + 2 * i, 3, "%02x", mac[i]);
+    }
+    return s_auth_token;
+}
+
+typedef enum { AUTH_OK, AUTH_NONE, AUTH_WRONG } auth_t;
+
+/* Whether `req` may in: no password, BOOT held at power-on, the login
+ * cookie, or HTTP Basic with the password and any user name. */
+static auth_t auth_check(httpd_req_t *req)
 {
     if (s_web_pass[0] == '\0' || s_auth_bypass) {
-        return true;
+        return AUTH_OK;
+    }
+    char val[80];
+    size_t n = sizeof(val);
+    const char *token = auth_token(false);
+    if (token != NULL && httpd_req_get_cookie_val(req, AUTH_COOKIE, val, &n) == ESP_OK && secret_equal(val, token)) {
+        return AUTH_OK;
     }
     char hdr[192];
-    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) == ESP_OK) {
-        unsigned char dec[144];
-        size_t n = 0;
-        if (strncasecmp(hdr, "Basic ", 6) == 0 &&
-            mbedtls_base64_decode(dec, sizeof(dec) - 1, &n, (const unsigned char *)hdr + 6, strlen(hdr + 6)) == 0) {
-            dec[n] = '\0';
-            const char *colon = strchr((const char *)dec, ':');
-            if (colon != NULL && secret_equal(colon + 1, s_web_pass)) {
-                return true;
-            }
+    if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK) {
+        return AUTH_NONE;
+    }
+    unsigned char dec[144];
+    size_t len = 0;
+    if (strncasecmp(hdr, "Basic ", 6) == 0 &&
+        mbedtls_base64_decode(dec, sizeof(dec) - 1, &len, (const unsigned char *)hdr + 6, strlen(hdr + 6)) == 0) {
+        dec[len] = '\0';
+        const char *colon = strchr((const char *)dec, ':');
+        if (colon != NULL && secret_equal(colon + 1, s_web_pass)) {
+            return AUTH_OK;
         }
-        ESP_LOGW(TAG, "Wrong setup page password");
-        vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
+    }
+    ESP_LOGW(TAG, "Wrong setup page password");
+    vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
+    return AUTH_WRONG;
+}
+
+/* Every request but the pages checks this first. When refused, the 401
+ * that makes the browser ask has been sent. */
+static bool authorized(httpd_req_t *req)
+{
+    if (auth_check(req) == AUTH_OK) {
+        return true;
     }
     httpd_resp_set_status(req, "401 Unauthorized");
     httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"MultiDisplay\", charset=\"UTF-8\"");
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, "<meta charset=utf-8><p>Denne oppsettsiden har passord. Glemt det? Hold BOOT "
                             "inne mens skjermen sl&aring;s p&aring;, s&aring; &aring;pner oppsettnettet uten passord.");
+    return false;
+}
+
+/* The display's name as a title: the host name (a-z, 0-9, '-') with a
+ * capital first letter, "Multidisplay" or "Kjokken". */
+static const char *display_title(void)
+{
+    static char title[APP_CONFIG_DEVNAME_MAX];
+    snprintf(title, sizeof(title), "%s", s_hostname);
+    if (title[0] >= 'a' && title[0] <= 'z') {
+        title[0] = (char)(title[0] - 'a' + 'A');
+    }
+    return title;
+}
+
+/* Where to go after logging in: one of the pages, nothing else. */
+static const char *login_next(const char *uri)
+{
+    return strncmp(uri, "/oppsett", 8) == 0 ? "/oppsett" : "/";
+}
+
+/* The login form, for a page asked for without the password. */
+static esp_err_t send_login(httpd_req_t *req, const char *next, bool wrong)
+{
+    char *buf = malloc(2048);
+    if (buf == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    char *p = buf, *end = buf + 2048;
+    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = html_escape_append(p, end, display_title());
+    p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay: ");
+    p = html_escape_append(p, end, display_title());
+    snprintf(p, end - p,
+             "</h1><form method=post action=/login><label for=pw>Passord</label>"
+             "<input id=pw type=password name=pass autofocus autocomplete=current-password>%s"
+             "<input type=hidden name=next value=\"%s\"><button type=submit>Logg inn</button></form>"
+             "<p><small>Passordet huskes i denne nettleseren til det endres. Glemt det? Hold BOOT inne "
+             "mens skjermen sl&aring;s p&aring;, s&aring; &aring;pner oppsettnettet uten passord.</small></p>",
+             wrong ? "<span class=err>Feil passord.</span>" : "", next);
+    httpd_resp_set_status(req, "401 Unauthorized");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_sendstr(req, buf);
+    free(buf);
+    return err;
+}
+
+/* For the pages: as authorized, but a browser without the password gets
+ * the login form rather than the browser's own prompt. */
+static bool page_authorized(httpd_req_t *req)
+{
+    const auth_t a = auth_check(req);
+    if (a == AUTH_OK) {
+        return true;
+    }
+    send_login(req, login_next(req->uri), a == AUTH_WRONG);
     return false;
 }
 
@@ -546,11 +683,8 @@ static bool same_origin(httpd_req_t *req)
     return false;
 }
 
-static esp_err_t h_root(httpd_req_t *req)
+static esp_err_t send_setup_page(httpd_req_t *req)
 {
-    if (!authorized(req)) {
-        return ESP_OK;
-    }
     app_config_t *cfg = malloc(sizeof(*cfg));
     if (cfg == NULL) {
         return httpd_resp_send_500(req);
@@ -565,6 +699,118 @@ static esp_err_t h_root(httpd_req_t *req)
     esp_err_t err = httpd_resp_sendstr(req, page);
     free(page);
     return err;
+}
+
+/* The navigation page: buttons for the screens on the display, filled in
+ * by /nav.js from /nav.json (main.c). */
+static esp_err_t send_nav_page(httpd_req_t *req)
+{
+    char *buf = malloc(2048);
+    if (buf == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    char *p = buf, *end = buf + 2048;
+    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = html_escape_append(p, end, display_title());
+    p += snprintf(p, end - p, " - MultiDisplay</title><h1>");
+    p = html_escape_append(p, end, display_title());
+    snprintf(p, end - p,
+             "</h1><div id=nav><small>Henter skjermene...</small></div>"
+             "<p class=navf><a href=/oppsett>Oppsett</a>%s</p><script src=/nav.js></script>",
+             s_web_pass[0] && !s_auth_bypass
+                 ? "<form method=post action=/logout><button type=submit>Logg ut</button></form>"
+                 : "");
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_sendstr(req, buf);
+    free(buf);
+    return err;
+}
+
+/* /: the navigation page, or the setup page in the portal or when the
+ * navigation page is off. */
+static esp_err_t h_root(httpd_req_t *req)
+{
+    if (!page_authorized(req)) {
+        return ESP_OK;
+    }
+    return s_nav ? send_nav_page(req) : send_setup_page(req);
+}
+
+static esp_err_t h_setup(httpd_req_t *req)
+{
+    if (!page_authorized(req)) {
+        return ESP_OK;
+    }
+    return send_setup_page(req);
+}
+
+/* A request's small form body into `buf`; false if it doesn't fit. */
+static bool read_small_body(httpd_req_t *req, char *buf, size_t size)
+{
+    if (req->content_len >= size) {
+        return false;
+    }
+    size_t total = 0;
+    while (total < req->content_len) {
+        const int r = httpd_req_recv(req, buf + total, req->content_len - total);
+        if (r <= 0) {
+            return false;
+        }
+        total += (size_t)r;
+    }
+    buf[total] = '\0';
+    return true;
+}
+
+static esp_err_t see_other(httpd_req_t *req, const char *where)
+{
+    httpd_resp_set_status(req, "303 See Other");
+    httpd_resp_set_hdr(req, "Location", where);
+    return httpd_resp_send(req, NULL, 0);
+}
+
+/* POST /login from the login form: the password once, then the cookie. */
+static esp_err_t h_login(httpd_req_t *req)
+{
+    if (!same_origin(req)) {
+        return ESP_OK;
+    }
+    char body[256], pass[APP_CONFIG_PASS_MAX], next[16] = "/";
+    if (!read_small_body(req, body, sizeof(body))) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "For stor foresp\xC3\xB8rsel.");
+    }
+    form_field(body, "next", next, sizeof(next));
+    next[sizeof(next) - 1] = '\0';
+    const char *to = login_next(next);
+    if (s_web_pass[0] == '\0' || s_auth_bypass) {
+        return see_other(req, to);
+    }
+    if (!form_field(body, "pass", pass, sizeof(pass)) || !secret_equal(pass, s_web_pass)) {
+        ESP_LOGW(TAG, "Wrong password on the login page");
+        vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
+        return send_login(req, to, true);
+    }
+    const char *token = auth_token(true);
+    if (token == NULL) {
+        return httpd_resp_send_500(req);
+    }
+    char cookie[160];
+    snprintf(cookie, sizeof(cookie), AUTH_COOKIE "=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict", token,
+             AUTH_COOKIE_AGE_S);
+    httpd_resp_set_hdr(req, "Set-Cookie", cookie);
+    return see_other(req, to);
+}
+
+/* POST /logout: forget the cookie in this browser. */
+static esp_err_t h_logout(httpd_req_t *req)
+{
+    if (!same_origin(req)) {
+        return ESP_OK;
+    }
+    httpd_resp_set_hdr(req, "Set-Cookie", AUTH_COOKIE "=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");
+    return see_other(req, "/");
 }
 
 static esp_err_t h_scan(httpd_req_t *req)
@@ -844,6 +1090,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         char val[4];
         cfg->ota_auto = form_field(body, "otaauto", val, sizeof(val)) ? 1 : 0;
         cfg->screen_ctl = form_field(body, "scrctl", val, sizeof(val)) ? 1 : 0; /* in the same section */
+        cfg->nav_page = form_field(body, "navpage", val, sizeof(val)) ? 1 : 0;
         char hhmm[8];
         int m;
         if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
@@ -893,7 +1140,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
                     httpd_resp_set_status(req, "400 Bad Request");
                     return httpd_resp_sendstr(req, "<meta charset=utf-8><p>Ugyldig kalenderadresse: den m&aring; "
                                                    "begynne med https://, http:// eller webcal://."
-                                                   "<p><a href=/>Tilbake</a>");
+                                                   "<p><a href=/oppsett>Tilbake</a>");
                 }
                 snprintf(cfg->cal_url[i], sizeof(cfg->cal_url[i]), "%s", cal);
             }
@@ -906,7 +1153,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req,
             "<meta charset=utf-8><p>Ugyldig: et WiFi-nett m&aring; oppgis."
-            "<p><a href=/>Tilbake</a>");
+            "<p><a href=/oppsett>Tilbake</a>");
     }
 
     /* Collect the numbered location blocks (name0/lat0/lon0, ...). A block
@@ -948,7 +1195,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
             return httpd_resp_sendstr(req,
                 "<meta charset=utf-8><p>Ugyldig: hvert sted m&aring; ha en "
                 "breddegrad innenfor &plusmn;90 og en lengdegrad innenfor &plusmn;180."
-                "<p><a href=/>Tilbake</a>");
+                "<p><a href=/oppsett>Tilbake</a>");
         }
         if (name[0] == '\0') {
             snprintf(name, sizeof(name), "Sted %d", n + 1);
@@ -1161,8 +1408,18 @@ static esp_err_t h_dep_js(httpd_req_t *req)
 /* The setup page's look and behaviour (components/setup_page.css/.js). */
 static esp_err_t h_setup_css(httpd_req_t *req)
 {
+    /* Without the password: the login form uses it, and it is no secret. */
     extern const char css_start[] asm("_binary_setup_page_css_start");
-    return send_asset(req, "text/css", css_start);
+    httpd_resp_set_type(req, "text/css");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    return httpd_resp_sendstr(req, css_start);
+}
+
+/* The navigation page's behaviour (components/nav_page.js). */
+static esp_err_t h_nav_js(httpd_req_t *req)
+{
+    extern const char nav_js_start[] asm("_binary_nav_page_js_start");
+    return send_asset(req, "text/javascript", nav_js_start);
 }
 
 static esp_err_t h_setup_js(httpd_req_t *req)
@@ -1172,7 +1429,7 @@ static esp_err_t h_setup_js(httpd_req_t *req)
 }
 
 /* Any other GET (captive-portal probes: /generate_204, /hotspot-detect.html,
- * ...) just gets the setup page. */
+ * ...) just gets the page at /. */
 static esp_err_t h_catchall(httpd_req_t *req)
 {
     return h_root(req);
@@ -1189,7 +1446,7 @@ static void start_web_server(void)
     /* The stack stays in internal RAM (the default task_caps): the update
      * and restore handlers call the OTA functions, which memory-map flash
      * and assert on a PSRAM stack (see main.c, yr_weather). */
-    config.max_uri_handlers = 24;
+    config.max_uri_handlers = 32;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -1210,6 +1467,10 @@ static void start_web_server(void)
                                &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_GET, .handler = h_config_get });
     httpd_register_uri_handler(s_httpd,
                                &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_POST, .handler = h_config_put });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/nav.js", .method = HTTP_GET, .handler = h_nav_js });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/oppsett", .method = HTTP_GET, .handler = h_setup });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/login", .method = HTTP_POST, .handler = h_login });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/logout", .method = HTTP_POST, .handler = h_logout });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/", .method = HTTP_GET, .handler = h_root });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
 }
@@ -1525,6 +1786,7 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
         status(msg);
         if (sta_try_connect(cfg)) {
             status("");
+            s_nav = cfg->nav_page;
             start_web_server(); /* reachable on the station IP for later edits */
             mdns_announce();
             return ESP_OK;

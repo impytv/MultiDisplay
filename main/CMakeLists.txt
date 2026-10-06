@@ -52,6 +52,7 @@ idf_component_register(
         "../components/setup_departures.js"
         "../components/setup_page.css"
         "../components/setup_page.js"
+        "../components/nav_page.js"
     PRIV_REQUIRES
         esp_wifi
         esp_netif
