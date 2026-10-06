@@ -19,6 +19,7 @@
 #include "diag.h"
 #include "sun.h"
 #include "draw.h"
+#include "aurora_client.h"
 #include "met_alerts_client.h"
 #include "watchdog.h"
 #include "weather.h"
@@ -37,6 +38,8 @@ static const char *TAG = "weather";
  * than the forecast - polled on its own, slower, independent cadence so one
  * data source's staleness never forces a refetch of the other. */
 #define ALERT_REFRESH_INTERVAL_MS (10 * 60 * 1000)
+/* Yr's aurora forecast follows NOAA's Kp forecast, a few times a day. */
+#define AURORA_REFRESH_INTERVAL_MS (60 * 60 * 1000)
 /* Take every Nth nowcast step (5 min apart) into the merged series: every
  * 2nd = 10-minute resolution for the near term, still 6x finer than hourly
  * without over-compressing the rest of the chart. */
@@ -183,6 +186,18 @@ static time_t s_fc_when[APP_CONFIG_MAX_LOCATIONS]; /* wall clock of that refresh
 static met_alerts_t *s_alert_cache[APP_CONFIG_MAX_LOCATIONS];
 static bool s_alert_valid[APP_CONFIG_MAX_LOCATIONS];
 static TickType_t s_alert_tk[APP_CONFIG_MAX_LOCATIONS];
+
+/* Per-location aurora forecasts (PSRAM), for the weather screen only: the
+ * hours with a good chance of seeing it are marked on the chart (see
+ * aurora_update). */
+static aurora_t *s_aurora_cache[APP_CONFIG_MAX_LOCATIONS];
+static aurora_t *s_aurora_scratch;
+static EXT_RAM_BSS_ATTR http_cache_t s_aurora_http[APP_CONFIG_MAX_LOCATIONS];
+static bool s_aurora_valid[APP_CONFIG_MAX_LOCATIONS];
+static bool s_aurora_tried[APP_CONFIG_MAX_LOCATIONS]; /* s_aurora_tk is the last try, even a failed one */
+static TickType_t s_aurora_tk[APP_CONFIG_MAX_LOCATIONS];
+#define AURORA_BANDS 3
+static lv_obj_t *s_aurora_band[AURORA_BANDS], *s_aurora_label[AURORA_BANDS];
 
 /* A pair of bar series - one bar in front of a taller, paler one behind it
  * (the precipitation min and max, the wind and its gust) - drawn as one A8
@@ -886,6 +901,81 @@ static lv_obj_t *night_band(int y, int h, bool dark)
     return b;
 }
 
+/* Aurora: the runs of hours in location `loc`'s aurora forecast worth
+ * looking up for (aurora_good: dark, a good chance, the sky at least partly
+ * clear), each a green glow down from the top of the main chart with
+ * "Nordlys" on it. Same x axis as sun_update (adapter lock held). */
+static void aurora_update(const yr_forecast_t *fc, int loc)
+{
+    int band = 0;
+    int label_end = -1000; /* right edge of the last label shown */
+    const int n = fc->point_count;
+    const aurora_t *a = s_aurora_valid[loc] ? s_aurora_cache[loc] : NULL;
+    if (a != NULL && n > 1 && fc->points[0].epoch_utc > PLAUSIBLE_EPOCH_S) {
+        const int64_t t0 = fc->points[0].epoch_utc, t1 = fc->points[n - 1].epoch_utc;
+        for (int i = 0; i < a->count && band < AURORA_BANDS; i++) {
+            if (!aurora_good(&a->hours[i])) {
+                continue;
+            }
+            int64_t start = a->hours[i].start, end = a->hours[i].end;
+            while (i + 1 < a->count && aurora_good(&a->hours[i + 1]) && a->hours[i + 1].start == end) {
+                end = a->hours[++i].end;
+            }
+            start = start < t0 ? t0 : start;
+            end = end > t1 ? t1 : end;
+            if (end <= start) {
+                continue; /* outside the chart */
+            }
+            const int x0 = (int)((start - t0) * (CHART_W - 1) / (t1 - t0));
+            const int x1 = (int)((end - t0) * (CHART_W - 1) / (t1 - t0));
+            if (x1 - x0 < 2) {
+                continue;
+            }
+            lv_obj_set_x(s_aurora_band[band], CHART_X + x0);
+            lv_obj_set_width(s_aurora_band[band], x1 - x0);
+            lv_obj_clear_flag(s_aurora_band[band], LV_OBJ_FLAG_HIDDEN);
+            /* One label for runs close together (the same night). */
+            lv_obj_t *l = s_aurora_label[band];
+            lv_obj_update_layout(l);
+            const int w = lv_obj_get_width(l);
+            int x = CHART_X + (x0 + x1) / 2 - w / 2;
+            x = x < CHART_X + 2 ? CHART_X + 2 : (x > CHART_X + CHART_W - 2 - w ? CHART_X + CHART_W - 2 - w : x);
+            if (x >= label_end + 8) {
+                lv_obj_set_pos(l, x, CHART_Y + 3);
+                lv_obj_clear_flag(l, LV_OBJ_FLAG_HIDDEN);
+                label_end = x + w;
+            } else {
+                lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
+            }
+            band++;
+        }
+    }
+    for (; band < AURORA_BANDS; band++) {
+        lv_obj_add_flag(s_aurora_band[band], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_aurora_label[band], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* The glow of an aurora band: green at the top of the main chart, fading
+ * out a little over half way down (placed by aurora_update). */
+static lv_obj_t *aurora_band(bool dark)
+{
+    lv_obj_t *b = lv_obj_create(s_detail_root);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x2ECC71), 0);
+    lv_obj_set_style_bg_grad_color(b, lv_color_hex(0x2ECC71), 0);
+    lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_VER, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_main_opa(b, dark ? LV_OPA_50 : LV_OPA_40, 0);
+    lv_obj_set_style_bg_grad_opa(b, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_bg_grad_stop(b, 150, 0);
+    lv_obj_set_pos(b, CHART_X, CHART_Y + 1);
+    lv_obj_set_size(b, 1, CHART_H - 2);
+    lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
+    return b;
+}
+
 static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int loc)
 {
     const yr_forecast_point_t *now = &fc->points[0];
@@ -1021,6 +1111,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int
     }
 
     sun_update(fc, loc);
+    aurora_update(fc, loc);
 }
 
 /* Linear-interpolate a per-point float field of the hourly forecast at an
@@ -1345,8 +1436,14 @@ void weather_init(void)
             s_wx_shown[i] = heap_caps_malloc(sizeof(yr_forecast_t), MALLOC_CAP_SPIRAM);
             assert(s_fc_cache[i] != NULL && s_alert_cache[i] != NULL && s_wx_shown[i] != NULL);
         }
+        if (g_cfg->show[i] & APP_SHOW_WEATHER) {
+            s_aurora_cache[i] = heap_caps_malloc(sizeof(aurora_t), MALLOC_CAP_SPIRAM);
+            assert(s_aurora_cache[i] != NULL);
+        }
     }
     s_scratch = heap_caps_malloc(sizeof(*s_scratch), MALLOC_CAP_SPIRAM);
+    s_aurora_scratch = heap_caps_malloc(sizeof(*s_aurora_scratch), MALLOC_CAP_SPIRAM);
+    assert(s_aurora_scratch != NULL);
     s_merged = heap_caps_malloc(sizeof(*s_merged), MALLOC_CAP_SPIRAM);
     s_resampled = heap_caps_malloc(sizeof(*s_resampled), MALLOC_CAP_SPIRAM);
     s_nowcast = heap_caps_malloc(sizeof(*s_nowcast), MALLOC_CAP_SPIRAM);
@@ -1424,6 +1521,9 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     for (int i = 0; i < NIGHT_BANDS; i++) {
         s_night_main[i] = night_band(CHART_Y + 1, CHART_H - 2, dark);
     }
+    for (int i = 0; i < AURORA_BANDS; i++) {
+        s_aurora_band[i] = aurora_band(dark);
+    }
     /* Bars only ever fill the bottom 1/PRECIP_AXIS_COMPRESSION of the area. */
     bars_create(&s_precip_bars, CHART_X, CHART_Y + CHART_H - BARS_INSET - PRECIP_BARS_H, PRECIP_BARS_H,
                 lv_palette_main(LV_PALETTE_BLUE));
@@ -1454,6 +1554,13 @@ lv_obj_t *weather_build(lv_obj_t *screen)
                                          : lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
         lv_label_set_text(s_temp_markers[i], "");
         lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    for (int i = 0; i < AURORA_BANDS; i++) {
+        s_aurora_label[i] = lv_label_create(s_detail_root);
+        lv_obj_set_style_text_color(s_aurora_label[i], dark ? lv_color_hex(0x7DF0A8) : lv_color_hex(0x168A47), 0);
+        lv_label_set_text(s_aurora_label[i], "Nordlys");
+        lv_obj_add_flag(s_aurora_label[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
@@ -1585,7 +1692,10 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
                      (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
         bool alert_stale = !s_alert_valid[i] ||
                            (now_tk - s_alert_tk[i]) >= pdMS_TO_TICKS(ALERT_REFRESH_INTERVAL_MS);
-        if (!stale && !alert_stale) {
+        const bool aurora_stale = s_aurora_cache[i] != NULL &&
+                                  (!s_aurora_tried[i] ||
+                                   (now_tk - s_aurora_tk[i]) >= pdMS_TO_TICKS(AURORA_REFRESH_INTERVAL_MS));
+        if (!stale && !alert_stale && !aurora_stale) {
             continue;
         }
 
@@ -1652,6 +1762,37 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
                 }
             } else {
                 ESP_LOGW(TAG, "Alerts[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
+            }
+        }
+
+        if (aurora_stale) {
+            if (!s_aurora_valid[i]) {
+                memset(&s_aurora_http[i], 0, sizeof(s_aurora_http[i]));
+            }
+            esp_err_t err = aurora_client_fetch(lat, lon, s_aurora_scratch, &s_aurora_http[i]);
+            s_aurora_tried[i] = true;
+            if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
+                diag_ok(DIAG_AURORA);
+            } else {
+                diag_fail(DIAG_AURORA, err);
+            }
+            if (err == HTTP_NOT_MODIFIED) {
+                s_aurora_tk[i] = now_tk;
+            } else if (err == ESP_OK && esp_lv_adapter_lock(-1) == ESP_OK) {
+                *s_aurora_cache[i] = *s_aurora_scratch;
+                s_aurora_valid[i] = true;
+                s_aurora_tk[i] = now_tk;
+                esp_lv_adapter_unlock();
+                int good = 0;
+                for (int h = 0; h < s_aurora_scratch->count; h++) {
+                    good += aurora_good(&s_aurora_scratch->hours[h]);
+                }
+                ESP_LOGI(TAG, "Aurora[%d] %s: %d hours, %d worth looking up", i, g_cfg->locations[i].name,
+                         s_aurora_scratch->count, good);
+            } else {
+                /* Yr's website API may change: try again in an hour. */
+                s_aurora_tk[i] = now_tk;
+                ESP_LOGW(TAG, "Aurora[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
             }
         }
 

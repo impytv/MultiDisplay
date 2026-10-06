@@ -36,6 +36,7 @@ idf_component_register(
         "../components/cal_client.c"
         "../components/sat_util.c"
         "../components/sat_client.c"
+        "../components/aurora_client.c"
         "../components/http_util.c"
         "../components/ota_writer.c"
         "../components/restart.c"
