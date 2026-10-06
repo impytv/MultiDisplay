@@ -182,7 +182,7 @@ static void satellite_draw_cb(lv_event_t *e)
     lv_point_t sz;
     lv_text_get_size(&sz, l.text, l.font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     const int tw = sz.x + 12;
-    lv_area_t ba = { SAT_VIEW_W - tw, EXAMPLE_LCD_V_RES - 20, SAT_VIEW_W - 1, EXAMPLE_LCD_V_RES - 1 };
+    lv_area_t ba = { SAT_VIEW_W - tw, BOARD_LCD_V_RES - 20, SAT_VIEW_W - 1, BOARD_LCD_V_RES - 1 };
     lv_draw_rect(layer, &bg, &ba);
     lv_area_t ta = { ba.x1, ba.y1 + 2, ba.x2 - 6, ba.y2 };
     lv_draw_label(layer, &l, &ta);

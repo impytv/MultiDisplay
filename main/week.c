@@ -35,7 +35,7 @@ static bool dark(void)
 
 static int card_w(void)
 {
-    return (EXAMPLE_LCD_H_RES - 2 * WEEK_X - (WEEK_DAYS - 1) * WEEK_GAP) / WEEK_DAYS;
+    return (BOARD_LCD_H_RES - 2 * WEEK_X - (WEEK_DAYS - 1) * WEEK_GAP) / WEEK_DAYS;
 }
 
 /* Where things go in a card, from the body font's line height. */
@@ -50,7 +50,7 @@ static week_rows_t rows(void)
     r.day = WEEK_TOP + 6;
     r.date = r.day + lh;
     r.icon = r.date + lh + 4;
-    r.wind = EXAMPLE_LCD_V_RES - lh - 12;
+    r.wind = BOARD_LCD_V_RES - lh - 12;
     r.precip = r.wind - lh - 2;
     r.bar_top = r.icon + WEEK_ICON + lh + 8; /* room for the high above the bar */
     r.bar_bot = r.precip - lh - 10;         /* and the low below it */
@@ -104,7 +104,7 @@ static void week_draw_cb(lv_event_t *e)
         struct tm lt;
         localtime_r(&st, &lt);
         const bool is_today = lt.tm_yday == today_lt.tm_yday && lt.tm_year == today_lt.tm_year;
-        draw_rect(layer, x, WEEK_TOP, x + w - 1, EXAMPLE_LCD_V_RES - 6, 8, is_today ? c_today : c_card);
+        draw_rect(layer, x, WEEK_TOP, x + w - 1, BOARD_LCD_V_RES - 6, 8, is_today ? c_today : c_card);
 
         char buf[24];
         draw_text(layer, is_today ? "I dag" : WDAY[lt.tm_wday], x, r.day, w, LV_TEXT_ALIGN_CENTER, c_txt);

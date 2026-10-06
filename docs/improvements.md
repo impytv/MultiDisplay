@@ -504,3 +504,45 @@ lives only in the untracked file.
   fetching, with "Stopp om natta" off), and lighting the screen, by a
   touch, the web or the end of the night, polls at once. Seen: departures
   fetched at 21:06 and 21:11 with the screen off, and at once when lit.*
+
+## Seventh review: the whole codebase again (October 2026, 1.9.2)
+
+What the fifth and sixth reviews looked at was not gone over again; this
+pass read the calendar, satellite, departures, rain, ship and clock code,
+the setup page's builders and handlers, the update server's nginx setup
+and CI (green for 1.9.1 and 1.9.2).
+
+- [x] **68. The setup page could write past its buffer.** `build_page`
+  appends with `p += snprintf(p, end - p, ...)` about 50 times. Once one
+  call is cut short, `p` points past `end`, and the next call's size,
+  `end - p`, is negative and turns into a huge `size_t`: it writes beyond
+  the 36 KB buffer instead of stopping. The page is 28.9 KB with five
+  locations and full departure settings, so this needs a few more
+  sections to happen, and would then corrupt the heap instead of just
+  cutting the page short. Append through a helper that stops at `end`.
+  *Done: every append in the setup page goes through `buf_append`
+  (`form_util.c`, host-tested), which stops at the end; the page is
+  byte-identical to before. Found on the way: the WiFi scan list was
+  HTML-escaped, but the page uses the names as plain values, so a network
+  called "A&B" was offered as "A&amp;B" (and saved wrong if picked), and
+  one with a backslash broke the list. It is built with cJSON now.*
+- [x] **69. A calendar that fails once disappears for 15 minutes.** With
+  more than one calendar, a fetch where one of them fails (a timeout at
+  Google, say) still counts as done: the list is replaced without that
+  calendar's events, "(kalender N mangler)" is shown, and nothing is
+  asked again for 15 minutes. Keep the failed calendar's events from the
+  last list, and retry within a minute. The note also names only the last
+  missing calendar when two fail.
+  *Done: a calendar that fails keeps its events from the last list (for
+  as long as a list is shown at all), is retried once a minute later,
+  and the note names every one: "(kalender 1 og 3 ikke oppdatert)".
+  Tested with a second calendar served from the Pi and then removed:
+  its event stayed with the note, and the retry 62 s later read it.*
+- [x] **70. A too-large settings form is saved cut short.** `h_save` reads
+  at most 12 KB and saves whatever arrived. A checkbox missing from the
+  cut-off part counts as unticked, so a too-long form would silently
+  switch settings off. The form is 1.5 KB today, so this is out of reach,
+  but `PUT /config.json` already refuses a too-large body; do the same.
+  *Done: a form over 12 KB is refused with 413 and nothing is saved
+  (`PUT /config.json` answers 400 to the same). Tested with a 13 KB
+  form: 413, settings unchanged.*

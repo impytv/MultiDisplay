@@ -440,7 +440,7 @@ static esp_err_t fetch_token(const char *client_id, const char *client_secret)
         return ESP_FAIL;
     }
     esp_http_client_set_header(c, "Content-Type", "application/x-www-form-urlencoded");
-    esp_http_client_set_header(c, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+    esp_http_client_set_header(c, "User-Agent", CONFIG_MULTIDISPLAY_USER_AGENT);
     esp_http_client_set_post_field(c, body, (int)(p - body));
     esp_err_t err = esp_http_client_perform(c);
     int status = esp_http_client_get_status_code(c);
@@ -520,7 +520,7 @@ static int post_latest(const char *body, int body_len, bool *reused)
             return -1;
         }
         esp_http_client_set_header(s_client, "Content-Type", "application/json");
-        esp_http_client_set_header(s_client, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+        esp_http_client_set_header(s_client, "User-Agent", CONFIG_MULTIDISPLAY_USER_AGENT);
     }
 
     char *auth = heap_caps_malloc(strlen(s_token) + 8, MALLOC_CAP_SPIRAM);

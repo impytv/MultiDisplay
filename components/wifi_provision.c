@@ -150,19 +150,19 @@ static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, 
     const bool filled = (i < cfg->location_count);
     switch (bit) {
     case APP_SHOW_RADAR:
-        p += snprintf(p, end - p, "<div data-need=ac><label>Radius (km)</label>"
+        p = buf_append(p, end, "<div data-need=ac><label>Radius (km)</label>"
                       "<input name=radarkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>",
                       i, APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX,
                       filled ? cfg->radar_km[i] : APP_CONFIG_RADAR_KM_DEFAULT);
         break;
     case APP_SHOW_RAIN:
-        p += snprintf(p, end - p, "<div data-need=rn><label>Radius (km)</label>"
+        p = buf_append(p, end, "<div data-need=rn><label>Radius (km)</label>"
                       "<input name=rainkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>",
                       i, APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX,
                       filled ? cfg->rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT);
         break;
     case APP_SHOW_SHIPS:
-        p += snprintf(p, end - p,
+        p = buf_append(p, end,
                       "<div data-need=sh><div class=row><div><label>Radius (km)</label>"
                       "<input name=shipkm%d type=number inputmode=numeric min=%d max=%d value=%d></div>"
                       "<div><label>Korteste skip (m)</label>"
@@ -180,12 +180,12 @@ static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, 
                       i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_near_min_len_m[i] : 0);
         break;
     case APP_SHOW_DEPARTURES:
-        p += snprintf(p, end - p, "<div data-need=dp><input name=dep%d type=hidden data-max=%d value=\"",
+        p = buf_append(p, end, "<div data-need=dp><input name=dep%d type=hidden data-max=%d value=\"",
                       i, APP_CONFIG_DEPARTURES_MAX - 1);
         if (filled) {
             p = html_escape_append(p, end, cfg->departures[i]);
         }
-        p += snprintf(p, end - p, "\"></div>");
+        p = buf_append(p, end, "\"></div>");
         break;
     default:
         break;
@@ -198,7 +198,7 @@ static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, 
 static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
 {
     const bool filled = (i < cfg->location_count);
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=loc%s><summary><span class=lt>Sted %d</span>"
                   "<button type=button class=mv data-d=-1 aria-label='Flytt opp'>&#9650;</button>"
                   "<button type=button class=mv data-d=1 aria-label='Flytt ned'>&#9660;</button>"
@@ -210,30 +210,30 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
     if (filled) {
         p = html_escape_append(p, end, cfg->locations[i].name);
     }
-    p += snprintf(p, end - p, "\"><div class=row><div><label>Breddegrad</label>"
+    p = buf_append(p, end, "\"><div class=row><div><label>Breddegrad</label>"
                   "<input name=lat%d inputmode=decimal value=\"", i);
     if (filled) {
         p = html_escape_append(p, end, cfg->locations[i].lat);
     }
-    p += snprintf(p, end - p, "\"></div><div><label>Lengdegrad</label>"
+    p = buf_append(p, end, "\"></div><div><label>Lengdegrad</label>"
                   "<input name=lon%d inputmode=decimal value=\"", i);
     if (filled) {
         p = html_escape_append(p, end, cfg->locations[i].lon);
     }
-    p += snprintf(p, end - p, "\"></div></div><label>Skjermer</label><div class=scr>");
+    p = buf_append(p, end, "\"></div></div><label>Skjermer</label><div class=scr>");
 
     const int show = filled ? cfg->show[i] : APP_SHOW_WEATHER;
     const int auto_show = filled ? cfg->auto_show[i] : 0;
     for (size_t k = 0; k < sizeof(SCREENS) / sizeof(SCREENS[0]); k++) {
-        p += snprintf(p, end - p,
+        p = buf_append(p, end,
                       "<div class=sg><div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s>%s</label>"
                       "<label class=rot><input type=checkbox name=%s%d value=1%s>i automatisk bytte</label></div>",
                       SCREENS[k].vis, i, (show & SCREENS[k].bit) ? " checked" : "", SCREENS[k].label,
                       SCREENS[k].rot, i, (auto_show & SCREENS[k].bit) ? " checked" : "");
         p = build_screen_settings(p, end, cfg, i, SCREENS[k].bit);
-        p += snprintf(p, end - p, "</div>");
+        p = buf_append(p, end, "</div>");
     }
-    p += snprintf(p, end - p, "</div><button type=button class='rm lt2'>Fjern stedet</button>"
+    p = buf_append(p, end, "</div><button type=button class='rm lt2'>Fjern stedet</button>"
                   "</fieldset></details>");
     return p;
 }
@@ -243,7 +243,7 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
 {
     static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=sec><summary>Kalender</summary>"
                   "<div class=chk><label><input type=checkbox name=calshow value=1%s>"
                   "Vis kalenderen</label><label><input type=checkbox name=calrot value=1%s>"
@@ -255,18 +255,18 @@ static char *build_calendar(char *p, char *end, const app_config_t *cfg)
                   cfg->cal_show ? " checked" : "", cfg->cal_rotate ? " checked" : "");
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         const bool set = cfg->cal_url[i][0] != '\0';
-        p += snprintf(p, end - p,
+        p = buf_append(p, end,
                       "<label><span style='display:inline-block;width:.7em;height:.7em;border-radius:50%%;"
                       "background:%s;margin-right:.4em'></span>Kalender %d</label>"
                       "<input name=calurl%d autocomplete=off inputmode=url maxlength=%d placeholder=\"%s\">",
                       COLOUR[i], i + 1, i, APP_CONFIG_CAL_URL_MAX - 1,
                       set ? "Lagret - la st&aring; tomt for &aring; beholde" : "https://...ics");
         if (set) {
-            p += snprintf(p, end - p, "<div class=chk><label><input type=checkbox name=caloff%d value=1>"
+            p = buf_append(p, end, "<div class=chk><label><input type=checkbox name=caloff%d value=1>"
                                       "Fjern kalenderen</label></div>", i);
         }
     }
-    p += snprintf(p, end - p, "</details>");
+    p = buf_append(p, end, "</details>");
     return p;
 }
 
@@ -282,20 +282,20 @@ static char *build_page(const app_config_t *cfg)
     char *p = buf;
     char *end = buf + cap;
 
-    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
+    p = buf_append(p, end, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, "</h1>%s<form method=post action=/save id=cf novalidate>",
+    p = buf_append(p, end, "</h1>%s<form method=post action=/save id=cf novalidate>",
                   s_nav ? "<p><a href=/>&larr; Navigasjon</a></p>" : "");
 
     /* Locations. */
-    p += snprintf(p, end - p, "%s", PAGE_LOC_INTRO);
+    p = buf_append(p, end, "%s", PAGE_LOC_INTRO);
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         p = build_location(p, end, cfg, i);
     }
-    p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>");
-    p += snprintf(p, end - p,
+    p = buf_append(p, end, "<button type=button id=addloc class=lt2>+ Legg til sted</button>");
+    p = buf_append(p, end,
                   "<h2>Andre skjermer</h2>"
                   "<details class=sec><summary>Oversikt</summary>"
                   "<div class=chk><label><input type=checkbox name=ovshow value=1%s>"
@@ -305,7 +305,7 @@ static char *build_page(const app_config_t *cfg)
                   "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small></details>",
                   cfg->ov_show ? " checked" : "", cfg->auto_overview ? " checked" : "");
     p = build_calendar(p, end, cfg);
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
                   "Vis Europa</label><label><input type=checkbox name=satrot value=1%s>"
@@ -325,11 +325,11 @@ static char *build_page(const app_config_t *cfg)
                   cfg->sat_show ? " checked" : "", cfg->sat_rotate ? " checked" : "",
                   cfg->sat_zoom == 3 ? " selected" : "", cfg->sat_zoom == 2 ? " selected" : "",
                   cfg->sat_visible ? " checked" : "");
-    p += snprintf(p, end - p, "<h2>Innstillinger</h2>");
+    p = buf_append(p, end, "<h2>Innstillinger</h2>");
 
     /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
      * input follows the browser's language and may show AM/PM. */
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=sec><summary>Visning</summary>"
                   "<label>Tema</label><select name=theme>"
                   "<option value=0%s>Lyst</option><option value=1%s>M&oslash;rkt</option></select>"
@@ -347,7 +347,7 @@ static char *build_page(const app_config_t *cfg)
                   cfg->dim_enabled ? " checked" : "",
                   cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
                   cfg->night_off ? "" : " selected", cfg->night_off ? " selected" : "");
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>Skrift</legend>"
                   "<div class=row><div><label>Stedsnavn (px)</label>"
                   "<input name=titlepx type=number inputmode=numeric min=%d max=%d value=%u>"
@@ -361,7 +361,7 @@ static char *build_page(const app_config_t *cfg)
                   APP_CONFIG_TEXT_PX_MIN, APP_CONFIG_TEXT_PX_MAX, cfg->text_px, cfg->text_bold ? " checked" : "",
                   APP_CONFIG_TITLE_PX_DEFAULT, APP_CONFIG_TEXT_PX_DEFAULT);
 
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=sec><summary>Automatisk bytte</summary>"
                   "<div class=row><div><label>Etter (min uten trykk)</label>"
                   "<input name=autoidle type=number inputmode=numeric min=0 max=%d value=%u></div>"
@@ -379,16 +379,16 @@ static char *build_page(const app_config_t *cfg)
 
     /* Access and passwords, collapsed - open in the setup portal, where
      * the WiFi is what's being set up. */
-    p += snprintf(p, end - p, "<details class=sec%s><summary>Tilgang og passord</summary>",
+    p = buf_append(p, end, "<details class=sec%s><summary>Tilgang og passord</summary>",
                   s_sta_up ? "" : " open");
-    p += snprintf(p, end - p, "<label>WiFi-nett</label>"
+    p = buf_append(p, end, "<label>WiFi-nett</label>"
                   "<input name=ssid list=nets autocomplete=off value=\"");
     p = html_escape_append(p, end, cfg->wifi_ssid);
-    p += snprintf(p, end - p, "\"><datalist id=nets></datalist>");
+    p = buf_append(p, end, "\"><datalist id=nets></datalist>");
 
     /* Saved secrets are never sent back in the page: a blank field keeps
      * them (see save_form_into). */
-    p += snprintf(p, end - p, "<label>WiFi-passord</label>"
+    p = buf_append(p, end, "<label>WiFi-passord</label>"
                   "<input name=pass type=password autocomplete=new-password placeholder=\"%s\">"
                   "<small>%s</small>",
                   cfg->wifi_pass[0] ? "Lagret" : "",
@@ -396,27 +396,27 @@ static char *build_page(const app_config_t *cfg)
                                       "passord: la st&aring; tomt."
                                     : "La st&aring; tomt for et &aring;pent nett");
 
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<label>Kontakt-e-post for yr</label>"
                   "<input name=yremail type=email autocomplete=email value=\"");
     p = html_escape_append(p, end, cfg->yr_email);
-    p += snprintf(p, end - p, "\"><small>Sendes til api.met.no i User-Agent-headeren, "
+    p = buf_append(p, end, "\"><small>Sendes til api.met.no i User-Agent-headeren, "
                   "slik vilk&aring;rene deres krever. La st&aring; tomt for &aring; bruke den "
                   "innebygde.</small>");
 
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>BarentsWatch (skipstrafikk)</legend>"
                   "<small>API-klient fra barentswatch.no/minside, med tilgang "
                   "til AIS-API-et. Trengs bare for skipstrafikk.</small>"
                   "<label>Klient-ID</label><input name=aisid autocomplete=off value=\"");
     p = html_escape_append(p, end, cfg->ais_client_id);
-    p += snprintf(p, end - p, "\"><label>Klienthemmelighet</label>"
+    p = buf_append(p, end, "\"><label>Klienthemmelighet</label>"
                   "<input name=aissec type=password autocomplete=new-password placeholder=\"%s\">"
                   "%s</fieldset>",
                   cfg->ais_client_secret[0] ? "Lagret" : "",
                   cfg->ais_client_secret[0] ? "<small>La st&aring; tomt for &aring; beholde den lagrede.</small>" : "");
 
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>Passord for oppsettsiden</legend>"
                   "<small>Valgfritt. N&aring;r det er satt, sp&oslash;r denne siden etter det (hvilket som helst "
                   "brukernavn). Det sendes ukryptert over WiFi, s&aring; ikke bruk et viktig passord. Glemt "
@@ -426,25 +426,25 @@ static char *build_page(const app_config_t *cfg)
                   "<input name=webpass type=password autocomplete=new-password placeholder=\"%s\">",
                   cfg->web_pass[0] ? "Lagret - la st&aring; tomt for &aring; beholde" : "Ingen");
     if (cfg->web_pass[0]) {
-        p += snprintf(p, end - p, "<div class=chk><label><input type=checkbox name=webpassoff>"
+        p = buf_append(p, end, "<div class=chk><label><input type=checkbox name=webpassoff>"
                                   "Fjern passordet</label></div>");
     }
-    p += snprintf(p, end - p, "</fieldset></details>");
+    p = buf_append(p, end, "</fieldset></details>");
 
     /* Firmware updates (main/updater.c): the settings are saved with the
      * form; the status line and the buttons talk to /ota/status, /ota/check
      * and /ota/install (see PAGE_SCRIPTS), which only exist once connected. */
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<details class=sec><summary>Vedlikehold</summary>"
                   "<fieldset><legend>Navn p&aring; skjermen</legend>"
                   "<input name=devname autocomplete=off maxlength=%d value=\"",
                   APP_CONFIG_DEVNAME_MAX - 1);
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, "\"><small>Skjermen finnes p&aring; <b>http://");
+    p = buf_append(p, end, "\"><small>Skjermen finnes p&aring; <b>http://");
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, ".local/</b> i nettverket. Gi hver skjerm sitt eget navn; bare a-z, "
+    p = buf_append(p, end, ".local/</b> i nettverket. Gi hver skjerm sitt eget navn; bare a-z, "
                   "0-9 og bindestrek (&aelig;, &oslash;, &aring; blir ae, o, aa).</small></fieldset>");
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>Programvareoppdatering</legend>"
                   "<div class=chk><label><input type=checkbox name=otaauto value=1%s>"
                   "Installer ny programvare automatisk</label></div>"
@@ -459,13 +459,13 @@ static char *build_page(const app_config_t *cfg)
                   cfg->ota_auto ? " checked" : "", cfg->ota_at / 60, cfg->ota_at % 60, APP_CONFIG_OTA_EVERY_H_MIN,
                   APP_CONFIG_OTA_EVERY_H_MAX, cfg->ota_every_h);
     p = html_escape_append(p, end, cfg->ota_url);
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "\"><small>manifest.json p&aring; oppdateringssiden; manifest-test.json der for "
                   "testversjoner. Bare programvare signert med prosjektets n&oslash;kkel godtas.</small>"
                   "<p id=otast style='margin:.6rem 0 0'><small>Sjekker...</small></p><div id=otanew></div>"
                   "<div class=row><div><button type=button id=otachk class=lt2>Sjekk n&aring;</button></div>"
                   "<div><button type=button id=otains class=lt2 hidden>Installer n&aring;</button></div></div></fieldset>");
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>Navigasjonsside</legend>"
                   "<div class=chk><label><input type=checkbox name=navpage value=1%s>"
                   "Vis navigasjonssiden</label></div>"
@@ -473,7 +473,7 @@ static char *build_page(const app_config_t *cfg)
                   "trykk p&aring; den. Uten den er denne oppsettsiden der. Oppsettsiden er alltid p&aring; "
                   "<b>/oppsett</b>.</small></fieldset>",
                   cfg->nav_page ? " checked" : "", cfg->device_name);
-    p += snprintf(p, end - p,
+    p = buf_append(p, end,
                   "<fieldset><legend>Skjermbilder</legend>"
                   "<div class=chk><label><input type=checkbox name=scrctl value=1%s>"
                   "Tillat &aring; velge skjerm over nettet</label></div>"
@@ -482,7 +482,7 @@ static char *build_page(const app_config_t *cfg)
                   "bytter til en, og <code>/screen.png</code> er skjermbildet. Et bytte teller som et trykk "
                   "p&aring; skjermen.</small></fieldset>",
                   cfg->screen_ctl ? " checked" : "");
-    p += snprintf(p, end - p, "%s%s", PAGE_MAINT, PAGE_SCRIPTS);
+    p = buf_append(p, end, "%s%s", PAGE_MAINT, PAGE_SCRIPTS);
     if (p >= end - 1) {
         ESP_LOGE(TAG, "Setup page cut short (%u bytes)", (unsigned)cap);
     }
@@ -651,9 +651,9 @@ static esp_err_t send_login(httpd_req_t *req, const char *next, auth_t why)
         return httpd_resp_send_500(req);
     }
     char *p = buf, *end = buf + 2048;
-    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, display_title());
-    p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay: ");
+    p = buf_append(p, end, " - MultiDisplay</title><h1>MultiDisplay: ");
     p = html_escape_append(p, end, display_title());
     snprintf(p, end - p,
              "</h1><form method=post action=/login><label for=pw>Passord</label>"
@@ -744,9 +744,9 @@ static esp_err_t send_nav_page(httpd_req_t *req)
         return httpd_resp_send_500(req);
     }
     char *p = buf, *end = buf + 2048;
-    p += snprintf(p, end - p, "%s<title>", PAGE_HEAD);
+    p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, display_title());
-    p += snprintf(p, end - p, " - MultiDisplay</title><h1>");
+    p = buf_append(p, end, " - MultiDisplay</title><h1>");
     p = html_escape_append(p, end, display_title());
     snprintf(p, end - p,
              "</h1><div id=nav><small>Henter skjermene...</small></div>"
@@ -866,12 +866,10 @@ static esp_err_t h_scan(httpd_req_t *req)
         return httpd_resp_sendstr(req, "[]");
     }
 
-    char out[1024];
-    char *p = out;
-    char *e = out + sizeof(out);
-    p += snprintf(p, e - p, "[");
-    int emitted = 0;
-    for (int i = 0; i < n && p < e - 64; i++) {
+    /* Built with cJSON: the page uses the names as plain values, so they
+     * must be JSON-escaped (a backslash or quote in a name), not HTML. */
+    cJSON *list = cJSON_CreateArray();
+    for (int i = 0; list != NULL && i < n; i++) {
         if (recs[i].ssid[0] == '\0') {
             continue;
         }
@@ -885,13 +883,17 @@ static esp_err_t h_scan(httpd_req_t *req)
         if (dup) {
             continue;
         }
-        p += snprintf(p, e - p, "%s{\"s\":\"", emitted ? "," : "");
-        p = html_escape_append(p, e, (char *)recs[i].ssid); /* also fine for JSON quoting of "&<> */
-        p += snprintf(p, e - p, "\",\"r\":%d}", recs[i].rssi);
-        emitted++;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "s", (char *)recs[i].ssid);
+        cJSON_AddNumberToObject(o, "r", recs[i].rssi);
+        cJSON_AddItemToArray(list, o);
     }
-    snprintf(p, e - p, "]");
-    return httpd_resp_sendstr(req, out);
+    char *out = list ? cJSON_PrintUnformatted(list) : NULL;
+    cJSON_Delete(list);
+    httpd_resp_set_type(req, "application/json");
+    const esp_err_t err = httpd_resp_sendstr(req, out ? out : "[]");
+    cJSON_free(out);
+    return err;
 }
 
 /* It may mark the running firmware as good first, which writes flash and
@@ -924,12 +926,18 @@ static esp_err_t h_save(httpd_req_t *req)
     if (!authorized(req) || !same_origin(req)) {
         return ESP_OK;
     }
+    /* Never save part of a form: a checkbox in the missing part would count
+     * as unticked. */
+    if (req->content_len >= SAVE_BODY_MAX) {
+        httpd_resp_set_status(req, "413 Content Too Large");
+        return httpd_resp_sendstr(req, "Skjemaet er for stort - ingenting er lagret.");
+    }
     char *body = malloc(SAVE_BODY_MAX);
     if (body == NULL) {
         return httpd_resp_send_500(req);
     }
     int total = 0;
-    while (total < req->content_len && total < SAVE_BODY_MAX - 1) {
+    while (total < req->content_len) {
         int r = httpd_req_recv(req, body + total, SAVE_BODY_MAX - 1 - total);
         if (r <= 0) {
             free(body);
@@ -1301,9 +1309,9 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
 
     if (n == 0) {
         /* Nothing entered - fall back to the compiled-in default location. */
-        snprintf(locs[0].name, sizeof(locs[0].name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
-        snprintf(locs[0].lat, sizeof(locs[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
-        snprintf(locs[0].lon, sizeof(locs[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
+        snprintf(locs[0].name, sizeof(locs[0].name), "%s", CONFIG_MULTIDISPLAY_LOCATION_NAME);
+        snprintf(locs[0].lat, sizeof(locs[0].lat), "%s", CONFIG_MULTIDISPLAY_LATITUDE);
+        snprintf(locs[0].lon, sizeof(locs[0].lon), "%s", CONFIG_MULTIDISPLAY_LONGITUDE);
         show[0] = APP_SHOW_WEATHER;
         radar_km[0] = APP_CONFIG_RADAR_KM_DEFAULT;
         ship_km[0] = APP_CONFIG_SHIP_KM_DEFAULT;

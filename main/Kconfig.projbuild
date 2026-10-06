@@ -7,20 +7,20 @@ menu "MultiDisplay Configuration"
     # on a fresh flash. Set a real SSID here to skip the portal and connect
     # immediately (the web page is then still reachable for later edits).
 
-    config EXAMPLE_WIFI_SSID
+    config MULTIDISPLAY_WIFI_SSID
         string "WiFi SSID (seed default)"
         default "myssid"
         help
             SSID (network name) to connect to. Leave as "myssid" to force the
             setup portal on first boot.
 
-    config EXAMPLE_WIFI_PASSWORD
+    config MULTIDISPLAY_WIFI_PASSWORD
         string "WiFi password (seed default)"
         default "mypassword"
         help
             WiFi password (WPA/WPA2). Leave blank for an open network.
 
-    config EXAMPLE_YR_LOCATION_NAME
+    config MULTIDISPLAY_LOCATION_NAME
         string "Forecast location name (seed default)"
         default "Oslo"
         help
@@ -28,21 +28,21 @@ menu "MultiDisplay Configuration"
             The MET Norway locationforecast API returns only coordinates, so
             this label is configured rather than derived from the data.
 
-    config EXAMPLE_YR_LATITUDE
+    config MULTIDISPLAY_LATITUDE
         string "YR forecast latitude (seed default)"
         default "59.91"
         help
             Latitude passed to the MET Norway (yr.no) locationforecast API.
             Use at most 4 decimals.
 
-    config EXAMPLE_YR_LONGITUDE
+    config MULTIDISPLAY_LONGITUDE
         string "YR forecast longitude (seed default)"
         default "10.75"
         help
             Longitude passed to the MET Norway (yr.no) locationforecast API.
             Use at most 4 decimals.
 
-    config EXAMPLE_YR_USER_AGENT
+    config MULTIDISPLAY_USER_AGENT
         string "YR API User-Agent"
         default "MultiDisplay/1.0 (set-your-contact-here)"
         help

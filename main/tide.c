@@ -34,7 +34,7 @@ static const char *TAG = "tide";
 #define TIDE_TOP         56
 #define TIDE_PANEL_W     280
 #define TIDE_CHART_X0    (TIDE_X + TIDE_PANEL_W + 56) /* room for the level labels */
-#define TIDE_CHART_X1    (EXAMPLE_LCD_H_RES - 14)
+#define TIDE_CHART_X1    (BOARD_LCD_H_RES - 14)
 #define TIDE_BEFORE_S    (6 * 3600)
 #define TIDE_AFTER_S     (30 * 3600)
 #define TIDE_FETCH_MS    (30 * 60 * 1000)
@@ -213,7 +213,7 @@ static void tide_draw_cb(lv_event_t *e)
     const float grid = (hi - lo) > 250.0f ? 100.0f : (hi - lo) > 100.0f ? 50.0f : 25.0f;
     lo = floorf((lo - 5.0f) / grid) * grid;
     hi = ceilf((hi + 5.0f) / grid) * grid;
-    const int y0 = TIDE_TOP + lh + 14, y1 = EXAMPLE_LCD_V_RES - lh - 14;
+    const int y0 = TIDE_TOP + lh + 14, y1 = BOARD_LCD_V_RES - lh - 14;
     const int x0 = TIDE_CHART_X0, x1 = TIDE_CHART_X1;
     const lv_color_t c_grid = grid_colour();
 
@@ -271,8 +271,8 @@ static void tide_draw_cb(lv_event_t *e)
         const int ly = x->high ? ey - lh - 6 : ey + 6;
         draw_text(layer, label, ex - 40, ly < y0 ? y0 : ly > y1 - lh ? y1 - lh : ly, 80, LV_TEXT_ALIGN_CENTER, c_dim);
     }
-    draw_text_fit(layer, "cm over sj\xC3\xB8kartnull", TIDE_X, EXAMPLE_LCD_V_RES - 2 * lh - 4, TIDE_PANEL_W, c_dim);
-    draw_text_fit(layer, "Kilde: Kartverket", TIDE_X, EXAMPLE_LCD_V_RES - lh - 4, TIDE_PANEL_W, c_dim);
+    draw_text_fit(layer, "cm over sj\xC3\xB8kartnull", TIDE_X, BOARD_LCD_V_RES - 2 * lh - 4, TIDE_PANEL_W, c_dim);
+    draw_text_fit(layer, "Kilde: Kartverket", TIDE_X, BOARD_LCD_V_RES - lh - 4, TIDE_PANEL_W, c_dim);
 }
 
 /* Labels for what is held for s_loc (adapter lock held). */

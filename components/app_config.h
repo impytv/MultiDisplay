@@ -175,7 +175,7 @@ typedef struct {
     uint8_t auto_night_pause;
     char ais_client_id[APP_CONFIG_AIS_CRED_MAX];
     char ais_client_secret[APP_CONFIG_AIS_CRED_MAX];
-    /* Empty = use the compiled-in CONFIG_EXAMPLE_YR_USER_AGENT as is. */
+    /* Empty = use the compiled-in CONFIG_MULTIDISPLAY_USER_AGENT as is. */
     char yr_email[APP_CONFIG_EMAIL_MAX];
     /* The setup page's password; empty = none (see wifi_provision.c). */
     char web_pass[APP_CONFIG_PASS_MAX];
@@ -215,8 +215,8 @@ typedef struct {
 /**
  * Load the runtime configuration. Fields saved through the setup portal come
  * from NVS; anything never saved falls back to the compiled-in Kconfig
- * default (CONFIG_EXAMPLE_*). Always succeeds - a blank NVS just yields the
- * defaults (a single location from the Kconfig coordinates).
+ * default (CONFIG_MULTIDISPLAY_*). Always succeeds - a blank NVS just
+ * yields the defaults (a single location from the Kconfig coordinates).
  */
 esp_err_t app_config_load(app_config_t *out);
 

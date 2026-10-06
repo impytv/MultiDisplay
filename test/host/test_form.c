@@ -36,4 +36,18 @@ void test_form(void)
     char w2[3];
     CHECK(form_field("n=a%C3%A6", "n", w2, sizeof(w2)));
     CHECK_STR(w2, "a");                                    /* half an "æ" left off */
+
+    /* buf_append stops at the end, and stays there. */
+    char b[8];
+    char *bp = b, *be = b + sizeof(b);
+    bp = buf_append(bp, be, "%s", "abc");
+    CHECK_INT(bp - b, 3);
+    bp = buf_append(bp, be, "%d", 12345);
+    CHECK(bp == be - 1);
+    CHECK_STR(b, "abc1234");
+    bp = buf_append(bp, be, "more");
+    CHECK(bp == be - 1);
+    CHECK_STR(b, "abc1234");
+    char c1[1];
+    CHECK(buf_append(c1, c1 + 1, "x") == c1);
 }

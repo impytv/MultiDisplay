@@ -91,7 +91,7 @@ static esp_err_t lookup(const char *cs, char *out, size_t out_len)
         if (s_client == NULL) {
             return ESP_FAIL;
         }
-        esp_http_client_set_header(s_client, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+        esp_http_client_set_header(s_client, "User-Agent", CONFIG_MULTIDISPLAY_USER_AGENT);
     } else {
         esp_http_client_set_url(s_client, url);
     }

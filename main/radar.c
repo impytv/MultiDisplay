@@ -37,7 +37,7 @@ static const char *TAG = "radar";
 #define RADAR_LIST_Y        78
 #define RADAR_LIST_ROW_H    26
 #define RADAR_LIST_ROWS     14
-#define RADAR_LIST_R        (EXAMPLE_LCD_H_RES - 6) /* right edge of the table */
+#define RADAR_LIST_R        (BOARD_LCD_H_RES - 6) /* right edge of the table */
 #define RADAR_COL_GAP       8
 #define RADAR_TAGS          10    /* aircraft that also get a callsign tag on the plot */
 #define KM_PER_NM           1.852f

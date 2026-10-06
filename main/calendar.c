@@ -42,7 +42,9 @@ static const uint32_t FEED_COLOUR[APP_CONFIG_CAL_FEEDS] = { 0x2E86DE, 0xE67E22, 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
 static cal_list_t *s_list, *s_scratch; /* in PSRAM */
 static fetch_stamp_t s_at;
-static uint8_t s_feed_failed; /* calendars missing from s_list */
+static uint8_t s_feed_failed; /* calendars not read on the last fetch */
+static fetch_stamp_t s_feed_at[APP_CONFIG_CAL_FEEDS]; /* when each was last read */
+static bool s_retried;        /* the quick retry after a failed calendar was made */
 static bool s_failed;         /* the last poll failed while older data is shown */
 
 static lv_color_t text_colour(void)
@@ -149,8 +151,8 @@ static void calendar_draw_cb(lv_event_t *e)
     }
     lv_layer_t *layer = lv_event_get_layer(e);
     const int lh = lv_font_get_line_height(g_font_body);
-    const int rh = lh + 6, head_h = lh + 10, bottom = EXAMPLE_LCD_V_RES - 6;
-    const int col_w = (EXAMPLE_LCD_H_RES - 2 * CAL_X - CAL_GAP) / 2;
+    const int rh = lh + 6, head_h = lh + 10, bottom = BOARD_LCD_V_RES - 6;
+    const int col_w = (BOARD_LCD_H_RES - 2 * CAL_X - CAL_GAP) / 2;
     const int tw = draw_text_w("Hele dagen") + 14;
     const lv_color_t c_txt = text_colour(), c_dim = dim_colour();
     const time_t now = time(NULL);
@@ -209,11 +211,21 @@ static void calendar_show(void)
     if (l != NULL && s_at.when > 0) {
         struct tm lt;
         localtime_r(&s_at.when, &lt);
-        char missing[40] = "";
+        /* " (kalender 1 og 3 ikke oppdatert)" */
+        char missing[48] = "";
+        int n = 0, cnt = 0;
         for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+            cnt += (s_feed_failed >> i) & 1;
+        }
+        for (int i = 0, k = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
             if (s_feed_failed & (1u << i)) {
-                snprintf(missing, sizeof(missing), " (kalender %d mangler)", i + 1);
+                k++;
+                n += snprintf(missing + n, sizeof(missing) - n, "%s%d",
+                              k == 1 ? " (kalender " : (k == cnt ? " og " : ", "), i + 1);
             }
+        }
+        if (cnt > 0) {
+            snprintf(missing + n, sizeof(missing) - n, " ikke oppdatert)");
         }
         lv_label_set_text_fmt(s_updated, "%s kl. %02d:%02d%s", s_failed ? "Sist oppdatert" : "Oppdatert",
                               lt.tm_hour, lt.tm_min, missing);
@@ -277,7 +289,10 @@ uint32_t calendar_poll(int for_view)
         wait = CAL_IDLE_MS;
     } else if (now <= PLAUSIBLE_EPOCH_S) {
         return CAL_RETRY_MS; /* the window needs the date */
-    } else if (!stamp_fresh(&s_at, CAL_FETCH_MS)) {
+    } else if (!stamp_fresh(&s_at, CAL_FETCH_MS) ||
+               (s_feed_failed && !s_retried && !stamp_fresh(&s_at, CAL_RETRY_MS))) {
+        /* Early, once, when a calendar failed last time. */
+        const bool quick = stamp_fresh(&s_at, CAL_FETCH_MS);
         const char *urls[APP_CONFIG_CAL_FEEDS];
         for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
             urls[i] = g_cfg->cal_url[i];
@@ -286,6 +301,21 @@ uint32_t calendar_poll(int for_view)
         esp_err_t err = cal_fetch(urls, APP_CONFIG_CAL_FEEDS, midnight(now, 0), midnight(now, CAL_DAYS), s_scratch,
                                   &feed_failed);
         if (err == ESP_OK) {
+            /* A calendar that failed keeps the events it had, for as long
+             * as a whole list would be shown. */
+            for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+                if (!(feed_failed & (1u << i))) {
+                    stamp_now(&s_feed_at[i]);
+                } else if (stamp_fresh(&s_feed_at[i], CAL_KEEP_MS)) {
+                    for (int k = 0; k < s_list->count && s_scratch->count < CAL_EVENTS_MAX; k++) {
+                        if (s_list->ev[k].feed == i) {
+                            s_scratch->ev[s_scratch->count++] = s_list->ev[k];
+                        }
+                    }
+                }
+            }
+            cal_sort(s_scratch);
+            s_retried = feed_failed && quick;
             if (feed_failed) {
                 diag_fail(DIAG_CALENDAR, ESP_FAIL);
             } else {
@@ -312,6 +342,9 @@ uint32_t calendar_poll(int for_view)
             lv_label_set_text(g_status_label, "Kunne ikke hente kalenderen. Pr\xC3\xB8ver igjen...");
         }
         esp_lv_adapter_unlock();
+    }
+    if (ok && s_feed_failed && !s_retried) {
+        wait = CAL_RETRY_MS;
     }
     return ok ? wait : CAL_RETRY_MS;
 }

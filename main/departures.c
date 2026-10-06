@@ -176,8 +176,8 @@ static void dep_draw_cb(lv_event_t *e)
     lv_layer_t *layer = lv_event_get_layer(e);
     const int lh = lv_font_get_line_height(g_font_body);
     int row_h = lh + 12;
-    int bottom = EXAMPLE_LCD_V_RES - lh - 8; /* leaves the footnote clear */
-    const int x_t2 = EXAMPLE_LCD_H_RES - DEP_X;
+    int bottom = BOARD_LCD_V_RES - lh - 8; /* leaves the footnote clear */
+    const int x_t2 = BOARD_LCD_H_RES - DEP_X;
     const int x_t1 = x_t2 - DEP_TIME_W - 12;
     const int x_dest = DEP_X + DEP_BADGE_W + 14;
     const time_t now = time(NULL);

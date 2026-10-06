@@ -1,3 +1,5 @@
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "form_util.h"
@@ -56,4 +58,20 @@ bool form_field(const char *body, const char *key, char *dst, size_t dst_len)
     }
     dst[0] = '\0';
     return false;
+}
+
+char *buf_append(char *p, char *end, const char *fmt, ...)
+{
+    if (p >= end - 1) {
+        return p;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = vsnprintf(p, (size_t)(end - p), fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        *p = '\0';
+        return p;
+    }
+    return (n < end - p) ? p + n : end - 1;
 }

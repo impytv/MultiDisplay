@@ -96,7 +96,7 @@ static void air_draw_cb(lv_event_t *e)
     const air_pollen_t *p = shown_p();
 
     /* Air quality: the next 24 hours right of the box. */
-    const int cells_x = AIR_X + AIR_BOX_W + 20, cells_r = EXAMPLE_LCD_H_RES - AIR_X;
+    const int cells_x = AIR_X + AIR_BOX_W + 20, cells_r = BOARD_LCD_H_RES - AIR_X;
     const int cell_w = (cells_r - cells_x) / AIR_HOURS_SHOWN;
     const int cells_y = AIR_TOP + lh + 4;
     if (q != NULL) {
@@ -143,7 +143,7 @@ static void air_draw_cb(lv_event_t *e)
         draw_text(layer, "Ingen pollen i lufta n\xC3\xA5", AIR_X, rows_y, 500, LV_TEXT_ALIGN_LEFT, c_dim);
         return;
     }
-    const int foot_y = EXAMPLE_LCD_V_RES - lh - 4;
+    const int foot_y = BOARD_LCD_V_RES - lh - 4;
     const int row_h = (foot_y - 6 - rows_y) / AIR_POLLEN_TYPES;
     const int bars_x = cells_x, bar_w = cell_w;
     const int bar_max = row_h - 16; /* clear of the row above */

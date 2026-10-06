@@ -106,7 +106,7 @@ esp_err_t screenshot_handler(httpd_req_t *req)
     }
     const uint8_t *fb = s_front;
     png_out_t *o = heap_caps_calloc(1, sizeof(*o), MALLOC_CAP_SPIRAM);
-    uint8_t *row = heap_caps_malloc(1 + 3 * EXAMPLE_LCD_H_RES, MALLOC_CAP_SPIRAM);
+    uint8_t *row = heap_caps_malloc(1 + 3 * BOARD_LCD_H_RES, MALLOC_CAP_SPIRAM);
     if (o == NULL || row == NULL) {
         esp_lv_adapter_unlock();
         free(o);
@@ -114,7 +114,7 @@ esp_err_t screenshot_handler(httpd_req_t *req)
         return httpd_resp_send_500(req);
     }
     const int64_t started = esp_timer_get_time();
-    const uint32_t w = EXAMPLE_LCD_H_RES, h = EXAMPLE_LCD_V_RES;
+    const uint32_t w = BOARD_LCD_H_RES, h = BOARD_LCD_V_RES;
     const uint32_t row_len = 1 + 3 * w; /* filter byte + RGB */
     o->req = req;
     httpd_resp_set_type(req, "image/png");

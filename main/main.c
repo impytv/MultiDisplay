@@ -1058,8 +1058,8 @@ void app_main(void)
     esp_lv_adapter_display_config_t disp_config = ESP_LV_ADAPTER_DISPLAY_RGB_DEFAULT_CONFIG(
         panel_handle,
         NULL,
-        EXAMPLE_LCD_H_RES,
-        EXAMPLE_LCD_V_RES,
+        BOARD_LCD_H_RES,
+        BOARD_LCD_V_RES,
         rotation);
     disp_config.profile.use_psram = true;
     /* DEFAULT_RGB (TRIPLE_PARTIAL) allocates a hor_res * buffer_height partial

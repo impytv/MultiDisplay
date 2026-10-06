@@ -76,7 +76,7 @@ typedef struct {
 /**
  * Set the contact email sent to api.met.no, making the User-Agent
  * "MultiDisplay/1.0 (<email>)". NULL or empty goes back to the compiled-in
- * CONFIG_EXAMPLE_YR_USER_AGENT. Call before any fetch.
+ * CONFIG_MULTIDISPLAY_USER_AGENT. Call before any fetch.
  */
 /* When the nowcast says precipitation starts or stops, seen from `now`. */
 typedef enum {

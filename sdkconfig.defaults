@@ -145,6 +145,8 @@ CONFIG_LV_USE_CLIB_STRING=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_DEF_REFR_PERIOD=15
 CONFIG_LV_OBJ_STYLE_CACHE=y
+# LVGL's own examples aren't used: don't compile them.
+# CONFIG_LV_BUILD_EXAMPLES is not set
 # Decoded images (the weather icons and wind arrows, 9 KB each) kept, in
 # PSRAM: without it every icon was read and decoded again for each 10-line
 # strip it is drawn in.

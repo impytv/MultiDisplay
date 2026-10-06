@@ -3,7 +3,7 @@
 
 # Coded with Claude based on the LVGL9 Adapter Demo
 
-This example targets the Waveshare `ESP32-S3-Touch-LCD-4.3B` board and runs the official
+This project targets the Waveshare `ESP32-S3-Touch-LCD-4.3B` board and runs the official
 `lv_demo_widgets()` demo with:
 
 - `LVGL 9`
@@ -186,9 +186,9 @@ with a throwaway key, so displays won't accept it.
 - The setup page only accepts changes sent from itself, so another web page
   open on the home network can't change the settings.
 
-- The example keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.
+- The project keeps the existing `4.3B` RGB, CH422G and GT911 bring-up flow, and only replaces the LVGL porting layer with `esp_lvgl_adapter`.
 - The default panel resolution is `800x480`.
-- Touch is enabled by default. If your panel variant has no touch, set `EXAMPLE_USE_TOUCH` to `0` in `main/waveshare_rgb_lcd_port.h`.
+- Touch is enabled by default. If your panel variant has no touch, set `BOARD_TOUCH_GT911` to `0` in `components/waveshare_rgb_lcd_port.h`.
 
 ## YR weather (MET Norway)
 

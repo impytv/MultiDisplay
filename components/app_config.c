@@ -141,11 +141,11 @@ static void sanitize_view_settings(app_config_t *c)
 
 static void seed_defaults(app_config_t *out)
 {
-    snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", CONFIG_EXAMPLE_WIFI_SSID);
-    snprintf(out->wifi_pass, sizeof(out->wifi_pass), "%s", CONFIG_EXAMPLE_WIFI_PASSWORD);
-    snprintf(out->locations[0].name, sizeof(out->locations[0].name), "%s", CONFIG_EXAMPLE_YR_LOCATION_NAME);
-    snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_EXAMPLE_YR_LATITUDE);
-    snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_EXAMPLE_YR_LONGITUDE);
+    snprintf(out->wifi_ssid, sizeof(out->wifi_ssid), "%s", CONFIG_MULTIDISPLAY_WIFI_SSID);
+    snprintf(out->wifi_pass, sizeof(out->wifi_pass), "%s", CONFIG_MULTIDISPLAY_WIFI_PASSWORD);
+    snprintf(out->locations[0].name, sizeof(out->locations[0].name), "%s", CONFIG_MULTIDISPLAY_LOCATION_NAME);
+    snprintf(out->locations[0].lat, sizeof(out->locations[0].lat), "%s", CONFIG_MULTIDISPLAY_LATITUDE);
+    snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_MULTIDISPLAY_LONGITUDE);
     out->location_count = 1;
     out->dim_enabled = 1;
     out->dim_start = APP_CONFIG_DIM_START_DEFAULT;
@@ -439,7 +439,7 @@ bool app_config_is_provisioned(void)
      * and the web page is only for later edits. A fresh build with the
      * placeholder starts in the setup portal. Either way, a Save through the
      * portal takes over from then on. */
-    if (strcmp(CONFIG_EXAMPLE_WIFI_SSID, "myssid") != 0) {
+    if (strcmp(CONFIG_MULTIDISPLAY_WIFI_SSID, "myssid") != 0) {
         return true;
     }
 

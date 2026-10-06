@@ -316,7 +316,7 @@ esp_err_t adsb_client_fetch(double lat, double lon, float radius_km, adsb_result
         if (s_client == NULL) {
             return ESP_FAIL;
         }
-        esp_http_client_set_header(s_client, "User-Agent", CONFIG_EXAMPLE_YR_USER_AGENT);
+        esp_http_client_set_header(s_client, "User-Agent", CONFIG_MULTIDISPLAY_USER_AGENT);
     } else {
         esp_http_client_set_url(s_client, url);
     }

@@ -301,7 +301,7 @@ void yr_client_set_contact_email(const char *email)
 
 const char *yr_client_user_agent(void)
 {
-    return s_user_agent[0] ? s_user_agent : CONFIG_EXAMPLE_YR_USER_AGENT;
+    return s_user_agent[0] ? s_user_agent : CONFIG_MULTIDISPLAY_USER_AGENT;
 }
 
 
