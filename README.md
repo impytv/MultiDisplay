@@ -163,7 +163,7 @@ with a throwaway key, so displays won't accept it.
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
     over nettet** is ticked under **Vedlikehold → Skjermbilder** (off by
     default; per display, so not in settings backups).
-- **Name:** **Navn på skjermen** at the top of the setup page (default
+- **Name:** **Navn på skjermen** under **Vedlikehold** on the setup page (default
   `multidisplay`) is the display's address on the home network,
   **`http://<name>.local/`**, and the name the router lists it under. Give
   each display its own name to have several on one network. Only a-z, 0-9
@@ -225,7 +225,7 @@ around):
 1. **Oversikt** – an overview table with one row per location that shows
    weather and 6-hour columns, each showing the weather icon, temperature and
    the precipitation summed over that 6-hour block. Shown unless **Vis
-   oversikten** under **Oversikt** on the setup page is unticked (its **i
+   oversikten** under **Andre skjermer → Oversikt** on the setup page is unticked (its **i
    automatisk bytte** puts it in the rotation).
 2. **Kalender**, if shown (see [Calendar](#calendar)).
 3. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
@@ -379,7 +379,7 @@ screen says so.
 ### Calendar
 
 One calendar screen for the whole display, right after the overview: under
-**Kalender** on the setup page, tick **Vis kalenderen** (and **i automatisk
+**Andre skjermer → Kalender** on the setup page, tick **Vis kalenderen** (and **i automatisk
 bytte** for the rotation) and paste up to three secret iCal addresses -
 Google Calendar's *Hemmelig adresse i iCal-format*, a published Outlook
 calendar's ICS link, or any `https://`/`webcal://` `.ics` address. The next
@@ -394,7 +394,7 @@ field keeps the saved one) and are left out of settings backups.
 ### Satellite
 
 MET Norway's latest Meteosat image of Europe (a new one every 15 minutes),
-under **Satellittbilde** on the setup page:
+under **Andre skjermer → Satellittbilde** on the setup page:
 
 - **Vis Europa** (and **i automatisk bytte**) adds one screen with the whole
   image, after the calendar.

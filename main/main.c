@@ -813,6 +813,9 @@ static void yr_weather_task(void *arg)
                     continue;
                 }
             }
+            /* The switch woke us; left pending, that wake would end the
+             * wait after this poll at once and poll (and draw) again. */
+            ulTaskNotifyTake(pdTRUE, 0);
         }
 
         uint32_t wait_ms;
@@ -863,20 +866,32 @@ static void yr_weather_task(void *arg)
             esp_lv_adapter_unlock();
         }
 
-        /* So a reboot of any kind - nightly, power cycle, crash - comes back
-         * showing the screen last picked by tap instead of the overview. */
-        const TickType_t shown_for = xTaskGetTickCount() - view_since;
-        if (!s_view_auto && active_view != saved_view) {
-            if (shown_for >= pdMS_TO_TICKS(LAST_VIEW_SAVE_MS)) {
+        /* Wait for the next poll; a tap or the rotation notifies us, cutting
+         * the wait short. Meanwhile, so a reboot of any kind - nightly,
+         * power cycle, crash - comes back showing the screen last picked by
+         * tap instead of the overview, save it once it has been shown for
+         * LAST_VIEW_SAVE_MS: waking for that alone, not to poll again. */
+        const TickType_t poll_at = xTaskGetTickCount() + pdMS_TO_TICKS(wait_ms);
+        for (;;) {
+            const TickType_t now = xTaskGetTickCount();
+            const bool unsaved = !s_view_auto && active_view != saved_view;
+            if (unsaved && now - view_since >= pdMS_TO_TICKS(LAST_VIEW_SAVE_MS)) {
                 app_config_save_last_view((uint8_t)active_view);
                 saved_view = active_view;
-            } else if (wait_ms > LAST_VIEW_SAVE_MS) {
-                wait_ms = LAST_VIEW_SAVE_MS; /* come back to save it */
+                continue;
+            }
+            TickType_t left = poll_at - now;
+            if ((int32_t)left <= 0) {
+                break;
+            }
+            if (unsaved) {
+                const TickType_t save_in = view_since + pdMS_TO_TICKS(LAST_VIEW_SAVE_MS) - now;
+                left = save_in < left ? save_in : left;
+            }
+            if (ulTaskNotifyTake(pdTRUE, left) != 0) {
+                break;
             }
         }
-
-        /* A tap or the rotation notifies us, cutting the wait short. */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
     }
 }
 

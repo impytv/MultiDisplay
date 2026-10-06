@@ -234,7 +234,8 @@ static char *build_calendar(char *p, char *end, const app_config_t *cfg)
 {
     static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
     p += snprintf(p, end - p,
-                  "<h2>Kalender</h2><div class=chk><label><input type=checkbox name=calshow value=1%s>"
+                  "<details class=sec><summary>Kalender</summary>"
+                  "<div class=chk><label><input type=checkbox name=calshow value=1%s>"
                   "Vis kalenderen</label><label><input type=checkbox name=calrot value=1%s>"
                   "i automatisk bytte</label></div>"
                   "<small>De neste to ukene fra opptil tre kalendere, hver i sin farge, som en egen "
@@ -255,6 +256,7 @@ static char *build_calendar(char *p, char *end, const app_config_t *cfg)
                                       "Fjern kalenderen</label></div>", i);
         }
     }
+    p += snprintf(p, end - p, "</details>");
     return p;
 }
 
@@ -274,14 +276,7 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->device_name);
     p += snprintf(p, end - p, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
     p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, "</h1><form method=post action=/save id=cf novalidate>"
-                  "<label>Navn p&aring; skjermen</label><input name=devname autocomplete=off maxlength=%d "
-                  "value=\"", APP_CONFIG_DEVNAME_MAX - 1);
-    p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, "\"><small>Skjermen finnes p&aring; <b>http://");
-    p = html_escape_append(p, end, cfg->device_name);
-    p += snprintf(p, end - p, ".local/</b> i nettverket. Gi hver skjerm sitt eget navn; bare a-z, "
-                  "0-9 og bindestrek (&aelig;, &oslash;, &aring; blir ae, o, aa).</small>");
+    p += snprintf(p, end - p, "</h1><form method=post action=/save id=cf novalidate>");
 
     /* Locations. */
     p += snprintf(p, end - p, "%s", PAGE_LOC_INTRO);
@@ -290,15 +285,18 @@ static char *build_page(const app_config_t *cfg)
     }
     p += snprintf(p, end - p, "<button type=button id=addloc class=lt2>+ Legg til sted</button>");
     p += snprintf(p, end - p,
-                  "<h2>Oversikt</h2><div class=chk><label><input type=checkbox name=ovshow value=1%s>"
+                  "<h2>Andre skjermer</h2>"
+                  "<details class=sec><summary>Oversikt</summary>"
+                  "<div class=chk><label><input type=checkbox name=ovshow value=1%s>"
                   "Vis oversikten</label><label><input type=checkbox name=autoov value=1%s>"
                   "i automatisk bytte</label></div>"
                   "<small>Tabellen med v&aelig;ret for alle stedene, f&oslash;rst av skjermene. Uten den "
-                  "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small>",
+                  "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small></details>",
                   cfg->ov_show ? " checked" : "", cfg->auto_overview ? " checked" : "");
     p = build_calendar(p, end, cfg);
     p += snprintf(p, end - p,
-                  "<h2>Satellittbilde</h2><div class=chk><label><input type=checkbox name=satshow value=1%s>"
+                  "<details class=sec><summary>Satellittbilde</summary>"
+                  "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
                   "Vis Europa</label><label><input type=checkbox name=satrot value=1%s>"
                   "i automatisk bytte</label></div>"
                   "<small>Det siste infrar&oslash;de bildet fra Meteosat over Europa, fra Meteorologisk "
@@ -311,7 +309,8 @@ static char *build_page(const app_config_t *cfg)
                   "Synlig lys n&aring;r det er lyst</label></div>"
                   "<small>Bildet i synlig lys viser skyene slik de ser ut, men er svart om natten. "
                   "Det brukes n&aring;r sola st&aring;r minst 5&deg; over horisonten over hele Europa "
-                  "(for Europa-bildet) og ved hvert sted med n&aelig;rbilde, ellers det infrar&oslash;de.</small>",
+                  "(for Europa-bildet) og ved hvert sted med n&aelig;rbilde, ellers det "
+                  "infrar&oslash;de.</small></details>",
                   cfg->sat_show ? " checked" : "", cfg->sat_rotate ? " checked" : "",
                   cfg->sat_zoom == 3 ? " selected" : "", cfg->sat_zoom == 2 ? " selected" : "",
                   cfg->sat_visible ? " checked" : "");
@@ -359,8 +358,8 @@ static char *build_page(const app_config_t *cfg)
                   "<input name=autodwell type=number inputmode=numeric min=%d max=%d value=%u></div></div>"
                   "<div class=chk><label><input type=checkbox name=autonight value=1%s>Stopp om natta</label></div>"
                   "<small>Etter s&aring; mange minutter uten trykk g&aring;r skjermen videre til neste "
-                  "skjerm som er krysset av for <i>i automatisk bytte</i> (under stedene, oversikten og "
-                  "kalenderen), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
+                  "skjerm som er krysset av for <i>i automatisk bytte</i> (under stedene og "
+                  "<i>Andre skjermer</i>), og blir st&aring;ende s&aring; lenge p&aring; hver. Et trykk stopper "
                   "det til skjermen har v&aelig;rt i fred s&aring; lenge igjen. 0 minutter sl&aring;r det "
                   "av.</small></details>",
                   APP_CONFIG_AUTO_IDLE_MIN_MAX, cfg->auto_idle_min,
@@ -426,6 +425,15 @@ static char *build_page(const app_config_t *cfg)
      * and /ota/install (see PAGE_SCRIPTS), which only exist once connected. */
     p += snprintf(p, end - p,
                   "<details class=sec><summary>Vedlikehold</summary>"
+                  "<fieldset><legend>Navn p&aring; skjermen</legend>"
+                  "<input name=devname autocomplete=off maxlength=%d value=\"",
+                  APP_CONFIG_DEVNAME_MAX - 1);
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, "\"><small>Skjermen finnes p&aring; <b>http://");
+    p = html_escape_append(p, end, cfg->device_name);
+    p += snprintf(p, end - p, ".local/</b> i nettverket. Gi hver skjerm sitt eget navn; bare a-z, "
+                  "0-9 og bindestrek (&aelig;, &oslash;, &aring; blir ae, o, aa).</small></fieldset>");
+    p += snprintf(p, end - p,
                   "<fieldset><legend>Programvareoppdatering</legend>"
                   "<div class=chk><label><input type=checkbox name=otaauto value=1%s>"
                   "Installer ny programvare automatisk</label></div>"

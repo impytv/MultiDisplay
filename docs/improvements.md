@@ -165,6 +165,11 @@ to 52 KB).
   fit in internal RAM; since #15 mbedTLS allocates from PSRAM, so
   `esp_crt_bundle_attach` (already used by Entur and BarentsWatch) may now
   work for all of them. Try it and drop `CONFIG_ESP_TLS_INSECURE`.
+  *Left as it is (October 2026). Turning checking off for Entur too was
+  measured: departures came 0.06 s sooner (1.17 s against 1.19-1.27 s from
+  the switch), within the noise, so Entur, BarentsWatch and the calendars -
+  which carry a secret or private addresses - keep it; MET and Yr stay
+  unchecked.*
 - [x] **23. The clock depends on pool.ntp.org alone.** Add the router
   (DHCP option 42, `CONFIG_LWIP_DHCP_GET_NTP_SRV`) and a second pool as
   fallbacks. Until the clock syncs, dimming, the nightly restart and the
@@ -319,3 +324,27 @@ with all seven screen types on all five locations and one full rotation
   4140 B (8 KB), lvgl 6712 B (12 KB, PSRAM), swdraw 13856 B (32 KB, PSRAM),
   esp_timer 3048 B (3.5 KB). No stack is resized yet: yr_weather and
   esp_timer have room, but stacks have overflowed here before.*
+
+## Fourth review: robustness and speed (October 2026, 1.8.1)
+
+- [x] **49. A tap redraws the weather screen two or three times.** A tap
+  wakes the weather task while it waits out `VIEW_SETTLE_MS`; that wake is
+  still pending after the first poll, so `ulTaskNotifyTake` returns at once
+  and the nowcast is fetched and the chart redrawn again (seen: Vestpollen
+  merged at 245.1 s and 245.8 s). Then the 10 s wake to save the last view
+  polls a third time (Kvaløysletta 250.1 s and 260.3 s). Each is a TLS
+  request and a full chart redraw. Clear the pending wake when a switch is
+  adopted, and let the save wake save without polling. *Done: the switch's
+  own wake is cleared once it is adopted, and the wait saves the view
+  without ending.*
+- [ ] **50. A failed aurora fetch waits an hour.** One transient failure at
+  start-up leaves the weather screens without aurora marking for an hour.
+  Retry a failure after 10 minutes; keep the hour for successes.
+- [ ] **51. A satellite fetch that breaks off loses the image shown.** Rows
+  are decoded straight into the views, so a reply cut short leaves them part
+  old, part new and the screen goes back to "Henter...". Keeping the old
+  image needs a second buffer (360 KB for Europe), so it is left as is
+  unless it is seen to happen.
+- [ ] **52. Screenshots hold the display for up to 20 s.** Taps and the
+  rotation wait while a slow client downloads. Acceptable for a debugging
+  tool; a shorter cap (e.g. 8 s) would bound it.
