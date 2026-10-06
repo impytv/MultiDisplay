@@ -1669,17 +1669,19 @@ void overview_enter(void)
     lv_label_set_text(g_status_label, overview_loading() ? "Henter oversikt..." : "");
 }
 
-/* Refresh any stale or missing location forecast and alerts. The selected
- * one is done first so the detail view updates promptly; the rest keep the
- * overview warm. N <= 5 and the cadence is 10 min, so this is a fetch or two
+/* Refresh any stale or missing location forecast and alerts, of locations
+ * k0 .. k1 - 1 counted on from the selected one (0 is it): the weather
+ * screen asks for its own first and draws it before the rest, which keep
+ * the overview warm. N <= 5 and the cadence is 10 min, so this is a fetch or two
  * per wake at most. Only on the weather screens and the overview: the radar
  * and departure board poll often and are the only thing that should use the
  * network there; whatever went stale is refreshed when a weather screen or
  * the overview is next shown. */
-static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_view)
+static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_view, int k0, int k1)
 {
     TickType_t now_tk = xTaskGetTickCount(); /* unsigned - wrap-safe deltas */
-    for (int k = 0; k < g_cfg->location_count; k++) {
+    k1 = k1 < g_cfg->location_count ? k1 : g_cfg->location_count;
+    for (int k = k0; k < k1; k++) {
         if (g_view_index != for_view) {
             return; /* view changed mid-scan */
         }
@@ -1692,10 +1694,7 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
                      (now_tk - s_fc_tk[i]) >= pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS);
         bool alert_stale = !s_alert_valid[i] ||
                            (now_tk - s_alert_tk[i]) >= pdMS_TO_TICKS(ALERT_REFRESH_INTERVAL_MS);
-        const bool aurora_stale = s_aurora_cache[i] != NULL &&
-                                  (!s_aurora_tried[i] ||
-                                   (now_tk - s_aurora_tk[i]) >= pdMS_TO_TICKS(AURORA_REFRESH_INTERVAL_MS));
-        if (!stale && !alert_stale && !aurora_stale) {
+        if (!stale && !alert_stale) {
             continue;
         }
 
@@ -1762,37 +1761,6 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
                 }
             } else {
                 ESP_LOGW(TAG, "Alerts[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
-            }
-        }
-
-        if (aurora_stale) {
-            if (!s_aurora_valid[i]) {
-                memset(&s_aurora_http[i], 0, sizeof(s_aurora_http[i]));
-            }
-            esp_err_t err = aurora_client_fetch(lat, lon, s_aurora_scratch, &s_aurora_http[i]);
-            s_aurora_tried[i] = true;
-            if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
-                diag_ok(DIAG_AURORA);
-            } else {
-                diag_fail(DIAG_AURORA, err);
-            }
-            if (err == HTTP_NOT_MODIFIED) {
-                s_aurora_tk[i] = now_tk;
-            } else if (err == ESP_OK && esp_lv_adapter_lock(-1) == ESP_OK) {
-                *s_aurora_cache[i] = *s_aurora_scratch;
-                s_aurora_valid[i] = true;
-                s_aurora_tk[i] = now_tk;
-                esp_lv_adapter_unlock();
-                int good = 0;
-                for (int h = 0; h < s_aurora_scratch->count; h++) {
-                    good += aurora_good(&s_aurora_scratch->hours[h]);
-                }
-                ESP_LOGI(TAG, "Aurora[%d] %s: %d hours, %d worth looking up", i, g_cfg->locations[i].name,
-                         s_aurora_scratch->count, good);
-            } else {
-                /* Yr's website API may change: try again in an hour. */
-                s_aurora_tk[i] = now_tk;
-                ESP_LOGW(TAG, "Aurora[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
             }
         }
 
@@ -1888,12 +1856,67 @@ const yr_forecast_t *weather_forecast(int loc, time_t *fetched)
 
 void weather_refresh(int loc, int for_view)
 {
-    refresh_caches(false, loc, false, for_view);
+    refresh_caches(false, loc, false, for_view, 0, APP_CONFIG_MAX_LOCATIONS);
+}
+
+/* The aurora forecasts, after the screen is up so they don't hold it back:
+ * the selected location's first, its chart marked as soon as it lands
+ * (see aurora_update), then the others'. */
+static void refresh_aurora(bool overview, int sel, int for_view)
+{
+    TickType_t now_tk = xTaskGetTickCount();
+    for (int k = 0; k < g_cfg->location_count; k++) {
+        if (g_view_index != for_view) {
+            return;
+        }
+        int i = (sel + k) % g_cfg->location_count;
+        if (s_aurora_cache[i] == NULL ||
+            (s_aurora_tried[i] && (now_tk - s_aurora_tk[i]) < pdMS_TO_TICKS(AURORA_REFRESH_INTERVAL_MS))) {
+            continue;
+        }
+        wd_weather_beat();
+        double lat = atof(g_cfg->locations[i].lat);
+        double lon = atof(g_cfg->locations[i].lon);
+        if (!s_aurora_valid[i]) {
+            memset(&s_aurora_http[i], 0, sizeof(s_aurora_http[i]));
+        }
+        esp_err_t err = aurora_client_fetch(lat, lon, s_aurora_scratch, &s_aurora_http[i]);
+        s_aurora_tried[i] = true;
+        if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
+            diag_ok(DIAG_AURORA);
+        } else {
+            diag_fail(DIAG_AURORA, err);
+        }
+        if (err == HTTP_NOT_MODIFIED) {
+            s_aurora_tk[i] = now_tk;
+        } else if (err == ESP_OK && esp_lv_adapter_lock(-1) == ESP_OK) {
+            *s_aurora_cache[i] = *s_aurora_scratch;
+            s_aurora_valid[i] = true;
+            s_aurora_tk[i] = now_tk;
+            esp_lv_adapter_unlock();
+            int good = 0;
+            for (int h = 0; h < s_aurora_scratch->count; h++) {
+                good += aurora_good(&s_aurora_scratch->hours[h]);
+            }
+            ESP_LOGI(TAG, "Aurora[%d] %s: %d hours, %d worth looking up", i, g_cfg->locations[i].name,
+                     s_aurora_scratch->count, good);
+        } else {
+            /* Yr's website API may change: try again in an hour. */
+            s_aurora_tk[i] = now_tk;
+            ESP_LOGW(TAG, "Aurora[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
+        }
+        if (!overview && i == sel && s_wx_shown_at[sel].valid && lock_for_view(for_view)) {
+            aurora_update(s_wx_shown[sel], sel);
+            esp_lv_adapter_unlock();
+        }
+    }
 }
 
 uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view)
 {
-    refresh_caches(overview, sel, refetch_sel, for_view);
+    /* The overview needs every location; a weather screen only its own
+     * before it can be drawn. */
+    refresh_caches(overview, sel, refetch_sel, for_view, 0, overview ? APP_CONFIG_MAX_LOCATIONS : 1);
     if (g_view_index != for_view) {
         return 0;
     }
@@ -1904,6 +1927,13 @@ uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view)
         }
     } else {
         show_selected(sel, for_view);
+    }
+    refresh_aurora(overview, sel, for_view);
+    if (!overview) {
+        refresh_caches(false, sel, false, for_view, 1, APP_CONFIG_MAX_LOCATIONS);
+    }
+    if (g_view_index != for_view) {
+        return 0;
     }
     /* Poll on the nowcast cadence once something is on screen; retry fast
      * while still waiting for the first data. */
