@@ -399,7 +399,8 @@ under **Satellittbilde** on the setup page:
   with a close-up - one kind for all of them, as each fetch fills every view.
 
 The image is decoded as it streams in, so the ~1 MB file is never held;
-Europe takes 720 KB of PSRAM, each close-up 80 KB (180 KB at 2 times). MET
+Europe takes 360 KB of PSRAM (256 colours, a palette per kind of image fitted
+by `scripts/build_sat_palette.py`), each close-up 80 KB (180 KB at 2 times). MET
 doesn't document the image's projection: `scripts/fit_satellite.py` fitted
 one to the coastline drawn on it (within about a pixel over Norway); run it
 again if MET changes the image.

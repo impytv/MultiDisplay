@@ -45,6 +45,7 @@ idf_component_register(
     # Airport + runway table for the radar (see scripts/build_airports.py).
     EMBED_FILES
         "../components/airports.bin"
+        "../components/sat_palette.bin"
     # The setup page's departure picker, served as /dep.js (wifi_provision.c).
     EMBED_TXTFILES
         "../components/setup_departures.js"

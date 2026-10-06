@@ -60,9 +60,9 @@ time_t sat_image_time(const char *v)
  * pixel meets at most two result pixels, as dn <= sn. The overlaps are the
  * weights, summing to sn for each result pixel. */
 
-bool sat_shrink_init(sat_shrink_t *s, int sw, int sh, int dw, int dh, uint16_t *dst)
+bool sat_shrink_init(sat_shrink_t *s, int sw, int sh, int dw, int dh, uint8_t *dst, const uint8_t *lut)
 {
-    *s = (sat_shrink_t){ .sw = sw, .sh = sh, .dw = dw, .dh = dh, .dst = dst };
+    *s = (sat_shrink_t){ .sw = sw, .sh = sh, .dw = dw, .dh = dh, .dst = dst, .lut = lut };
     s->hrow = heap_caps_malloc((size_t)dw * 3 * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     s->acc = heap_caps_calloc((size_t)dw * 6, sizeof(uint32_t), MALLOC_CAP_SPIRAM);
     if (s->hrow == NULL || s->acc == NULL || dw > sw || dh > sh || dw < 1 || dh < 1) {
@@ -113,10 +113,10 @@ void sat_shrink_row(sat_shrink_t *s, int y, const uint8_t *rgb)
     if (a + dh >= (j + 1) * sh && j < dh) {
         /* Row j has all of its source rows: out it goes. */
         const uint32_t total = (uint32_t)sw * (uint32_t)sh, half = total / 2;
-        uint16_t *out = s->dst + (size_t)j * dw;
+        uint8_t *out = s->dst + (size_t)j * dw;
         for (int i = 0; i < dw; i++) {
-            out[i] = sat_rgb565((r0[3 * i] + half) / total, (r0[3 * i + 1] + half) / total,
-                                (r0[3 * i + 2] + half) / total);
+            out[i] = s->lut[sat_rgb565((r0[3 * i] + half) / total, (r0[3 * i + 1] + half) / total,
+                                       (r0[3 * i + 2] + half) / total)];
         }
         memset(r0, 0, (size_t)dw * 3 * sizeof(uint32_t));
     }

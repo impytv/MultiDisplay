@@ -3,13 +3,19 @@
 #include "check.h"
 #include "../../components/sat_util.c"
 
+/* A lookup that keeps an RGB565 value's top byte: red, and a bit of green. */
+static uint8_t s_lut[65536];
+
 /* Shrink a sw x sh image of colour f(x, y) to dw x dh. */
-static uint16_t *shrink(int sw, int sh, int dw, int dh, uint8_t (*f)(int x, int y))
+static uint8_t *shrink(int sw, int sh, int dw, int dh, uint8_t (*f)(int x, int y))
 {
-    uint16_t *dst = calloc((size_t)dw * dh, sizeof(uint16_t));
+    for (int v = 0; v < 65536; v++) {
+        s_lut[v] = (uint8_t)(v >> 8);
+    }
+    uint8_t *dst = calloc((size_t)dw * dh, 1);
     uint8_t *row = malloc((size_t)sw * 3);
     sat_shrink_t s;
-    CHECK(sat_shrink_init(&s, sw, sh, dw, dh, dst));
+    CHECK(sat_shrink_init(&s, sw, sh, dw, dh, dst, s_lut));
     for (int y = 0; y < sh; y++) {
         for (int x = 0; x < sw; x++) {
             row[3 * x] = row[3 * x + 1] = row[3 * x + 2] = f(x, y);
@@ -25,8 +31,8 @@ static uint8_t grey(int x, int y) { return 200; }
 static uint8_t stripes(int x, int y) { return (x & 1) ? 255 : 0; }
 static uint8_t halves(int x, int y) { return y < 360 ? 0 : 248; }
 
-/* The 8 bits of red back from RGB565, as the top five. */
-static int red(uint16_t px) { return (px >> 8) & 0xF8; }
+/* The 8 bits of red back from an index, as the top five. */
+static int red(uint8_t px) { return px & 0xF8; }
 
 void test_sat(void)
 {
@@ -57,8 +63,8 @@ void test_sat(void)
     /* Shrinking: an even colour stays it; 1280 -> 800 averages fine
      * stripes to grey; a sharp edge on a result row's boundary stays sharp
      * (720 -> 450: row 225 starts at source row 360). */
-    uint16_t *d = shrink(SAT_IMG_W, SAT_IMG_H, 800, 450, grey);
-    CHECK(d[0] == sat_rgb565(200, 200, 200) && d[800 * 450 - 1] == sat_rgb565(200, 200, 200));
+    uint8_t *d = shrink(SAT_IMG_W, SAT_IMG_H, 800, 450, grey);
+    CHECK(d[0] == sat_rgb565(200, 200, 200) >> 8 && d[800 * 450 - 1] == sat_rgb565(200, 200, 200) >> 8);
     free(d);
     d = shrink(SAT_IMG_W, SAT_IMG_H, 800, 450, stripes);
     int lo = 255, hi = 0;

@@ -3,7 +3,9 @@
  * so set, visible light while it is light everywhere shown.
  *
  *  - Europe: the whole 1280 x 720 image shrunk to 800 x 450, under the
- *    title. It carries its own logos and time.
+ *    title. It carries its own logos and time. Held as 256 colours, a
+ *    palette per kind of image (components/sat_palette.bin): half the
+ *    memory of RGB565, and it looks the same.
  *  - Close-up: the part of it around a location blown up two or three
  *    times (g_cfg->sat_zoom; an image pixel is about 8 km, so that is about
  *    3200 or 2000 km across), with a ring on the location. The image isn't
@@ -39,6 +41,8 @@ static const char *TAG = "satellite";
 #define SAT_TOP       30  /* the image, under the title row */
 #define SAT_VIEW_W    800
 #define SAT_VIEW_H    450
+#define SAT_PAL_BYTES (256 * 4)
+#define SAT_LUT_BYTES 65536
 #define SAT_SUN_DEG   5.0 /* the visible image is used with the sun at least this high */
 #define SAT_RING_R    9
 #define SAT_POLL_MS   (15 * 60 * 1000) /* at most, between asking */
@@ -51,12 +55,23 @@ static lv_obj_t *s_root, *s_canvas, *s_title, *s_time;
 
 /* The views in use, RGB565 in PSRAM: Europe if it is shown, and a close-up
  * per location that has one (NULL where not, or if it isn't on the image). */
-static uint16_t *s_eu_px;
+static uint8_t *s_eu_px; /* the palette (SAT_PAL_BYTES), then 800 x 450 indices */
 static lv_image_dsc_t s_eu_img;
 static uint16_t *s_loc_px[APP_CONFIG_MAX_LOCATIONS];
 static lv_image_dsc_t s_loc_img[APP_CONFIG_MAX_LOCATIONS];
 static int s_loc_x0[APP_CONFIG_MAX_LOCATIONS], s_loc_y0[APP_CONFIG_MAX_LOCATIONS];
-static int s_lw, s_lh; /* image pixels in a close-up: blown up, they fill the view */
+/* Per kind of image (infrared, visible): its palette, then the index for
+ * each RGB565 value. Built by scripts/build_sat_palette.py. */
+extern const uint8_t sat_palette_bin_start[] asm("_binary_sat_palette_bin_start");
+extern const uint8_t sat_palette_bin_end[] asm("_binary_sat_palette_bin_end");
+
+static const uint8_t *palette_of(bool visible)
+{
+    return sat_palette_bin_start + (visible ? SAT_PAL_BYTES + SAT_LUT_BYTES : 0);
+}
+
+static int s_lw, s_lh;       /* image pixels in a close-up: blown up, they fill the view */
+static bool s_fetch_visible; /* the kind being fetched */
 
 /* Places that stand for Europe's land in the image, west and east: the
  * visible image is only used for Europe while the sun is up at both. */
@@ -88,6 +103,11 @@ static void sat_row(int y, const uint8_t *rgb, void *ctx)
 {
     (void)ctx;
     if (s_eu_px != NULL) {
+        if (y == 0) {
+            /* The rows come in with this kind's colours (a redraw meanwhile
+             * may show the old rows in them for a moment). */
+            memcpy(s_eu_px, palette_of(s_fetch_visible), SAT_PAL_BYTES);
+        }
         sat_shrink_row(&s_shrink, y, rgb);
     }
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
@@ -207,13 +227,12 @@ static void satellite_show(void)
     lv_obj_invalidate(s_canvas);
 }
 
-static void img_init(lv_image_dsc_t *img, const uint16_t *px, int w, int h)
+static void img_init(lv_image_dsc_t *img, const void *px, lv_color_format_t cf, int w, int h, int bpp, int extra)
 {
     *img = (lv_image_dsc_t){
-        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565,
-                    .w = w, .h = h, .stride = w * 2 },
-        .data = (const uint8_t *)px,
-        .data_size = (uint32_t)w * h * 2,
+        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = cf, .w = w, .h = h, .stride = w * bpp },
+        .data = px,
+        .data_size = (uint32_t)(w * h * bpp + extra),
     };
 }
 
@@ -224,9 +243,9 @@ lv_obj_t *satellite_build(lv_obj_t *screen)
     s_lh = SAT_VIEW_H / g_cfg->sat_zoom;                         /* 150 or 225 */
     bool no_mem = false;
     if (g_cfg->sat_show) {
-        s_eu_px = heap_caps_calloc((size_t)SAT_VIEW_W * SAT_VIEW_H, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+        s_eu_px = heap_caps_calloc(1, SAT_PAL_BYTES + (size_t)SAT_VIEW_W * SAT_VIEW_H, MALLOC_CAP_SPIRAM);
         no_mem |= s_eu_px == NULL;
-        img_init(&s_eu_img, s_eu_px, SAT_VIEW_W, SAT_VIEW_H);
+        img_init(&s_eu_img, s_eu_px, LV_COLOR_FORMAT_I8, SAT_VIEW_W, SAT_VIEW_H, 1, SAT_PAL_BYTES);
     }
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         if (!loc_wanted(i)) {
@@ -238,7 +257,7 @@ lv_obj_t *satellite_build(lv_obj_t *screen)
         }
         s_loc_px[i] = heap_caps_calloc((size_t)s_lw * s_lh, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
         no_mem |= s_loc_px[i] == NULL;
-        img_init(&s_loc_img[i], s_loc_px[i], s_lw, s_lh);
+        img_init(&s_loc_img[i], s_loc_px[i], LV_COLOR_FORMAT_RGB565, s_lw, s_lh, 2, 0);
     }
     if (no_mem) {
         ESP_LOGE(TAG, "Out of memory for the satellite views");
@@ -316,7 +335,9 @@ uint32_t satellite_poll(int loc, int for_view)
     time_t taken = 0;
     int rows = 0;
     esp_err_t err = ESP_ERR_NO_MEM;
-    if (s_eu_px == NULL || sat_shrink_init(&s_shrink, SAT_IMG_W, SAT_IMG_H, SAT_VIEW_W, SAT_VIEW_H, s_eu_px)) {
+    s_fetch_visible = visible;
+    if (s_eu_px == NULL || sat_shrink_init(&s_shrink, SAT_IMG_W, SAT_IMG_H, SAT_VIEW_W, SAT_VIEW_H,
+                                           s_eu_px + SAT_PAL_BYTES, palette_of(visible) + SAT_PAL_BYTES)) {
         err = sat_client_fetch(visible, &s_cache, sat_row, NULL, &taken, &rows);
         sat_shrink_free(&s_shrink);
     }

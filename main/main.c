@@ -959,6 +959,7 @@ void app_main(void)
     xTaskCreatePinnedToCore(lcd_init_task, "lcd_init", 4096, &lcd, tskIDLE_PRIORITY + 5, NULL, 1);
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     esp_lcd_panel_handle_t panel_handle = lcd.panel;
+    screenshot_init(panel_handle, frame_buffer_count);
     esp_lcd_touch_handle_t touch_handle = lcd.touch;
     ESP_ERROR_CHECK(waveshare_rgb_lcd_backlight_on());
 

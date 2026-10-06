@@ -33,19 +33,21 @@ bool sat_crop(double lat, double lon, int w, int h, int *x0, int *y0);
  */
 time_t sat_image_time(const char *content_disposition);
 
-/* Shrinks an image fed in row by row (RGB888, top to bottom) to RGB565, by
- * averaging the area of the source behind each pixel. */
+/* Shrinks an image fed in row by row (RGB888, top to bottom) by averaging
+ * the area of the source behind each pixel, into palette indices: each
+ * result pixel, as RGB565, looked up in `lut` (see sat_palette.bin). */
 typedef struct {
     int sw, sh;     /* source size */
     int dw, dh;     /* result size, at most the source size each way */
-    uint16_t *dst;  /* dw x dh, filled as rows complete */
+    uint8_t *dst;   /* dw x dh indices, filled as rows complete */
+    const uint8_t *lut; /* 65536: the palette index for each RGB565 value */
     uint32_t *hrow; /* dw x 3: the current source row, shrunk across */
     uint32_t *acc;  /* 2 x dw x 3: the two result rows it can touch */
 } sat_shrink_t;
 
-/* Set up to shrink `sw` x `sh` into `dst` (`dw` x `dh`); the work rows are
- * allocated (in PSRAM on the device). false if out of memory. */
-bool sat_shrink_init(sat_shrink_t *s, int sw, int sh, int dw, int dh, uint16_t *dst);
+/* Set up to shrink `sw` x `sh` into `dst` (`dw` x `dh`) through `lut`; the
+ * work rows are allocated (in PSRAM on the device). false if out of memory. */
+bool sat_shrink_init(sat_shrink_t *s, int sw, int sh, int dw, int dh, uint8_t *dst, const uint8_t *lut);
 void sat_shrink_row(sat_shrink_t *s, int y, const uint8_t *rgb);
 void sat_shrink_free(sat_shrink_t *s);
 

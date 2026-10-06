@@ -7,14 +7,17 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_lcd_panel_interface.h"
+#include "esp_lcd_panel_rgb.h"
 #include "esp_rom_crc.h"
+#include "esp_timer.h"
 
 #include "app.h"
 #include "screenshot.h"
 #include "waveshare_rgb_lcd_port.h"
 
-/* PSRAM left over for everything else while a screenshot is taken. */
-#define SCREENSHOT_PSRAM_SPARE (448 * 1024)
+/* The longest drawing is held off for a screenshot. */
+#define SCREENSHOT_MAX_US (20 * 1000 * 1000)
 
 typedef struct {
     httpd_req_t *req;
@@ -60,35 +63,58 @@ static void png_chunk_end(png_out_t *o)
     png_put_u32(o, o->crc);
 }
 
+/* The panel's frame buffers, and which was last handed to it to show: the
+ * display adapter draws into the others and then hands one over. */
+static void *s_fbs[3];
+static int s_fb_count;
+static const void *volatile s_front;
+static esp_err_t (*s_draw_bitmap)(esp_lcd_panel_t *panel, int x_start, int y_start, int x_end, int y_end,
+                                  const void *color_data);
+
+static esp_err_t draw_bitmap_hook(esp_lcd_panel_t *panel, int x_start, int y_start, int x_end, int y_end,
+                                  const void *color_data)
+{
+    for (int i = 0; i < s_fb_count; i++) {
+        if (color_data == s_fbs[i]) {
+            s_front = color_data;
+        }
+    }
+    return s_draw_bitmap(panel, x_start, y_start, x_end, y_end, color_data);
+}
+
+void screenshot_init(esp_lcd_panel_handle_t panel, int fb_count)
+{
+    s_fb_count = fb_count < 3 ? fb_count : 3;
+    if (s_fb_count < 1 || esp_lcd_rgb_panel_get_frame_buffer(panel, s_fb_count, &s_fbs[0], &s_fbs[1], &s_fbs[2]) !=
+                              ESP_OK) {
+        s_fb_count = 0;
+        return;
+    }
+    s_draw_bitmap = panel->draw_bitmap;
+    panel->draw_bitmap = draw_bitmap_hook;
+}
+
 esp_err_t screenshot_handler(httpd_req_t *req)
 {
-    /* The snapshot is a full-screen RGB565 copy (750 KB of PSRAM). Refuse
-     * rather than take it when that would leave too little for the fetches
-     * running meanwhile: a forecast parse needs ~350 KB. (A coastline render
-     * needs more, but only on the first visit to a location's radar; if it
-     * can't get it, that coastline is drawn on the next visit instead.) */
-    const size_t snap_bytes = (size_t)EXAMPLE_LCD_H_RES * EXAMPLE_LCD_V_RES * 2;
-    if (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) < snap_bytes ||
-        heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < snap_bytes + SCREENSHOT_PSRAM_SPARE) {
+    /* Read from the frame on show rather than from a copy (750 KB of PSRAM
+     * that a busy display may not have). Drawing is held off meanwhile, so
+     * the adapter doesn't start reusing the frame - for a few seconds at
+     * most: a slow client is cut off after SCREENSHOT_MAX_US. */
+    if (s_front == NULL || esp_lv_adapter_lock(-1) != ESP_OK) {
         httpd_resp_set_status(req, "503 Service Unavailable");
-        return httpd_resp_sendstr(req, "Not enough free memory for a screenshot right now\n");
+        return httpd_resp_sendstr(req, "Nothing on the screen yet\n");
     }
-    lv_draw_buf_t *snap = NULL;
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        snap = lv_snapshot_take(lv_screen_active(), LV_COLOR_FORMAT_RGB565);
-        esp_lv_adapter_unlock();
-    }
+    const uint8_t *fb = s_front;
     png_out_t *o = heap_caps_calloc(1, sizeof(*o), MALLOC_CAP_SPIRAM);
-    uint8_t *row = heap_caps_malloc(1 + 3 * (snap ? snap->header.w : 0), MALLOC_CAP_SPIRAM);
-    if (snap == NULL || o == NULL || row == NULL) {
-        if (snap != NULL) {
-            lv_draw_buf_destroy(snap);
-        }
+    uint8_t *row = heap_caps_malloc(1 + 3 * EXAMPLE_LCD_H_RES, MALLOC_CAP_SPIRAM);
+    if (o == NULL || row == NULL) {
+        esp_lv_adapter_unlock();
         free(o);
         free(row);
         return httpd_resp_send_500(req);
     }
-    const uint32_t w = snap->header.w, h = snap->header.h;
+    const int64_t started = esp_timer_get_time();
+    const uint32_t w = EXAMPLE_LCD_H_RES, h = EXAMPLE_LCD_V_RES;
     const uint32_t row_len = 1 + 3 * w; /* filter byte + RGB */
     o->req = req;
     httpd_resp_set_type(req, "image/png");
@@ -108,7 +134,11 @@ esp_err_t screenshot_handler(httpd_req_t *req)
     png_put(o, zhdr, sizeof(zhdr));
     uint32_t a1 = 1, a2 = 0; /* Adler-32 of the raw rows */
     for (uint32_t y = 0; y < h && o->err == ESP_OK; y++) {
-        const uint8_t *src = snap->data + y * snap->header.stride;
+        if (esp_timer_get_time() - started > SCREENSHOT_MAX_US) {
+            o->err = ESP_ERR_TIMEOUT;
+            break;
+        }
+        const uint8_t *src = fb + y * w * 2;
         row[0] = 0; /* no filter */
         for (uint32_t x = 0; x < w; x++) { /* RGB565, little-endian */
             const uint16_t v = (uint16_t)(src[2 * x] | (src[2 * x + 1] << 8));
@@ -130,7 +160,7 @@ esp_err_t screenshot_handler(httpd_req_t *req)
     png_chunk_start(o, "IEND", 0);
     png_chunk_end(o);
 
-    lv_draw_buf_destroy(snap);
+    esp_lv_adapter_unlock();
     free(row);
     esp_err_t err = o->err;
     if (err == ESP_OK && o->n > 0) {
