@@ -23,6 +23,37 @@ static void load_str(nvs_handle_t h, const char *key, char *dst, size_t dst_len)
     nvs_get_str(h, key, dst, &len);
 }
 
+/* Per-location APP_SHOW_* bits: the low byte of each under `key` (as
+ * firmware from before APP_SHOW_SAT stored them all, and still reads), the
+ * high byte under `key_hi`. false if `key` was never saved. */
+static bool load_bits(nvs_handle_t h, const char *key, const char *key_hi, uint16_t *bits)
+{
+    uint8_t lo[APP_CONFIG_MAX_LOCATIONS], hi[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    size_t len = sizeof(lo);
+    if (nvs_get_blob(h, key, lo, &len) != ESP_OK || len != sizeof(lo)) {
+        return false;
+    }
+    len = sizeof(hi);
+    if (nvs_get_blob(h, key_hi, hi, &len) != ESP_OK || len != sizeof(hi)) {
+        memset(hi, 0, sizeof(hi)); /* saved before APP_SHOW_SAT */
+    }
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        bits[i] = (uint16_t)(lo[i] | (hi[i] << 8));
+    }
+    return true;
+}
+
+static esp_err_t save_bits(nvs_handle_t h, const char *key, const char *key_hi, const uint16_t *bits)
+{
+    uint8_t lo[APP_CONFIG_MAX_LOCATIONS], hi[APP_CONFIG_MAX_LOCATIONS];
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        lo[i] = (uint8_t)bits[i];
+        hi[i] = (uint8_t)(bits[i] >> 8);
+    }
+    esp_err_t err = nvs_set_blob(h, key, lo, sizeof(lo));
+    return err == ESP_OK ? nvs_set_blob(h, key_hi, hi, sizeof(hi)) : err;
+}
+
 /* Whatever was stored, leave every location with at least one screen and a
  * radar range inside the allowed span. */
 static void sanitize_view_settings(app_config_t *c)
@@ -93,6 +124,12 @@ static void sanitize_view_settings(app_config_t *c)
     c->text_bold = c->text_bold ? 1 : 0;
     c->cal_show = c->cal_show ? 1 : 0;
     c->cal_rotate = c->cal_rotate ? 1 : 0;
+    c->sat_show = c->sat_show ? 1 : 0;
+    c->sat_rotate = c->sat_rotate ? 1 : 0;
+    if (c->sat_zoom != 2 && c->sat_zoom != 3) {
+        c->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
+    }
+    c->sat_visible = c->sat_visible ? 1 : 0;
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         c->cal_url[i][APP_CONFIG_CAL_URL_MAX - 1] = '\0';
         if (!app_config_cal_url_valid(c->cal_url[i])) {
@@ -117,6 +154,7 @@ static void seed_defaults(app_config_t *out)
     out->auto_dwell_s = APP_CONFIG_AUTO_DWELL_S_DEFAULT;
     out->auto_night_pause = 1;
     out->ov_show = 1;
+    out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
     out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
     out->ota_every_h = APP_CONFIG_OTA_EVERY_H_DEFAULT;
@@ -165,15 +203,14 @@ esp_err_t app_config_load(app_config_t *out)
      * settings stored one radar bitmask ("radar": weather always, radar where
      * the bit is set) and one shared range ("radarkm"); read those if the new
      * keys aren't there yet. */
-    size_t len = sizeof(out->show);
-    if (nvs_get_blob(h, "show", out->show, &len) != ESP_OK || len != sizeof(out->show)) {
+    if (!load_bits(h, "show", "showhi", out->show)) {
         uint8_t mask = 0;
         nvs_get_u8(h, "radar", &mask);
         for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
             out->show[i] = APP_SHOW_WEATHER | ((mask & (1u << i)) ? APP_SHOW_RADAR : 0);
         }
     }
-    len = sizeof(out->radar_km);
+    size_t len = sizeof(out->radar_km);
     if (nvs_get_blob(h, "radarkms", out->radar_km, &len) != ESP_OK || len != sizeof(out->radar_km)) {
         uint16_t km = APP_CONFIG_RADAR_KM_DEFAULT;
         nvs_get_u16(h, "radarkm", &km);
@@ -211,9 +248,8 @@ esp_err_t app_config_load(app_config_t *out)
         len != sizeof(out->ship_near_min_len_m)) {
         memset(out->ship_near_min_len_m, 0, sizeof(out->ship_near_min_len_m));
     }
-    len = sizeof(out->auto_show); /* nothing in the rotation if never saved */
-    if (nvs_get_blob(h, "autoshow", out->auto_show, &len) != ESP_OK || len != sizeof(out->auto_show)) {
-        memset(out->auto_show, 0, sizeof(out->auto_show));
+    if (!load_bits(h, "autoshow", "autoshowhi", out->auto_show)) {
+        memset(out->auto_show, 0, sizeof(out->auto_show)); /* nothing in the rotation if never saved */
     }
     nvs_get_u16(h, "autoidle", &out->auto_idle_min); /* off if never saved */
     nvs_get_u16(h, "autodwell", &out->auto_dwell_s);
@@ -251,6 +287,10 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "textbold", &out->text_bold);
     nvs_get_u8(h, "calshow", &out->cal_show); /* no calendar if never saved */
     nvs_get_u8(h, "calrot", &out->cal_rotate);
+    nvs_get_u8(h, "satshow", &out->sat_show); /* no satellite image if never saved */
+    nvs_get_u8(h, "satrot", &out->sat_rotate);
+    nvs_get_u8(h, "satzoom", &out->sat_zoom); /* 0 if never saved: the default, from sanitizing */
+    nvs_get_u8(h, "satvis", &out->sat_visible);
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);
@@ -279,9 +319,12 @@ esp_err_t app_config_load(app_config_t *out)
     }
     ESP_LOGI(TAG, "calendar: %s%s, %d calendar(s)", out->cal_show ? "shown" : "not shown",
              out->cal_rotate ? ", in the rotation" : "", feeds);
+    ESP_LOGI(TAG, "satellite image of Europe: %s%s; close-ups x%u; %s", out->sat_show ? "shown" : "not shown",
+             out->sat_rotate ? ", in the rotation" : "", out->sat_zoom,
+             out->sat_visible ? "visible light by day" : "infrared always");
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
-                 "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%02x",
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
+                 "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
                  (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
@@ -291,6 +334,7 @@ esp_err_t app_config_load(app_config_t *out)
                  (out->show[i] & APP_SHOW_WEEK) ? " week" : "",
                  (out->show[i] & APP_SHOW_AIR) ? " air" : "",
                  (out->show[i] & APP_SHOW_TIDE) ? " tide" : "",
+                 (out->show[i] & APP_SHOW_SAT) ? " satellite" : "",
                  out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i],
                  out->ship_near_min_len_m[i], out->ship_near_km[i], out->rain_km[i],
                  out->departures[i], out->auto_show[i]);
@@ -317,7 +361,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "pass", cfg->wifi_pass);
     if (err == ESP_OK) err = nvs_set_blob(h, "locs", cfg->locations, sizeof(cfg->locations));
     if (err == ESP_OK) err = nvs_set_u8(h, "loccnt", cnt);
-    if (err == ESP_OK) err = nvs_set_blob(h, "show", cfg->show, sizeof(cfg->show));
+    if (err == ESP_OK) err = save_bits(h, "show", "showhi", cfg->show);
     if (err == ESP_OK) err = nvs_set_blob(h, "radarkms", cfg->radar_km, sizeof(cfg->radar_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipkms", cfg->ship_km, sizeof(cfg->ship_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipminlens", cfg->ship_min_len_m, sizeof(cfg->ship_min_len_m));
@@ -325,7 +369,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_blob(h, "shipnearlens", cfg->ship_near_min_len_m, sizeof(cfg->ship_near_min_len_m));
     if (err == ESP_OK) err = nvs_set_blob(h, "rainkms", cfg->rain_km, sizeof(cfg->rain_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "deps", cfg->departures, sizeof(cfg->departures));
-    if (err == ESP_OK) err = nvs_set_blob(h, "autoshow", cfg->auto_show, sizeof(cfg->auto_show));
+    if (err == ESP_OK) err = save_bits(h, "autoshow", "autoshowhi", cfg->auto_show);
     if (err == ESP_OK) err = nvs_set_u16(h, "autoidle", cfg->auto_idle_min);
     if (err == ESP_OK) err = nvs_set_u16(h, "autodwell", cfg->auto_dwell_s);
     if (err == ESP_OK) err = nvs_set_u8(h, "autoov", cfg->auto_overview ? 1 : 0);
@@ -352,6 +396,10 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "textbold", cfg->text_bold ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "calshow", cfg->cal_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "calrot", cfg->cal_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "satshow", cfg->sat_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "satrot", cfg->sat_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "satzoom", cfg->sat_zoom);
+    if (err == ESP_OK) err = nvs_set_u8(h, "satvis", cfg->sat_visible ? 1 : 0);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);

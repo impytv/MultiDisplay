@@ -24,15 +24,20 @@
 #define APP_SHOW_DEPARTURES 0x10
 #define APP_SHOW_AIR     0x20 /* air quality and pollen */
 #define APP_SHOW_WEEK    0x40 /* the week ahead */
-#define APP_SHOW_TIDE    0x80 /* tides and water level (the last free bit) */
+#define APP_SHOW_TIDE    0x80 /* tides and water level */
+#define APP_SHOW_SAT     0x100 /* the satellite image around it */
 #define APP_SHOW_ALL     (APP_SHOW_WEATHER | APP_SHOW_RADAR | APP_SHOW_SHIPS | APP_SHOW_RAIN | \
-                          APP_SHOW_DEPARTURES | APP_SHOW_AIR | APP_SHOW_WEEK | APP_SHOW_TIDE)
+                          APP_SHOW_DEPARTURES | APP_SHOW_AIR | APP_SHOW_WEEK | APP_SHOW_TIDE | APP_SHOW_SAT)
 
 /* The calendar screen (one for the display, not per location): up to this
  * many iCal addresses, merged. Secret, like a password: whoever has one can
  * read the calendar. */
 #define APP_CONFIG_CAL_FEEDS   3
 #define APP_CONFIG_CAL_URL_MAX 400
+
+/* How much the satellite close-ups are blown up: 3 (about 2000 km across)
+ * or 2 (about 3200 km, sharper). */
+#define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
  * the text entur_parse_selection() reads (see entur_client.h). */
@@ -127,8 +132,9 @@ typedef struct {
      * are the ranges of its aircraft radar, ship traffic and rain radar
      * screens; ship_min_len_m[i] hides its shorter ships (0 shows every
      * ship), except within ship_near_km[i] (0 = no inner circle), where
-     * ship_near_min_len_m[i] applies instead. */
-    uint8_t show[APP_CONFIG_MAX_LOCATIONS];
+     * ship_near_min_len_m[i] applies instead. Bits from APP_SHOW_SAT up are
+     * stored apart from the first eight (see app_config_load). */
+    uint16_t show[APP_CONFIG_MAX_LOCATIONS];
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS]; /* in [APP_CONFIG_RADAR_KM_MIN, APP_CONFIG_RADAR_KM_MAX] */
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX] */
     uint16_t ship_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
@@ -137,7 +143,7 @@ typedef struct {
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX] */
     /* Which of location i's screens the automatic rotation visits: APP_SHOW_*
      * bits, like show[i] (only screens that are shown count). */
-    uint8_t auto_show[APP_CONFIG_MAX_LOCATIONS];
+    uint16_t auto_show[APP_CONFIG_MAX_LOCATIONS];
     /* The stops and lines of location i's departure board ("" = none). */
     char departures[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX];
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
@@ -192,6 +198,15 @@ typedef struct {
     uint8_t cal_show;
     uint8_t cal_rotate;
     char cal_url[APP_CONFIG_CAL_FEEDS][APP_CONFIG_CAL_URL_MAX];
+    /* The satellite image of Europe: shown, and in the rotation. (The
+     * close-ups around each location are APP_SHOW_SAT.) sat_zoom is how much
+     * the close-ups are blown up (APP_CONFIG_SAT_ZOOM_*); with sat_visible
+     * the visible-light image is shown instead of the infrared one while
+     * it is light everywhere shown. */
+    uint8_t sat_show;
+    uint8_t sat_rotate;
+    uint8_t sat_zoom;
+    uint8_t sat_visible;
 } app_config_t;
 
 /**

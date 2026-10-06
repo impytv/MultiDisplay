@@ -124,17 +124,18 @@ static const char PAGE_SCRIPTS[] = "<script src=/setup.js></script><script src=/
  * APP_SHOW_* bit. */
 static const struct {
     const char *vis, *rot, *label;
-    uint8_t bit;
+    uint16_t bit;
 } SCREENS[] = {
     { "wx", "aw", "V&aelig;r", APP_SHOW_WEATHER }, { "uk", "au", "Uke", APP_SHOW_WEEK },
     { "ac", "aa", "Fly", APP_SHOW_RADAR },         { "sh", "as", "Skip", APP_SHOW_SHIPS },
     { "rn", "ar", "Nedb&oslash;r", APP_SHOW_RAIN }, { "dp", "ad", "Avganger", APP_SHOW_DEPARTURES },
     { "lq", "al", "Luft", APP_SHOW_AIR },          { "td", "at", "Tidevann", APP_SHOW_TIDE },
+    { "sat", "asat", "Satellitt", APP_SHOW_SAT },
 };
 
 /* A screen's own settings, right under its checkboxes; shown only while
  * the screen is ticked (data-need, see PAGE_SCRIPTS). */
-static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, int i, uint8_t bit)
+static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, int i, uint16_t bit)
 {
     const bool filled = (i < cfg->location_count);
     switch (bit) {
@@ -296,6 +297,24 @@ static char *build_page(const app_config_t *cfg)
                   "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small>",
                   cfg->ov_show ? " checked" : "", cfg->auto_overview ? " checked" : "");
     p = build_calendar(p, end, cfg);
+    p += snprintf(p, end - p,
+                  "<h2>Satellittbilde</h2><div class=chk><label><input type=checkbox name=satshow value=1%s>"
+                  "Vis Europa</label><label><input type=checkbox name=satrot value=1%s>"
+                  "i automatisk bytte</label></div>"
+                  "<small>Det siste infrar&oslash;de bildet fra Meteosat over Europa, fra Meteorologisk "
+                  "institutt, som en egen skjerm etter kalenderen. Det kommer et nytt hvert kvarter. "
+                  "Et n&aelig;rbilde rundt hvert sted velges med <i>Satellitt</i> under stedet.</small>"
+                  "<label>Forst&oslash;rrelse i n&aelig;rbildene</label><select name=satzoom>"
+                  "<option value=3%s>3 ganger (omtrent 2000 km bredt)</option>"
+                  "<option value=2%s>2 ganger (omtrent 3200 km bredt, skarpere)</option></select>"
+                  "<div class=chk><label><input type=checkbox name=satvis value=1%s>"
+                  "Synlig lys n&aring;r det er lyst</label></div>"
+                  "<small>Bildet i synlig lys viser skyene slik de ser ut, men er svart om natten. "
+                  "Det brukes n&aring;r sola st&aring;r minst 5&deg; over horisonten over hele Europa "
+                  "(for Europa-bildet) og ved hvert sted med n&aelig;rbilde, ellers det infrar&oslash;de.</small>",
+                  cfg->sat_show ? " checked" : "", cfg->sat_rotate ? " checked" : "",
+                  cfg->sat_zoom == 3 ? " selected" : "", cfg->sat_zoom == 2 ? " selected" : "",
+                  cfg->sat_visible ? " checked" : "");
     p += snprintf(p, end - p, "<h2>Innstillinger</h2>");
 
     /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
@@ -793,6 +812,12 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         cfg->auto_overview = form_field(body, "autoov", val, sizeof(val)) ? 1 : 0;
         cfg->ov_show = form_field(body, "ovshow", val, sizeof(val)) ? 1 : 0;
+        cfg->sat_show = form_field(body, "satshow", val, sizeof(val)) ? 1 : 0;
+        cfg->sat_rotate = form_field(body, "satrot", val, sizeof(val)) ? 1 : 0;
+        cfg->sat_visible = form_field(body, "satvis", val, sizeof(val)) ? 1 : 0;
+        if (form_field(body, "satzoom", val, sizeof(val)) && (val[0] == '2' || val[0] == '3') && val[1] == '\0') {
+            cfg->sat_zoom = (uint8_t)(val[0] - '0');
+        }
         cfg->auto_night_pause = form_field(body, "autonight", val, sizeof(val)) ? 1 : 0;
     }
     /* The display's name: made into a host name; blank keeps the old one. */
@@ -880,8 +905,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
      * with all three fields empty is skipped; the rest are compacted so the
      * stored list has no gaps. */
     app_location_t locs[APP_CONFIG_MAX_LOCATIONS] = { 0 };
-    uint8_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
-    uint8_t auto_show[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    uint16_t show[APP_CONFIG_MAX_LOCATIONS] = { 0 }; /* compacted like the locations */
+    uint16_t auto_show[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t radar_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t ship_min_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
@@ -928,7 +953,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
          * ranges; nothing ticked or out of range falls back to weather / the
          * default range. */
         char val[8];
-        uint8_t sh = 0;
+        uint16_t sh = 0;
         snprintf(key, sizeof(key), "wx%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_WEATHER : 0;
         snprintf(key, sizeof(key), "ac%d", i);
@@ -945,13 +970,15 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_AIR : 0;
         snprintf(key, sizeof(key), "td%d", i);
         sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_TIDE : 0;
+        snprintf(key, sizeof(key), "sat%d", i);
+        sh |= form_field(body, key, val, sizeof(val)) ? APP_SHOW_SAT : 0;
         snprintf(key, sizeof(key), "dep%d", i);
         form_field(body, key, deps[n], APP_CONFIG_DEPARTURES_MAX);
         show[n] = sh ? sh : APP_SHOW_WEATHER;
-        static const struct { const char *key; uint8_t bit; } rot[] = {
+        static const struct { const char *key; uint16_t bit; } rot[] = {
             { "aw%d", APP_SHOW_WEATHER }, { "aa%d", APP_SHOW_RADAR }, { "as%d", APP_SHOW_SHIPS },
             { "ar%d", APP_SHOW_RAIN }, { "ad%d", APP_SHOW_DEPARTURES }, { "al%d", APP_SHOW_AIR }, { "au%d", APP_SHOW_WEEK },
-            { "at%d", APP_SHOW_TIDE },
+            { "at%d", APP_SHOW_TIDE }, { "asat%d", APP_SHOW_SAT },
         };
         for (int r = 0; r < (int)(sizeof(rot) / sizeof(rot[0])); r++) {
             snprintf(key, sizeof(key), rot[r].key, i);

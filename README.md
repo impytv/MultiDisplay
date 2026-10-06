@@ -158,7 +158,8 @@ with a throwaway key, so displays won't accept it.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
     one as a tap would (types: `oversikt`, `kalender`, `vaer`, `uke`, `fly`,
-    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`; `sted` counts from 1),
+    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`;
+    `sted` counts from 1),
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
     over nettet** is ticked under **Vedlikehold → Skjermbilder** (off by
     default; per display, so not in settings backups).
@@ -218,7 +219,8 @@ around):
    oversikten** under **Oversikt** on the setup page is unticked (its **i
    automatisk bytte** puts it in the rotation).
 2. **Kalender**, if shown (see [Calendar](#calendar)).
-3. For each location in order, whichever of its screens are enabled.
+3. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
+4. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -379,6 +381,28 @@ Recurring events (daily, weekly, monthly, yearly, with exceptions and moved
 instances) are expanded; times with a time zone are taken as Norwegian time.
 The addresses are secret, so they are never shown on the page again (a blank
 field keeps the saved one) and are left out of settings backups.
+
+### Satellite
+
+MET Norway's latest Meteosat image of Europe (a new one every 15 minutes),
+under **Satellittbilde** on the setup page:
+
+- **Vis Europa** (and **i automatisk bytte**) adds one screen with the whole
+  image, after the calendar.
+- **Satellitt** under a location adds a close-up around it, with a ring on
+  the location. **Forstørrelse i nærbildene** blows it up 3 times (about
+  2000 km across) or 2 times (about 3200 km, sharper); an image pixel is
+  about 8 km, so more would only be blur.
+- The infrared image is shown day and night. With **Synlig lys når det er
+  lyst**, the visible-light image is shown instead while the sun is at least
+  5° up over all of Europe (if that screen is shown) and at every location
+  with a close-up - one kind for all of them, as each fetch fills every view.
+
+The image is decoded as it streams in, so the ~1 MB file is never held;
+Europe takes 720 KB of PSRAM, each close-up 80 KB (180 KB at 2 times). MET
+doesn't document the image's projection: `scripts/fit_satellite.py` fitted
+one to the coastline drawn on it (within about a pixel over Norway); run it
+again if MET changes the image.
 
 ### Night
 

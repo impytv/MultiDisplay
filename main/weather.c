@@ -95,6 +95,7 @@ static const char *TAG = "weather";
 #define TEMP_MARKER_POOL 8
 #define PRECIP_MARKER_POOL 2 /* the two highest max-precipitation peaks - see place_precip_markers */
 #define WIND_MARKER_POOL 2   /* the two highest gust peaks - see place_wind_markers */
+#define WIND_MARKER_GAP  12  /* px kept between wind markers, or the weaker is left out */
 /* Wind/gust and precipitation-range peak labels (pick_top_peaks) use their
  * own, tighter spacing than MARKER_MIN_GAP_H: a second peak within this many
  * hours of a stronger one is the same event, not a distinct one, so only the
@@ -447,7 +448,7 @@ static void temp_line_ext_size_cb(lv_event_t *e)
 /* Centers label horizontally on chart_x (absolute) and places it either
  * above or below chart_y (absolute), clamped to stay within the chart's
  * horizontal bounds. */
-static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y, bool above)
+static int32_t place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y, bool above)
 {
     lv_obj_update_layout(label);
     int32_t w = lv_obj_get_width(label);
@@ -462,6 +463,7 @@ static void place_marker_label(lv_obj_t *label, int32_t chart_x, int32_t chart_y
 
     int32_t y = above ? (chart_y - h - 2) : (chart_y + 2);
     lv_obj_set_pos(label, x, y);
+    return x;
 }
 
 static float pt_temp(const yr_forecast_point_t *p) { return p->air_temperature_c; }
@@ -686,22 +688,38 @@ static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_m
  * with its sustained wind speed followed by its gust speed in parentheses,
  * e.g. "12 (18) m/s". Pinned near the chart's top rather than at the bar's
  * own (value-dependent) height, since a bottom-of-chart label was too easy
- * to miss. */
+ * to miss. All on one row, so six hours apart isn't always room enough
+ * (wide text, the 10-minute nowcast stretching the first hours, labels
+ * pushed in from the chart's edge): a label that would come within
+ * WIND_MARKER_GAP px of one already placed - a stronger peak, as they are
+ * picked strongest first - is left out. */
 static void place_wind_markers(const yr_forecast_t *fc)
 {
     int gust_idx[WIND_MARKER_POOL];
     int n = pick_top_peaks(fc, pt_wind_gust, WIND_MARKER_POOL, gust_idx);
 
+    int used = 0;
+    int32_t left[WIND_MARKER_POOL], right[WIND_MARKER_POOL]; /* of those placed */
     for (int k = 0; k < n; k++) {
         int m = gust_idx[k];
         int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
-        lv_obj_t *label = s_wind_markers[k];
+        lv_obj_t *label = s_wind_markers[used];
         lv_label_set_text_fmt(label, "%.0f (%.0f) m/s", (double)fc->points[m].wind_speed_ms,
                               (double)fc->points[m].wind_speed_of_gust_ms);
         lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-        place_marker_label(label, CHART_X + x, WIND_CHART_Y, false);
+        const int32_t x1 = place_marker_label(label, CHART_X + x, WIND_CHART_Y, false);
+        const int32_t x2 = x1 + lv_obj_get_width(label);
+        bool clash = false;
+        for (int j = 0; j < used; j++) {
+            clash |= x1 < right[j] + WIND_MARKER_GAP && left[j] < x2 + WIND_MARKER_GAP;
+        }
+        if (!clash) {
+            left[used] = x1;
+            right[used] = x2;
+            used++;
+        }
     }
-    for (int i = n; i < WIND_MARKER_POOL; i++) {
+    for (int i = used; i < WIND_MARKER_POOL; i++) {
         lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 }

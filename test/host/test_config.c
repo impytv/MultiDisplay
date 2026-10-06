@@ -27,7 +27,8 @@ void test_config(void)
     snprintf(a.locations[1].name, sizeof(a.locations[1].name), "Kval\xC3\xB8ysletta");
     snprintf(a.locations[1].lat, sizeof(a.locations[1].lat), "69.6957");
     snprintf(a.locations[1].lon, sizeof(a.locations[1].lon), "18.8837");
-    a.show[1] = APP_SHOW_WEATHER | APP_SHOW_SHIPS;
+    a.show[1] = APP_SHOW_WEATHER | APP_SHOW_SHIPS | APP_SHOW_SAT; /* a bit past the first byte */
+    a.auto_show[1] = APP_SHOW_SAT;
     a.ship_km[1] = 30;
     snprintf(a.departures[1], sizeof(a.departures[1]), "58858=VYG:Line:R31/v502");
     a.night_off = 1;
@@ -40,6 +41,9 @@ void test_config(void)
     a.cal_show = 1;
     a.ov_show = 0;
     a.cal_rotate = 1;
+    a.sat_show = 1;
+    a.sat_zoom = 2;
+    a.sat_visible = 1;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
     CHECK(app_config_save(&a) == ESP_OK);
@@ -74,6 +78,11 @@ void test_config(void)
     CHECK_INT(c.show[0], APP_SHOW_WEATHER | APP_SHOW_TIDE);
     CHECK(c.cal_show && c.cal_rotate && c.cal_url[0][0] == '\0'); /* the calendar addresses aren't in it */
     CHECK_INT(c.ov_show, 0);
+    CHECK_INT(c.show[1], APP_SHOW_WEATHER | APP_SHOW_SHIPS | APP_SHOW_SAT);
+    CHECK_INT(c.auto_show[1], APP_SHOW_SAT);
+    CHECK(c.sat_show && !c.sat_rotate);
+    CHECK_INT(c.sat_zoom, 2);
+    CHECK_INT(c.sat_visible, 1);
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
     CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));
@@ -140,9 +149,11 @@ void test_config(void)
     /* Out-of-range values are brought back in range. */
     CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,"
                                "\"fonts\":{\"title_px\":200},\"locations\":[{\"name\":\"X\",\"lat\":\"60\","
-                               "\"lon\":\"10\",\"aircraft_km\":5000,\"show\":0}]}", &c, err, sizeof(err)));
+                               "\"lon\":\"10\",\"aircraft_km\":5000,\"show\":0}],\"satellite\":{\"zoom\":5}}", &c, err,
+                               sizeof(err)));
     CHECK_INT(c.title_px, APP_CONFIG_TITLE_PX_DEFAULT);
     CHECK_INT(c.radar_km[0], APP_CONFIG_RADAR_KM_DEFAULT);
     CHECK_INT(c.show[0], APP_SHOW_WEATHER);
+    CHECK_INT(c.sat_zoom, APP_CONFIG_SAT_ZOOM_DEFAULT);
     CHECK_INT(c.location_count, 1);
 }

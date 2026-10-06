@@ -65,6 +65,12 @@ char *app_config_to_json(const app_config_t *c)
     cJSON_AddBoolToObject(cal, "show", c->cal_show);
     cJSON_AddBoolToObject(cal, "rotate", c->cal_rotate);
 
+    cJSON *sat = cJSON_AddObjectToObject(root, "satellite");
+    cJSON_AddBoolToObject(sat, "show", c->sat_show);
+    cJSON_AddBoolToObject(sat, "rotate", c->sat_rotate);
+    cJSON_AddNumberToObject(sat, "zoom", c->sat_zoom);
+    cJSON_AddBoolToObject(sat, "visible_by_day", c->sat_visible);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -202,6 +208,11 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     const cJSON *cal = cJSON_GetObjectItemCaseSensitive(root, "calendar");
     get_bool(cal, "show", &c->cal_show);
     get_bool(cal, "rotate", &c->cal_rotate);
+    const cJSON *sat = cJSON_GetObjectItemCaseSensitive(root, "satellite");
+    get_bool(sat, "show", &c->sat_show);
+    get_bool(sat, "rotate", &c->sat_rotate);
+    get_u8(sat, "zoom", &c->sat_zoom);
+    get_bool(sat, "visible_by_day", &c->sat_visible);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }
@@ -231,8 +242,8 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
             c->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
             c->ship_min_len_m[i] = c->ship_near_km[i] = c->ship_near_min_len_m[i] = 0;
             c->departures[i][0] = '\0';
-            get_u8(l, "show", &c->show[i]);
-            get_u8(l, "rotate", &c->auto_show[i]);
+            get_u16(l, "show", &c->show[i]);
+            get_u16(l, "rotate", &c->auto_show[i]);
             get_u16(l, "aircraft_km", &c->radar_km[i]);
             get_u16(l, "ship_km", &c->ship_km[i]);
             get_u16(l, "ship_min_m", &c->ship_min_len_m[i]);

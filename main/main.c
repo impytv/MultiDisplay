@@ -26,6 +26,7 @@
 #include "departures.h"
 #include "air.h"
 #include "calendar.h"
+#include "satellite.h"
 #include "tide.h"
 #include "week.h"
 #include "entur_client.h"
@@ -84,20 +85,21 @@ const lv_font_t *g_font_large;
 lv_obj_t *g_status_label;
 
 /* The screens a tap cycles through, in order (see build_stops): the overview
- * table and the calendar if shown, then for each location whichever of its
- * weather, week, aircraft, ships, rain, departures, air and tide screens are
- * enabled, in that order. */
+ * table, the calendar and the satellite image of Europe if shown, then for
+ * each location whichever of its weather, week, aircraft, ships, rain,
+ * departures, air, tide and satellite screens are enabled, in that order. */
 typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
-static view_stop_t s_stops[2 + 8 * APP_CONFIG_MAX_LOCATIONS]; /* overview, calendar, up to eight per location */
+static view_stop_t s_stops[3 + 9 * APP_CONFIG_MAX_LOCATIONS]; /* overview, calendar, Europe, up to nine per location */
 static int s_stop_count;
 static bool s_any_radar;      /* some location shows aircraft, ships or rain (they share the radar screen) */
 static bool s_any_departures; /* some location shows a departure board */
 static bool s_any_air;        /* some location shows the air screen */
 static bool s_any_week;       /* some location shows the week screen */
 static bool s_any_tide;       /* some location shows the tide screen */
+static bool s_any_sat;        /* some location shows a satellite close-up */
 
 /* Index into s_stops of the screen on show. Switched by a tap or the
  * automatic rotation (view_enter); the weather task watches it and fetches.
@@ -121,6 +123,7 @@ static lv_obj_t *s_air_root;      /* air quality and pollen; likewise */
 static lv_obj_t *s_week_root;     /* the week ahead; likewise */
 static lv_obj_t *s_tide_root;     /* tides; likewise */
 static lv_obj_t *s_cal_root;      /* the calendar; only if shown */
+static lv_obj_t *s_sat_root;      /* the satellite image; only if Europe or a close-up is shown */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
 static bool s_backlight_on = true;
@@ -210,12 +213,16 @@ static void build_stops(void)
     if (g_cfg->cal_show) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_CALENDAR, 0 };
     }
+    if (g_cfg->sat_show) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_SAT_EUROPE, 0 };
+    }
     static const struct {
-        uint8_t show, kind;
+        uint16_t show;
+        uint8_t kind;
     } order[] = {
         { APP_SHOW_WEATHER, STOP_WEATHER }, { APP_SHOW_WEEK, STOP_WEEK }, { APP_SHOW_RADAR, STOP_RADAR }, { APP_SHOW_SHIPS, STOP_SHIPS },
         { APP_SHOW_RAIN, STOP_RAIN }, { APP_SHOW_DEPARTURES, STOP_DEPARTURES }, { APP_SHOW_AIR, STOP_AIR },
-        { APP_SHOW_TIDE, STOP_TIDE },
+        { APP_SHOW_TIDE, STOP_TIDE }, { APP_SHOW_SAT, STOP_SAT },
     };
     for (int i = 0; i < g_cfg->location_count; i++) {
         for (size_t k = 0; k < sizeof(order) / sizeof(order[0]); k++) {
@@ -238,6 +245,9 @@ static void build_stops(void)
         if (g_cfg->show[i] & APP_SHOW_TIDE) {
             s_any_tide = true;
         }
+        if (g_cfg->show[i] & APP_SHOW_SAT) {
+            s_any_sat = true;
+        }
     }
     /* Every location shows at least one screen; just in case, never none. */
     if (s_stop_count == 0) {
@@ -250,14 +260,15 @@ static void build_stops(void)
 static void show_view(stop_kind_t kind)
 {
     lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root, s_air_root, s_week_root,
-                                s_tide_root, s_cal_root };
+                                s_tide_root, s_cal_root, s_sat_root };
     lv_obj_t *shown = (kind == STOP_OVERVIEW) ? s_overview_root
                     : (kind == STOP_WEATHER) ? s_detail_root
                     : (kind == STOP_DEPARTURES) ? s_dep_root
                     : (kind == STOP_AIR) ? s_air_root
                     : (kind == STOP_WEEK) ? s_week_root
                     : (kind == STOP_TIDE) ? s_tide_root
-                    : (kind == STOP_CALENDAR) ? s_cal_root : s_radar_root;
+                    : (kind == STOP_CALENDAR) ? s_cal_root
+                    : (kind == STOP_SAT_EUROPE || kind == STOP_SAT) ? s_sat_root : s_radar_root;
     for (size_t k = 0; k < sizeof(roots) / sizeof(roots[0]); k++) {
         if (roots[k] == NULL) {
             continue;
@@ -315,6 +326,12 @@ static void view_enter(int idx)
     case STOP_CALENDAR:
         calendar_enter();
         break;
+    case STOP_SAT_EUROPE:
+        satellite_enter(-1);
+        break;
+    case STOP_SAT:
+        satellite_enter(stop->loc);
+        break;
     }
 }
 
@@ -371,10 +388,10 @@ static void screen_touch_cb(lv_event_t *e)
 /* Whether stop `i` is one the automatic rotation visits. */
 static bool stop_in_rotation(int i)
 {
-    static const uint8_t bit[] = {
+    static const uint16_t bit[] = {
         [STOP_WEATHER] = APP_SHOW_WEATHER, [STOP_RADAR] = APP_SHOW_RADAR, [STOP_SHIPS] = APP_SHOW_SHIPS,
         [STOP_RAIN] = APP_SHOW_RAIN, [STOP_DEPARTURES] = APP_SHOW_DEPARTURES, [STOP_AIR] = APP_SHOW_AIR,
-        [STOP_WEEK] = APP_SHOW_WEEK, [STOP_TIDE] = APP_SHOW_TIDE,
+        [STOP_WEEK] = APP_SHOW_WEEK, [STOP_TIDE] = APP_SHOW_TIDE, [STOP_SAT] = APP_SHOW_SAT,
     };
     const view_stop_t *st = &s_stops[i];
     if (st->kind == STOP_OVERVIEW) {
@@ -382,6 +399,9 @@ static bool stop_in_rotation(int i)
     }
     if (st->kind == STOP_CALENDAR) {
         return g_cfg->cal_rotate;
+    }
+    if (st->kind == STOP_SAT_EUROPE) {
+        return g_cfg->sat_rotate;
     }
     return (g_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
 }
@@ -424,7 +444,8 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
 static const char *const STOP_NAMES[] = {
     [STOP_OVERVIEW] = "oversikt", [STOP_WEATHER] = "vaer", [STOP_RADAR] = "fly", [STOP_SHIPS] = "skip",
     [STOP_RAIN] = "nedbor", [STOP_DEPARTURES] = "avganger", [STOP_AIR] = "luft", [STOP_WEEK] = "uke",
-    [STOP_TIDE] = "tidevann", [STOP_CALENDAR] = "kalender",
+    [STOP_TIDE] = "tidevann", [STOP_CALENDAR] = "kalender", [STOP_SAT_EUROPE] = "europa",
+    [STOP_SAT] = "satellitt",
 };
 
 static esp_err_t screen_send_list(httpd_req_t *req)
@@ -437,7 +458,7 @@ static esp_err_t screen_send_list(httpd_req_t *req)
         cJSON *o = cJSON_CreateObject();
         cJSON_AddNumberToObject(o, "vis", i + 1);
         cJSON_AddStringToObject(o, "type", STOP_NAMES[st->kind]);
-        if (st->kind != STOP_OVERVIEW && st->kind != STOP_CALENDAR) {
+        if (!stop_is_global(st->kind)) {
             cJSON_AddNumberToObject(o, "sted", st->loc + 1);
             cJSON_AddStringToObject(o, "navn", g_cfg->locations[st->loc].name);
         }
@@ -479,7 +500,7 @@ static esp_err_t screen_handler(httpd_req_t *req)
         const int l = atoi(loc) - 1;
         for (int i = 0; i < s_stop_count && want < 0; i++) {
             const view_stop_t *st = &s_stops[i];
-            const bool global = (st->kind == STOP_OVERVIEW || st->kind == STOP_CALENDAR);
+            const bool global = stop_is_global(st->kind);
             if (strcmp(STOP_NAMES[st->kind], val) == 0 && (global || st->loc == l)) {
                 want = i;
             }
@@ -538,6 +559,9 @@ static void build_ui(lv_obj_t *screen)
     }
     if (g_cfg->cal_show) {
         s_cal_root = calendar_build(screen);
+    }
+    if (g_cfg->sat_show || s_any_sat) {
+        s_sat_root = satellite_build(screen);
     }
 
     /* Created after the screens so it sits on top of whichever is shown:
@@ -812,6 +836,12 @@ static void yr_weather_task(void *arg)
             break;
         case STOP_CALENDAR:
             wait_ms = calendar_poll(active_view);
+            break;
+        case STOP_SAT_EUROPE:
+            wait_ms = satellite_poll(-1, active_view);
+            break;
+        case STOP_SAT:
+            wait_ms = satellite_poll(stop->loc, active_view);
             break;
         default:
             wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);
