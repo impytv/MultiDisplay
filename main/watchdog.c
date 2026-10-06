@@ -23,8 +23,10 @@ static const char *TAG = "watchdog";
 
 #define WD_CHECK_S          10
 #define WD_LVGL_MAX_S       60
-/* One pass of the weather task is at most a 5-minute wait plus its fetches
- * (15 s timeouts; the rain radar's hour of images is the longest run). */
+/* The weather task beats before and after each screen's fetches, which
+ * take a few minutes at most (15-20 s timeouts; the rain radar's hour of
+ * images is the longest run), and between them waits 15 minutes at most
+ * (the satellite screen). */
 #define WD_WEATHER_MAX_S    (20 * 60)
 
 /* Low memory, for WD_LOW_MEM_S on end: a fetch dips internal DRAM to about

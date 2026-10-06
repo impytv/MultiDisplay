@@ -83,7 +83,7 @@ static EXT_RAM_BSS_ATTR offer_t s_offer;      /* when s_have_offer: a version ne
 static bool s_have_offer;
 
 static TaskHandle_t s_task;
-static volatile request_t s_request;
+static request_t s_request; /* guarded by s_lock */
 static int64_t s_next_us;    /* esp_timer time of the next scheduled check */
 static int s_failures;
 /* The scheduled period (see update_schedule.h) whose check has been made,
@@ -376,8 +376,12 @@ static bool schedule_now(int64_t *period, int *into_min, int64_t *next_s)
 
 bool updater_poll(uint32_t *wait_ms)
 {
+    /* Taken under the lock: the web server sets it under the lock too, and
+     * one landing between a read and a clear would be lost. */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     const request_t req = s_request;
     s_request = REQ_NONE;
+    xSemaphoreGive(s_lock);
     if (g_cfg->ota_url[0] == '\0') {
         if (req != REQ_NONE) {
             set_result("ingen oppdateringsadresse satt%s", "");

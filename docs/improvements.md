@@ -356,3 +356,62 @@ with all seven screen types on all five locations and one full rotation
   hash (PBKDF2 or similar) would do, as the display only compares it; the
   login cookie is already derived from it, so it needs a one-time migration
   of the saved setting.
+
+## Fifth review: the whole codebase (October 2026, 1.9.0)
+
+A clean configuration from `sdkconfig.defaults` (as CI builds) was checked
+against the local `sdkconfig`: identical, so nothing the build relies on
+lives only in the untracked file.
+
+- [x] **54. DNS rebinding gets past the cross-site check.** `same_origin`
+  compares Origin with the request's own Host. A web page whose domain is
+  made to resolve to the display's address (DNS rebinding) sends Origin and
+  Host both as its own domain, so the check passes; with no setup password
+  that page can then POST `/save` (WiFi, password, update address),
+  `/config.json` or `/ota/install`. Accept only requests whose Host is the
+  display's IP, `<name>.local` or the portal's 192.168.4.1 (with any port),
+  and refuse the rest with 403. Updates stay safe through signing either
+  way, but a changed WiFi network or password needs the BOOT button.
+  *Done: every request but the stylesheet must name the display (its IP,
+  192.168.4.1, or its name alone or with .local, .lan, .home, .home.arpa
+  or .localdomain, any port); others get 403. Not in the setup portal,
+  whose captive-portal probes name other sites.*
+- [x] **55. Wrong BarentsWatch credentials are retried every 30 s.** A token
+  request rejected with 400/401 is asked again on every ship poll while the
+  ship screen is on show, which risks the client being blocked. Wait 10
+  minutes after a rejection (a new setting restarts the display anyway).
+  *Done: after a rejection the token isn't asked for again for 10 minutes;
+  the screen keeps saying "Innlogging feilet".*
+- [x] **56. A wrong password stalls the web server for a second.** The
+  delay after a wrong password is a `vTaskDelay` in the single httpd task,
+  so anyone on the network can keep the pages and the screenshot slow by
+  sending wrong passwords. Remember the time of the last failure and answer
+  429 to attempts within a second instead of sleeping.
+  *Done: a password is checked at most once a second after a wrong one;
+  one sooner gets 429 (or "Vent et sekund" on the login form) at once, and
+  no request waits.*
+- [x] **57. The overview's columns follow the forecast, not the clock.**
+  `update_overview` takes "now" from the newest forecast's first point (a
+  leftover from before the clock was set over NTP). After hours offline the
+  columns start hours back. Use the clock when it is set, and the forecast
+  points from the current hour on.
+  *Done: the columns start at the clock's hour once it is set; a column
+  the forecast held doesn't reach within 3 hours shows a dash.*
+- [x] **58. A lost "Check now" or "Install now".** `updater_poll` reads and
+  clears `s_request` without `s_lock`, while the web server sets it under
+  the lock; a request landing between the two is lost and the page shows
+  "busy" until the next scheduled check. Take the lock for the swap.
+  *Done.*
+- [x] **59. The login code has no host tests.** The cookie token, the
+  cookie's parsing and the `next` address check live in `wifi_provision.c`,
+  which the host tests don't build. Move them into a small file of their
+  own (like `form_util.c`) and test them, including a forged and a
+  truncated cookie.
+  *Done: `components/web_auth.c` (the address check, the cookie, the
+  address after logging in, the pace of tries), with 44 host checks. The
+  HMAC itself is mbedTLS's.*
+- [x] **60. Night dimming and the nightly restart can start late.** They
+  are checked when the weather task wakes; on the satellite screen with the
+  rotation paused for the night that can be 15 minutes apart. Check them
+  from the once-a-second LVGL timer instead (the restart from a task).
+  *Done: both run from the once-a-second LVGL timer.*

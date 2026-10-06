@@ -26,6 +26,7 @@
 #include "nvs.h"
 #include "ota_writer.h"
 #include "form_util.h"
+#include "web_auth.h"
 #include "cJSON.h"
 #include "mdns.h"
 #include "restart.h"
@@ -64,6 +65,9 @@ static bool s_auth_bypass;
 /* The navigation page is at / (else the setup page is): on the home
  * network when ticked, never in the setup portal. */
 static bool s_nav;
+/* In the setup portal: then any Host is answered (captive-portal probes
+ * ask for other sites' addresses). */
+static bool s_portal;
 
 static void status(const char *msg)
 {
@@ -489,20 +493,6 @@ static char *build_page(const app_config_t *cfg)
  * HTTP handlers
  * ------------------------------------------------------------------------ */
 
-/* Equal strings, compared in a time that doesn't depend on where they
- * differ. */
-static bool secret_equal(const char *a, const char *b)
-{
-    const size_t n = strlen(b);
-    if (strlen(a) != n) {
-        return false;
-    }
-    unsigned char diff = 0;
-    for (size_t i = 0; i < n; i++) {
-        diff |= (unsigned char)a[i] ^ (unsigned char)b[i];
-    }
-    return diff == 0;
-}
 
 /* Logging in: a browser that has given the password once gets a cookie
  * holding an HMAC-SHA256 of the password under a random key kept on the
@@ -510,7 +500,7 @@ static bool secret_equal(const char *a, const char *b)
  * can't be made without the display's key, and stops working when the
  * password changes. HttpOnly keeps it from scripts and SameSite=Strict from
  * other sites' requests. HTTP Basic still works, for curl and scripts. */
-#define AUTH_COOKIE       "md_auth"
+#define AUTH_COOKIE       WEB_AUTH_COOKIE
 #define AUTH_COOKIE_AGE_S (365 * 24 * 3600)
 #define AUTH_NVS_NS       "webauth"
 
@@ -545,13 +535,49 @@ static const char *auth_token(bool create)
                         (const unsigned char *)s_web_pass, strlen(s_web_pass), mac) != 0) {
         return NULL;
     }
-    for (int i = 0; i < (int)sizeof(mac); i++) {
-        snprintf(s_auth_token + 2 * i, 3, "%02x", mac[i]);
-    }
+    web_auth_hex(mac, s_auth_token);
     return s_auth_token;
 }
 
-typedef enum { AUTH_OK, AUTH_NONE, AUTH_WRONG } auth_t;
+typedef enum { AUTH_OK, AUTH_NONE, AUTH_WRONG, AUTH_WAIT } auth_t;
+
+static int64_t s_last_fail_us; /* the last wrong password, 0 = none */
+
+/* Check a password given, at most one a second (see web_auth_may_try). */
+static auth_t try_password(const char *given, const char *what)
+{
+    const int64_t now = esp_timer_get_time();
+    if (!web_auth_may_try(now, s_last_fail_us)) {
+        return AUTH_WAIT;
+    }
+    if (web_auth_secret_equal(given, s_web_pass)) {
+        return AUTH_OK;
+    }
+    ESP_LOGW(TAG, "Wrong password (%s)", what);
+    s_last_fail_us = now;
+    return AUTH_WRONG;
+}
+
+/* Whether the request is for this display by name or address; when not,
+ * the 403 has been sent. See web_auth_host_ok. */
+static bool host_ok(httpd_req_t *req)
+{
+    if (s_portal) {
+        return true;
+    }
+    char host[96];
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) {
+        return true; /* HTTP/1.0 without a Host: no browser */
+    }
+    if (web_auth_host_ok(host, s_sta_ip, PORTAL_AP_IP, s_hostname)) {
+        return true;
+    }
+    ESP_LOGW(TAG, "Refused a %s for host %s", req->uri, host);
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_sendstr(req, "Ukjent adresse for denne skjermen.");
+    return false;
+}
 
 /* Whether `req` may in: no password, BOOT held at power-on, the login
  * cookie, or HTTP Basic with the password and any user name. */
@@ -560,37 +586,41 @@ static auth_t auth_check(httpd_req_t *req)
     if (s_web_pass[0] == '\0' || s_auth_bypass) {
         return AUTH_OK;
     }
-    char val[80];
-    size_t n = sizeof(val);
-    const char *token = auth_token(false);
-    if (token != NULL && httpd_req_get_cookie_val(req, AUTH_COOKIE, val, &n) == ESP_OK && secret_equal(val, token)) {
+    char hdr[192];
+    if (httpd_req_get_hdr_value_str(req, "Cookie", hdr, sizeof(hdr)) == ESP_OK &&
+        web_auth_cookie_ok(hdr, auth_token(false))) {
         return AUTH_OK;
     }
-    char hdr[192];
     if (httpd_req_get_hdr_value_str(req, "Authorization", hdr, sizeof(hdr)) != ESP_OK) {
         return AUTH_NONE;
     }
     unsigned char dec[144];
     size_t len = 0;
+    const char *colon = NULL;
     if (strncasecmp(hdr, "Basic ", 6) == 0 &&
         mbedtls_base64_decode(dec, sizeof(dec) - 1, &len, (const unsigned char *)hdr + 6, strlen(hdr + 6)) == 0) {
         dec[len] = '\0';
-        const char *colon = strchr((const char *)dec, ':');
-        if (colon != NULL && secret_equal(colon + 1, s_web_pass)) {
-            return AUTH_OK;
-        }
+        colon = strchr((const char *)dec, ':');
     }
-    ESP_LOGW(TAG, "Wrong setup page password");
-    vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
-    return AUTH_WRONG;
+    return try_password(colon != NULL ? colon + 1 : "", "HTTP Basic");
 }
 
 /* Every request but the pages checks this first. When refused, the 401
  * that makes the browser ask has been sent. */
 static bool authorized(httpd_req_t *req)
 {
-    if (auth_check(req) == AUTH_OK) {
+    if (!host_ok(req)) {
+        return false;
+    }
+    const auth_t a = auth_check(req);
+    if (a == AUTH_OK) {
         return true;
+    }
+    if (a == AUTH_WAIT) {
+        httpd_resp_set_status(req, "429 Too Many Requests");
+        httpd_resp_set_hdr(req, "Retry-After", "1");
+        httpd_resp_sendstr(req, "Vent et sekund og pr\xC3\xB8v igjen.");
+        return false;
     }
     httpd_resp_set_status(req, "401 Unauthorized");
     httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"MultiDisplay\", charset=\"UTF-8\"");
@@ -612,14 +642,9 @@ static const char *display_title(void)
     return title;
 }
 
-/* Where to go after logging in: one of the pages, nothing else. */
-static const char *login_next(const char *uri)
-{
-    return strncmp(uri, "/oppsett", 8) == 0 ? "/oppsett" : "/";
-}
 
 /* The login form, for a page asked for without the password. */
-static esp_err_t send_login(httpd_req_t *req, const char *next, bool wrong)
+static esp_err_t send_login(httpd_req_t *req, const char *next, auth_t why)
 {
     char *buf = malloc(2048);
     if (buf == NULL) {
@@ -636,7 +661,10 @@ static esp_err_t send_login(httpd_req_t *req, const char *next, bool wrong)
              "<input type=hidden name=next value=\"%s\"><button type=submit>Logg inn</button></form>"
              "<p><small>Passordet huskes i denne nettleseren til det endres. Glemt det? Hold BOOT inne "
              "mens skjermen sl&aring;s p&aring;, s&aring; &aring;pner oppsettnettet uten passord.</small></p>",
-             wrong ? "<span class=err>Feil passord.</span>" : "", next);
+             why == AUTH_WRONG  ? "<span class=err>Feil passord.</span>"
+             : why == AUTH_WAIT ? "<span class=err>Vent et sekund og pr&oslash;v igjen.</span>"
+                                : "",
+             next);
     httpd_resp_set_status(req, "401 Unauthorized");
     httpd_resp_set_type(req, "text/html");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -649,11 +677,14 @@ static esp_err_t send_login(httpd_req_t *req, const char *next, bool wrong)
  * the login form rather than the browser's own prompt. */
 static bool page_authorized(httpd_req_t *req)
 {
+    if (!host_ok(req)) {
+        return false;
+    }
     const auth_t a = auth_check(req);
     if (a == AUTH_OK) {
         return true;
     }
-    send_login(req, login_next(req->uri), a == AUTH_WRONG);
+    send_login(req, web_auth_next(req->uri), a);
     return false;
 }
 
@@ -665,6 +696,9 @@ static bool page_authorized(httpd_req_t *req)
  * through. When refused, the 403 has been sent. */
 static bool same_origin(httpd_req_t *req)
 {
+    if (!host_ok(req)) {
+        return false;
+    }
     char host[64], from[128];
     if (httpd_req_get_hdr_value_str(req, "Origin", from, sizeof(from)) != ESP_OK &&
         httpd_req_get_hdr_value_str(req, "Referer", from, sizeof(from)) != ESP_OK) {
@@ -783,14 +817,16 @@ static esp_err_t h_login(httpd_req_t *req)
     }
     form_field(body, "next", next, sizeof(next));
     next[sizeof(next) - 1] = '\0';
-    const char *to = login_next(next);
+    const char *to = web_auth_next(next);
     if (s_web_pass[0] == '\0' || s_auth_bypass) {
         return see_other(req, to);
     }
-    if (!form_field(body, "pass", pass, sizeof(pass)) || !secret_equal(pass, s_web_pass)) {
-        ESP_LOGW(TAG, "Wrong password on the login page");
-        vTaskDelay(pdMS_TO_TICKS(1000)); /* slows down guessing */
-        return send_login(req, to, true);
+    if (!form_field(body, "pass", pass, sizeof(pass))) {
+        pass[0] = '\0';
+    }
+    const auth_t a = try_password(pass, "login page");
+    if (a != AUTH_OK) {
+        return send_login(req, to, a);
     }
     const char *token = auth_token(true);
     if (token == NULL) {
@@ -1699,6 +1735,7 @@ static bool sta_try_connect(const app_config_t *cfg)
  * portal's own network: a connect attempt hops channels and would drop them. */
 static void portal_run(bool retry_sta)
 {
+    s_portal = true;
     s_stop_reconnect = true;
     xEventGroupClearBits(s_events, BIT_CONNECTED);
 

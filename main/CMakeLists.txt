@@ -21,6 +21,7 @@ idf_component_register(
         "../components/app_config.c"
         "../components/app_config_json.c"
         "../components/form_util.c"
+        "../components/web_auth.c"
         "../components/version_util.c"
         "../components/wifi_provision.c"
         "../components/yr_client.c"

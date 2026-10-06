@@ -26,6 +26,10 @@ static const char *TAG = "ais_client";
 #define AIS_MAX_RESPONSE_LEN  (256 * 1024)
 #define AIS_TOKEN_MAX         4096
 #define AIS_TOKEN_MARGIN_S    60
+/* After BarentsWatch rejects the client ID or secret, don't ask again for
+ * this long: wrong credentials stay wrong until the settings change (which
+ * restarts the display), and asking every poll risks being blocked. */
+#define AIS_REJECTED_WAIT_S   (10 * 60)
 /* Ships silent for longer than this are left out (moored ones report every
  * few minutes). */
 #define AIS_SINCE_S           (15 * 60)
@@ -34,6 +38,8 @@ static http_buf_t s_resp = { .max = AIS_MAX_RESPONSE_LEN };
 static esp_http_client_handle_t s_client;
 static char *s_token;           /* PSRAM; "" when none */
 static TickType_t s_token_expiry;
+static TickType_t s_rejected_at;
+static bool s_rejected;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -392,6 +398,10 @@ static bool json_find(const char *json, const char *key, const char **val, size_
 /* ESP_OK, ESP_ERR_INVALID_STATE (credentials rejected) or ESP_FAIL. */
 static esp_err_t fetch_token(const char *client_id, const char *client_secret)
 {
+    if (s_rejected && xTaskGetTickCount() - s_rejected_at < pdMS_TO_TICKS(AIS_REJECTED_WAIT_S * 1000)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_rejected = false;
     if (s_token == NULL) {
         s_token = heap_caps_calloc(1, AIS_TOKEN_MAX, MALLOC_CAP_SPIRAM);
         if (s_token == NULL) {
@@ -442,7 +452,10 @@ static esp_err_t fetch_token(const char *client_id, const char *client_secret)
         return ESP_FAIL;
     }
     if (status == 400 || status == 401) {
-        ESP_LOGE(TAG, "token request rejected (%d): %.200s", status, s_resp.buf);
+        ESP_LOGE(TAG, "token request rejected (%d): %.200s; asking again in %d min", status, s_resp.buf,
+                 AIS_REJECTED_WAIT_S / 60);
+        s_rejected = true;
+        s_rejected_at = xTaskGetTickCount();
         return ESP_ERR_INVALID_STATE;
     }
     if (status != 200) {

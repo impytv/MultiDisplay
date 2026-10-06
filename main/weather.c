@@ -1242,11 +1242,15 @@ static void update_overview_alerts(void)
     }
 }
 
-/* Repaint the overview table from the per-location caches. Uses the most
- * recent cache's first point as "now" (the device has no wall clock), aligns
- * it to the hour, and for each column samples the nearest hourly point for
- * temperature + weather symbol and sums precipitation over the next OV_STEP_H
- * hours. Missing caches show dashes. Must be called under the adapter lock. */
+/* A column whose nearest forecast point is further off than this shows a
+ * dash: the forecast held doesn't reach it (after a long time offline). */
+#define OV_MAX_OFF_S (3 * 3600)
+
+/* Repaint the overview table from the per-location caches. "Now" is the
+ * clock's hour (or, until it is set, the newest forecast's first point);
+ * each column samples the nearest hourly point for temperature + weather
+ * symbol and sums precipitation over the next OV_STEP_H hours. Missing
+ * caches show dashes. Must be called under the adapter lock. */
 static void update_overview(void)
 {
     update_overview_alerts();
@@ -1262,6 +1266,10 @@ static void update_overview(void)
     }
     if (now_epoch == 0) {
         return;
+    }
+    const time_t wall = time(NULL);
+    if (wall > PLAUSIBLE_EPOCH_S) {
+        now_epoch = wall;
     }
     int64_t t0 = (now_epoch / 3600) * 3600;
 
@@ -1291,6 +1299,11 @@ static void update_overview(void)
 
             int64_t block_start = t0 + (int64_t)c * OV_STEP_H * 3600;
             const yr_forecast_point_t *np = nearest_base_point(fc, block_start);
+            if (llabs(np->epoch_utc - block_start) > OV_MAX_OFF_S) {
+                lv_label_set_text(cell, "\xE2\x80\x93");
+                lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+                continue;
+            }
 
             float psum = 0.0f;
             for (int k = 0; k < fc->point_count; k++) {

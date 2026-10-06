@@ -514,7 +514,13 @@ under a random key kept on the display, not the password, and scripts in
 pages can't read it (HttpOnly) or send it from other sites (SameSite).
 curl and scripts give it as HTTP Basic, with any user name
 (`curl -u x:PASSWORD …`). It travels unencrypted, so don't reuse an
-important one. Holding BOOT while powering on
+important one. After a wrong password the display checks no other for a
+second (429 meanwhile).
+
+The display only answers requests addressed to it: its IP, or its name
+alone or as `.local`, `.lan`, `.home`, `.home.arpa` or `.localdomain`.
+That stops another web site from reaching it by making its own domain
+point at the display's address (DNS rebinding). Holding BOOT while powering on
 opens the setup network without it. Saved passwords and secrets are never
 shown in the page: leave a field blank to keep what's saved.
 

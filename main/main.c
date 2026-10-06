@@ -130,6 +130,7 @@ static volatile bool s_night_dim; /* inside the night window (see nightly_housek
 static bool s_backlight_on = true;
 static lv_obj_t *s_offline_label; /* "Ingen WiFi" / "Ingen internett" in a corner */
 static void night_timer_cb(lv_timer_t *t);
+static void nightly_housekeeping(void);
 
 bool lock_for_view(int for_view)
 {
@@ -709,6 +710,7 @@ static void night_apply(void)
 static void night_timer_cb(lv_timer_t *t)
 {
     (void)t;
+    nightly_housekeeping();
     if (s_night_dim && g_cfg->night_off && s_backlight_on &&
         lv_tick_get() - s_last_touch_ms > NIGHT_WAKE_MS &&
         waveshare_rgb_lcd_backlight_set(false) == ESP_OK) {
@@ -728,10 +730,8 @@ static void night_timer_cb(lv_timer_t *t)
     }
 }
 
-/* The nightly restart and the night dimming, checked on every wake of the
- * weather task (every few minutes at idle, immediately on a tap) rather
- * than on timers of their own - a few minutes of drift doesn't matter for
- * either. */
+/* The nightly restart and the night dimming, checked once a second from
+ * night_timer_cb (LVGL context, adapter lock held). */
 static void nightly_housekeeping(void)
 {
     static time_t next_nightly_reboot;  /* 0 = not yet scheduled (clock not synced) */
@@ -761,10 +761,7 @@ static void nightly_housekeeping(void)
                     (from <= to ? (now_min >= from && now_min < to) : (now_min >= from || now_min < to));
     if (want_dim != s_night_dim) {
         s_night_dim = want_dim;
-        if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            night_apply();
-            esp_lv_adapter_unlock();
-        }
+        night_apply();
         ESP_LOGI(TAG, "Night %s %s (local time %02d:%02d)", g_cfg->night_off ? "screen off" : "dimming",
                  want_dim ? "on" : "off", now_lt.tm_hour, now_lt.tm_min);
     }
@@ -816,7 +813,6 @@ static void yr_weather_task(void *arg)
 
     while (1) {
         wd_weather_beat();
-        nightly_housekeeping();
 
         /* Adopt a view switch made by a tap or the rotation (view_enter has
          * already put the screen up). */
