@@ -2,6 +2,7 @@
 #define _MET_ALERTS_CLIENT_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "http_util.h"
 
@@ -21,8 +22,10 @@ typedef enum {
 typedef struct {
     char event_name[80]; /* eventAwarenessName: human-readable Norwegian text,
                            * e.g. "Faretruende bygevind" */
-    char area[48];        /* the named area the alert covers, e.g. "Oslo" */
+    char area[96];        /* the named area the alert covers, e.g. "Fjelloverganger i
+                           * deler av Troms og Finnmark" */
     met_alert_color_t color;
+    int64_t start, end;   /* when it's in force (epoch UTC; 0 if not given) */
 } met_alert_t;
 
 typedef struct {
@@ -34,13 +37,18 @@ typedef struct {
 } met_alerts_t;
 
 /**
- * Fetch the currently active MET Norway severe weather alerts ("farevarsel")
- * covering (lat, lon), from the MetAlerts API. The API itself filters to
- * alerts whose area covers the point and that are active right now, so no
- * date or geometry filtering is needed on the device.
+ * Fetch the MET Norway severe weather alerts ("farevarsel") whose area
+ * covers (lat, lon), from the MetAlerts API: those in force now and those
+ * issued for later (see start/end). The API does the geometry; alerts that
+ * have ended are left out by it, but one held on the device can end before
+ * the next fetch.
  */
 /* With `cache` (see http_util.h), HTTP_NOT_MODIFIED if the alerts held for
  * that location are still current; `out` is then untouched. */
+/* Parse a MetAlerts current.json reply into `out` (cleared first); false if
+ * it isn't one. */
+bool met_alerts_parse(const char *json, met_alerts_t *out);
+
 esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out, http_cache_t *cache);
 
 #endif

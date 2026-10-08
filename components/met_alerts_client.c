@@ -32,10 +32,11 @@ static met_alert_color_t parse_color(const char *s)
 }
 
 /* The response is a GeoJSON FeatureCollection; an empty "features" array is a
- * valid, successful result meaning nothing is active at this point right
- * now, not an error. */
-static bool parse_alerts(const char *json, met_alerts_t *out)
+ * valid, successful result meaning no alert covers this point, not an
+ * error. */
+bool met_alerts_parse(const char *json, met_alerts_t *out)
 {
+    memset(out, 0, sizeof(*out));
     json_use_psram();
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
@@ -79,6 +80,13 @@ static bool parse_alerts(const char *json, met_alerts_t *out)
         cJSON *color = cJSON_GetObjectItemCaseSensitive(props, "riskMatrixColor");
         a->color = parse_color(cJSON_IsString(color) ? color->valuestring : NULL);
 
+        /* "when": {"interval": ["<start>", "<end>"]} */
+        cJSON *interval = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(feature, "when"),
+                                                           "interval");
+        cJSON *from = cJSON_GetArrayItem(interval, 0), *to = cJSON_GetArrayItem(interval, 1);
+        a->start = cJSON_IsString(from) ? iso8601_to_epoch(from->valuestring) : 0;
+        a->end = cJSON_IsString(to) ? iso8601_to_epoch(to->valuestring) : 0;
+
         n++;
     }
 
@@ -106,8 +114,7 @@ esp_err_t met_alerts_client_fetch(double lat, double lon, met_alerts_t *out, htt
         return err;
     }
 
-    memset(out, 0, sizeof(*out));
-    bool ok = parse_alerts(body, out);
+    bool ok = met_alerts_parse(body, out);
     free(body);
     if (!ok && cache != NULL) {
         memset(cache, 0, sizeof(*cache));

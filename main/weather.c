@@ -155,6 +155,14 @@ static fetch_stamp_t s_rain_stamp[APP_CONFIG_MAX_LOCATIONS];
 #define RAIN_NOTE_MAX_MS (15 * 60 * 1000) /* an older nowcast says nothing */
 static lv_obj_t *s_night_main[NIGHT_BANDS], *s_night_wind[NIGHT_BANDS];
 #define ALERT_MAX_W 380
+#define ALERT_PAD_H 10
+/* Each alert's time in force, as a bar in its colour along the top of the
+ * main chart (see alert_lines_update), one row per alert. */
+#define ALERT_ROW_H 12
+static lv_obj_t *s_alert_line[MET_ALERTS_MAX];
+static int s_alert_rows;              /* rows in use: the aurora labels go below */
+static int64_t s_chart_t0, s_chart_t1; /* the main chart's x axis, 0 if none */
+static void alert_lines_update(int loc);
 static lv_obj_t *s_alert_label; /* between the name and the clock: the worst active alert, if any */
 #define WX_CACHE_MAX_MS     (30 * 60 * 1000)
 /* A forecast fetched this long ago is flagged as old on screen. */
@@ -945,7 +953,7 @@ static void aurora_update(const yr_forecast_t *fc, int loc)
             int x = CHART_X + (x0 + x1) / 2 - w / 2;
             x = x < CHART_X + 2 ? CHART_X + 2 : (x > CHART_X + CHART_W - 2 - w ? CHART_X + CHART_W - 2 - w : x);
             if (x >= label_end + 8) {
-                lv_obj_set_pos(l, x, CHART_Y + 3);
+                lv_obj_set_pos(l, x, CHART_Y + 3 + s_alert_rows * ALERT_ROW_H);
                 lv_obj_clear_flag(l, LV_OBJ_FLAG_HIDDEN);
                 label_end = x + w;
             } else {
@@ -1114,6 +1122,11 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int
         lv_obj_clear_flag(s_wind_dir_arrows[i], LV_OBJ_FLAG_HIDDEN);
     }
 
+    const int n = fc->point_count;
+    const bool axis = n > 1 && fc->points[0].epoch_utc > PLAUSIBLE_EPOCH_S;
+    s_chart_t0 = axis ? fc->points[0].epoch_utc : 0;
+    s_chart_t1 = axis ? fc->points[n - 1].epoch_utc : 0;
+    alert_lines_update(loc);
     sun_update(fc, loc);
     aurora_update(fc, loc);
 }
@@ -1192,20 +1205,79 @@ static lv_color_t alert_lv_color(met_alert_color_t c)
     }
 }
 
-/* The most severe of a location's currently active alerts, or NULL if it has
- * none (either nothing active, or its cache isn't valid yet). */
-static const met_alert_t *alert_worst(int loc)
+/* Whether alert `a` hasn't ended by `now` (it may not have started yet). A
+ * fetched alert can end before the next fetch replaces it. */
+static bool alert_live(const met_alert_t *a, time_t now)
 {
-    if (!s_alert_valid[loc] || s_alert_cache[loc]->count == 0) {
-        return NULL;
-    }
-    const met_alert_t *worst = &s_alert_cache[loc]->alerts[0];
-    for (int j = 1; j < s_alert_cache[loc]->count; j++) {
-        if (s_alert_cache[loc]->alerts[j].color > worst->color) {
-            worst = &s_alert_cache[loc]->alerts[j];
+    return a->end == 0 || now <= PLAUSIBLE_EPOCH_S || a->end > now;
+}
+
+/* The most severe of a location's alerts that haven't ended, or NULL if it
+ * has none (or its cache isn't valid yet); `count` gets how many there are. */
+static const met_alert_t *alert_worst_n(int loc, int *count)
+{
+    const met_alert_t *worst = NULL;
+    int n = 0;
+    if (s_alert_valid[loc]) {
+        const time_t now = time(NULL);
+        for (int j = 0; j < s_alert_cache[loc]->count; j++) {
+            const met_alert_t *a = &s_alert_cache[loc]->alerts[j];
+            if (!alert_live(a, now)) {
+                continue;
+            }
+            n++;
+            if (worst == NULL || a->color > worst->color) {
+                worst = a;
+            }
         }
     }
+    if (count != NULL) {
+        *count = n;
+    }
     return worst;
+}
+
+static const met_alert_t *alert_worst(int loc)
+{
+    return alert_worst_n(loc, NULL);
+}
+
+/* The bars along the top of the main chart for location `loc`'s alerts,
+ * from when each comes into force to when it ends, cut to the chart's
+ * hours; and the aurora labels moved down below them (adapter lock held). */
+static void alert_lines_update(int loc)
+{
+    int row = 0;
+    const int64_t t0 = s_chart_t0, t1 = s_chart_t1;
+    if (s_alert_valid[loc] && t1 > t0) {
+        const time_t now = time(NULL);
+        for (int j = 0; j < s_alert_cache[loc]->count; j++) {
+            const met_alert_t *a = &s_alert_cache[loc]->alerts[j];
+            if (!alert_live(a, now) || a->start == 0 || a->end == 0) {
+                continue;
+            }
+            const int64_t start = a->start < t0 ? t0 : a->start;
+            const int64_t end = a->end > t1 ? t1 : a->end;
+            if (end <= start) {
+                continue; /* outside the chart */
+            }
+            const int x0 = (int)((start - t0) * (CHART_W - 1) / (t1 - t0));
+            const int x1 = (int)((end - t0) * (CHART_W - 1) / (t1 - t0));
+            lv_obj_t *l = s_alert_line[row++];
+            lv_obj_set_style_bg_color(l, alert_lv_color(a->color), 0);
+            lv_obj_set_style_border_color(l, lv_color_darken(alert_lv_color(a->color), LV_OPA_30), 0);
+            lv_obj_set_pos(l, CHART_X + x0, CHART_Y + 3 + (row - 1) * ALERT_ROW_H);
+            lv_obj_set_width(l, x1 - x0 < 6 ? 6 : x1 - x0);
+            lv_obj_clear_flag(l, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    s_alert_rows = row;
+    for (; row < MET_ALERTS_MAX; row++) {
+        lv_obj_add_flag(s_alert_line[row], LV_OBJ_FLAG_HIDDEN);
+    }
+    for (int i = 0; i < AURORA_BANDS; i++) {
+        lv_obj_set_y(s_aurora_label[i], CHART_Y + 3 + s_alert_rows * ALERT_ROW_H);
+    }
 }
 
 /* Refresh the selected location's alert banner on the detail screen
@@ -1213,25 +1285,43 @@ static const met_alert_t *alert_worst(int loc)
  * it doesn't fit). Must be called under the adapter lock. */
 static void update_alert_banner(int loc)
 {
-    const met_alert_t *worst = alert_worst(loc);
+    alert_lines_update(loc);
+    int count;
+    const met_alert_t *worst = alert_worst_n(loc, &count);
     if (worst == NULL) {
         lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
         sun_label_fit();
         return;
     }
     lv_obj_set_style_bg_color(s_alert_label, alert_lv_color(worst->color), 0);
-    int extra = s_alert_cache[loc]->count - 1;
-    if (extra > 0) {
-        lv_label_set_text_fmt(s_alert_label, "OBS: %s (+%d)", worst->event_name, extra);
-    } else {
-        lv_label_set_text_fmt(s_alert_label, "OBS: %s", worst->event_name);
+    /* "OBS: Snø - Fjelloverganger i deler av Troms og Finnmark (+1)": the
+     * area says where in the region it's meant for. */
+    char text[200];
+    int len = snprintf(text, sizeof(text), "OBS: %s", worst->event_name);
+    if (worst->area[0] != '\0' && len < (int)sizeof(text)) {
+        len += snprintf(text + len, sizeof(text) - len, " \xE2\x80\x93 %s", worst->area);
     }
+    if (count > 1 && len < (int)sizeof(text)) {
+        snprintf(text + len, sizeof(text) - len, " (+%d)", count - 1);
+    }
+    lv_label_set_text(s_alert_label, text);
     lv_obj_update_layout(s_detail_root);
     const int x0 = lv_obj_get_x(s_location_label) + lv_obj_get_width(s_location_label) + 16;
     const int x1 = lv_obj_get_x(s_clock.obj) - 16;
-    const int w = x1 - x0 < ALERT_MAX_W ? x1 - x0 : ALERT_MAX_W;
-    lv_obj_set_width(s_alert_label, w > 0 ? w : 0);
-    lv_obj_set_x(s_alert_label, x0 + (x1 - x0 - w) / 2);
+    int w = x1 - x0 < ALERT_MAX_W ? x1 - x0 : ALERT_MAX_W;
+    w = w > 0 ? w : 0;
+    /* One line, or two (cut short with "..." after that) if it needs them;
+     * two still fit beside the clock, above the icons. */
+    const lv_font_t *font = lv_obj_get_style_text_font(s_alert_label, 0);
+    const int lh = lv_font_get_line_height(font);
+    const int pad = lv_obj_get_style_pad_top(s_alert_label, 0);
+    lv_point_t sz;
+    lv_text_get_size(&sz, text, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    const int lines = sz.x > w - 2 * ALERT_PAD_H ? 2 : 1;
+    const int h = lines * lh + 2 * pad;
+    int y = (ICON_ROW_Y - 2 - h) / 2;
+    lv_obj_set_size(s_alert_label, w, h);
+    lv_obj_set_pos(s_alert_label, x0 + (x1 - x0 - w) / 2, y > 0 ? y : 0);
     lv_obj_clear_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
     sun_label_fit();
 }
@@ -1520,7 +1610,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_set_style_text_color(s_alert_label, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_alert_label, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_alert_label, 4, 0);
-    lv_obj_set_style_pad_hor(s_alert_label, 10, 0);
+    lv_obj_set_style_pad_hor(s_alert_label, ALERT_PAD_H, 0);
     lv_obj_set_style_pad_ver(s_alert_label, 3, 0);
     lv_obj_set_y(s_alert_label, 6);
     lv_label_set_text(s_alert_label, "");
@@ -1557,6 +1647,16 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     }
     for (int i = 0; i < AURORA_BANDS; i++) {
         s_aurora_band[i] = aurora_band(dark);
+    }
+    for (int i = 0; i < MET_ALERTS_MAX; i++) {
+        lv_obj_t *l = s_alert_line[i] = lv_obj_create(s_detail_root);
+        lv_obj_remove_style_all(l);
+        lv_obj_set_style_bg_opa(l, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(l, 1, 0);
+        lv_obj_set_style_radius(l, 4, 0);
+        lv_obj_set_height(l, ALERT_ROW_H - 3);
+        lv_obj_clear_flag(l, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
     }
     /* Bars only ever fill the bottom 1/PRECIP_AXIS_COMPRESSION of the area. */
     bars_create(&s_precip_bars, CHART_X, CHART_Y + CHART_H - BARS_INSET - PRECIP_BARS_H, PRECIP_BARS_H,

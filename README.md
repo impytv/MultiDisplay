@@ -315,18 +315,26 @@ the selected location.
 Each location that shows weather is checked against [MET Norway's MetAlerts
 API](https://api.met.no/weatherapi/metalerts/2.0/documentation) (the same
 "farevarsel" warnings shown on yr.no), refreshed on its own 10-minute cadence.
-When a location has one or more currently active alerts:
+MET gives every alert whose area covers the location's coordinates and that
+hasn't ended - in force now, or issued for later. When a location has one
+or more:
 
-- Its weather detail screen shows the worst one's name at the top, between
-  the location's name and the clock
-  (`OBS: <name>`, `+N` if there's more than one), coloured by MET's own
-  yellow/orange/red severity scale.
+- Its weather detail screen shows the worst one at the top, between the
+  location's name and the clock, with the area it's meant for
+  (`OBS: Snø – Fjelloverganger i deler av Troms og Finnmark`, `(+N)` if
+  there's more than one), coloured by MET's own yellow/orange/red severity
+  scale. A long one takes two lines.
+- A bar in the same colour along the top of the temperature chart runs from
+  when each alert comes into force to when it ends, so an alert for
+  tomorrow evening sits over tomorrow evening.
 - The overview table shows a small dot of that same colour next to the
   location's name.
 
-Nothing is shown for a location with no active alert. The API itself filters
-to alerts covering the location's exact coordinates and currently active, so
-the device does no date or geometry filtering of its own.
+The area matters: MET's regions are large, and the text often narrows an
+alert down to mountain passes or high ground ("Deler av Sør-Norge" for snow
+above 500 m), which a location in the valley inside the region still gets.
+An alert held on the device stops showing once it has ended, even before
+the next fetch.
 
 ### Automatic rotation
 

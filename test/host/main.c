@@ -24,6 +24,7 @@ void test_tide(void);
 void test_ical(void);
 void test_sat(void);
 void test_aurora(void);
+void test_alerts(void);
 void test_web_auth(void);
 
 int main(int argc, char **argv)
@@ -33,7 +34,7 @@ int main(int argc, char **argv)
         { "version", test_version }, { "form", test_form },   { "http", test_http },
         { "sun", test_sun },         { "entur", test_entur }, { "adsb", test_adsb },
         { "routes", test_routes },   { "config", test_config }, { "air", test_air }, { "yr", test_yr },
-        { "tide", test_tide }, { "ical", test_ical }, { "sat", test_sat }, { "aurora", test_aurora },
+        { "tide", test_tide }, { "ical", test_ical }, { "sat", test_sat }, { "aurora", test_aurora }, { "alerts", test_alerts },
         { "webauth", test_web_auth },
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
