@@ -46,14 +46,16 @@ static const char *TAG = "weather";
 #define NOWCAST_MERGE_STRIDE 2
 #define NUM_HOUR_LABELS 8
 
-#define ICON_ROW_Y 44
+/* Below the big clock (see big_clock_create), which is 48 px Montserrat. */
+#define ICON_ROW_Y 60
 #define ICON_SIZE 48
 
 #define CHART_X 20
 #define CHART_W 760
-/* Main temperature/precipitation chart. */
-#define CHART_Y 100
-#define CHART_H 244
+/* Main temperature/precipitation chart. Sized so the hour row ends above
+ * the "updated" line at the bottom right, even at the largest text size. */
+#define CHART_Y 116
+#define CHART_H 212
 /* Precipitation bars are drawn on a taller-than-needed axis so they only
  * occupy the bottom fraction of the shared chart, leaving the rest of the
  * height for the temperature line to read clearly. */
@@ -138,8 +140,9 @@ static met_alerts_t *s_alert_scratch;
 static lv_obj_t *s_detail_root;   /* holds every per-location detail widget  */
 static lv_obj_t *s_overview_root; /* holds the all-locations overview table   */
 static lv_obj_t *s_location_label;
-static lv_obj_t *s_updated_label;
-/* Today's sunrise and sunset, left of s_updated_label (see sun_update), and
+static lv_obj_t *s_updated_label; /* bottom right, as on the departure board */
+static big_clock_t s_clock;
+/* Today's sunrise and sunset, left of the clock (see sun_update), and
  * the night hours shaded in the two charts. */
 #define NIGHT_BANDS 3
 static lv_obj_t *s_sun_label;
@@ -151,7 +154,8 @@ static int64_t s_rain_at[APP_CONFIG_MAX_LOCATIONS];
 static fetch_stamp_t s_rain_stamp[APP_CONFIG_MAX_LOCATIONS];
 #define RAIN_NOTE_MAX_MS (15 * 60 * 1000) /* an older nowcast says nothing */
 static lv_obj_t *s_night_main[NIGHT_BANDS], *s_night_wind[NIGHT_BANDS];
-static lv_obj_t *s_alert_label; /* top-centre: the selected location's worst active alert, if any */
+#define ALERT_MAX_W 380
+static lv_obj_t *s_alert_label; /* between the name and the clock: the worst active alert, if any */
 #define WX_CACHE_MAX_MS     (30 * 60 * 1000)
 /* A forecast fetched this long ago is flagged as old on screen. */
 #define WX_STALE_S          (30 * 60)
@@ -766,7 +770,7 @@ static void sun_label_fit(void)
         return;
     }
     lv_obj_update_layout(s_detail_root);
-    lv_obj_align_to(s_sun_label, s_updated_label, LV_ALIGN_OUT_LEFT_MID, -28, 0);
+    lv_obj_align_to(s_sun_label, s_clock.obj, LV_ALIGN_OUT_LEFT_MID, -24, 0);
     lv_obj_update_layout(s_sun_label);
     const bool fits = lv_obj_get_x(s_sun_label) > lv_obj_get_x(s_location_label) +
                                                      lv_obj_get_width(s_location_label) + 24;
@@ -1204,9 +1208,9 @@ static const met_alert_t *alert_worst(int loc)
     return worst;
 }
 
-/* Refresh the selected location's alert banner on the detail screen (top
- * centre, between the location name and the "updated" timestamp). Must be
- * called under the adapter lock. */
+/* Refresh the selected location's alert banner on the detail screen
+ * (centred between the location name and the clock, cut short with "..." if
+ * it doesn't fit). Must be called under the adapter lock. */
 static void update_alert_banner(int loc)
 {
     const met_alert_t *worst = alert_worst(loc);
@@ -1222,6 +1226,12 @@ static void update_alert_banner(int loc)
     } else {
         lv_label_set_text_fmt(s_alert_label, "OBS: %s", worst->event_name);
     }
+    lv_obj_update_layout(s_detail_root);
+    const int x0 = lv_obj_get_x(s_location_label) + lv_obj_get_width(s_location_label) + 16;
+    const int x1 = lv_obj_get_x(s_clock.obj) - 16;
+    const int w = x1 - x0 < ALERT_MAX_W ? x1 - x0 : ALERT_MAX_W;
+    lv_obj_set_width(s_alert_label, w > 0 ? w : 0);
+    lv_obj_set_x(s_alert_label, x0 + (x1 - x0 - w) / 2);
     lv_obj_clear_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
     sun_label_fit();
 }
@@ -1465,6 +1475,15 @@ void weather_init(void)
            s_alert_scratch != NULL);
 }
 
+/* Every second while the detail screen is on show. */
+static void clock_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!lv_obj_has_flag(s_detail_root, LV_OBJ_FLAG_HIDDEN)) {
+        big_clock_set(&s_clock, time(NULL));
+    }
+}
+
 lv_obj_t *weather_build(lv_obj_t *screen)
 {
     const bool dark = (g_cfg->theme == APP_THEME_DARK);
@@ -1475,8 +1494,10 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_set_pos(s_location_label, 12, 4);
     lv_label_set_text(s_location_label, "");
 
+    big_clock_create(&s_clock, s_detail_root, 12);
+
     s_updated_label = lv_label_create(s_detail_root);
-    lv_obj_align(s_updated_label, LV_ALIGN_TOP_RIGHT, -12, 4);
+    lv_obj_align(s_updated_label, LV_ALIGN_BOTTOM_RIGHT, -12, -4);
     lv_label_set_text(s_updated_label, "");
 
     s_sun_label = lv_label_create(s_detail_root);
@@ -1487,13 +1508,13 @@ lv_obj_t *weather_build(lv_obj_t *screen)
 
     /* The selected location's worst active severe weather alert, if any (see
      * update_alert_banner). Sits centred in the gap between the location name
-     * and the "updated" timestamp: black text on a solid fill of the alert's
+     * and the clock: black text on a solid fill of the alert's
      * own colour, for contrast against the screen background - plain
      * coloured text there was hard to read. Hidden (not just empty) when
      * nothing is active, since a background-filled label would otherwise
      * still show as a blank coloured box. */
     s_alert_label = lv_label_create(s_detail_root);
-    lv_obj_set_width(s_alert_label, 380);
+    lv_obj_set_width(s_alert_label, ALERT_MAX_W);
     lv_label_set_long_mode(s_alert_label, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_style_text_align(s_alert_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_alert_label, lv_color_black(), 0);
@@ -1501,7 +1522,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_obj_set_style_radius(s_alert_label, 4, 0);
     lv_obj_set_style_pad_hor(s_alert_label, 10, 0);
     lv_obj_set_style_pad_ver(s_alert_label, 3, 0);
-    lv_obj_align(s_alert_label, LV_ALIGN_TOP_MID, 0, 6);
+    lv_obj_set_y(s_alert_label, 6);
     lv_label_set_text(s_alert_label, "");
     lv_obj_add_flag(s_alert_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -1656,12 +1677,15 @@ lv_obj_t *weather_build(lv_obj_t *screen)
         lv_label_set_text(s_hour_labels[i], "");
     }
 
+    lv_timer_create(clock_timer_cb, 1000, NULL);
+
     return s_detail_root;
 }
 
 void weather_enter(int loc)
 {
     lv_label_set_text(s_location_label, g_cfg->locations[loc].name);
+    big_clock_set(&s_clock, time(NULL));
     /* Unlike the forecast, the alert cache carries over as-is from whatever
      * this location's last fetch found. */
     update_alert_banner(loc);

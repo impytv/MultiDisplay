@@ -196,8 +196,10 @@ The "YR" tab connects to WiFi and shows the current forecast from the
 [MET Norway Locationforecast API](https://developer.yr.no/doc/), refreshed
 every 10 minutes. As MET's terms ask, a forecast isn't asked for again until
 its `Expires` time, and then with `If-Modified-Since`, so an unchanged
-forecast costs nothing to check. The header shows today's sunrise and sunset
-("Sol 07:15–18:58", or Midnattssol / Mørketid), worked out on the device,
+forecast costs nothing to check. The detail screen has the same large
+24-hour clock as the departure board, top right, and when the forecast was
+fetched at the bottom right. Left of the clock it shows today's sunrise and
+sunset ("Sol 07:15–18:58", or Midnattssol / Mørketid), worked out on the device,
 and the night hours are shaded in the charts. When the nowcast sees
 precipitation starting or stopping within the next hour and a half, that
 takes the sun times' place in blue: "Nedbør om 25 min", "Opphold om 10 min"
@@ -315,7 +317,8 @@ API](https://api.met.no/weatherapi/metalerts/2.0/documentation) (the same
 "farevarsel" warnings shown on yr.no), refreshed on its own 10-minute cadence.
 When a location has one or more currently active alerts:
 
-- Its weather detail screen shows the worst one's name at the top centre
+- Its weather detail screen shows the worst one's name at the top, between
+  the location's name and the clock
   (`OBS: <name>`, `+N` if there's more than one), coloured by MET's own
   yellow/orange/red severity scale.
 - The overview table shows a small dot of that same colour next to the

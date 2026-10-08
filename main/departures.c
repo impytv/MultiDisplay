@@ -22,7 +22,6 @@
 #define DEP_POLL_MS         30000
 #define DEP_RETRY_MS        15000
 #define DEP_REDRAW_S        15
-#define DEP_CLOCK_PX        48
 #define DEP_BODY_Y          64
 #define DEP_X               12
 #define DEP_BADGE_W         64
@@ -36,10 +35,7 @@
  * s_dep_data. s_dep_sel is the parsed selection of the location on show. */
 static lv_obj_t *s_dep_root;
 static lv_obj_t *s_dep_title;
-/* The clock, one label per character ("HH:MM:SS") in cells of a fixed
- * width, so the proportional digits don't shift it as the time ticks. */
-#define DEP_CLOCK_CHARS 8
-static lv_obj_t *s_dep_clock[DEP_CLOCK_CHARS];
+static big_clock_t s_dep_clock;
 static lv_obj_t *s_dep_updated;
 static lv_obj_t *s_dep_canvas;
 static entur_departures_t *s_dep_data; /* PSRAM */
@@ -350,23 +346,12 @@ static void dep_clock_timer_cb(lv_timer_t *t)
         return;
     }
     time_t now = time(NULL);
-    char txt[DEP_CLOCK_CHARS + 1] = "--:--:--";
-    struct tm lt = { 0 };
-    if (now > PLAUSIBLE_EPOCH_S) {
-        localtime_r(&now, &lt);
-        snprintf(txt, sizeof(txt), "%02u:%02u:%02u", (unsigned)lt.tm_hour % 100u, (unsigned)lt.tm_min % 100u,
-                 (unsigned)lt.tm_sec % 100u);
-    }
-    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
-        const char *cur = lv_label_get_text(s_dep_clock[i]);
-        if (cur[0] != txt[i]) {
-            char ch[2] = { txt[i], '\0' };
-            lv_label_set_text(s_dep_clock[i], ch);
-        }
-    }
+    big_clock_set(&s_dep_clock, now);
     if (now <= PLAUSIBLE_EPOCH_S) {
         return;
     }
+    struct tm lt;
+    localtime_r(&now, &lt);
     if (s_dep_valid && (now - last_redraw >= DEP_REDRAW_S || lt.tm_sec == 0)) {
         last_redraw = now;
         lv_obj_invalidate(s_dep_canvas);
@@ -400,32 +385,7 @@ lv_obj_t *departures_build(lv_obj_t *screen)
     lv_label_set_long_mode(s_dep_title, LV_LABEL_LONG_MODE_DOTS);
     lv_label_set_text(s_dep_title, "");
 
-    /* The clock gets a font of its own, big enough to read across a room. */
-    /* Each digit gets a cell as wide as the widest digit, each colon one as
-     * wide as a colon; the characters are centred in their cells. */
-    const lv_font_t *clock_font = load_font(DEP_CLOCK_PX, true);
-    int digit_w = 0;
-    for (uint32_t c = '0'; c <= '9'; c++) {
-        int w = lv_font_get_glyph_width(clock_font, c, 0);
-        digit_w = w > digit_w ? w : digit_w;
-    }
-    const int colon_w = lv_font_get_glyph_width(clock_font, ':', 0) + 4;
-    lv_obj_t *clock = lv_obj_create(root);
-    lv_obj_remove_style_all(clock);
-    lv_obj_clear_flag(clock, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_text_font(clock, clock_font, 0);
-    lv_obj_set_style_text_align(clock, LV_TEXT_ALIGN_CENTER, 0);
-    int x = 0;
-    for (int i = 0; i < DEP_CLOCK_CHARS; i++) {
-        const int w = (i == 2 || i == 5) ? colon_w : digit_w;
-        s_dep_clock[i] = lv_label_create(clock);
-        lv_obj_set_pos(s_dep_clock[i], x, 0);
-        lv_obj_set_width(s_dep_clock[i], w);
-        lv_label_set_text(s_dep_clock[i], (i == 2 || i == 5) ? ":" : "-");
-        x += w;
-    }
-    lv_obj_set_size(clock, x, lv_font_get_line_height(clock_font));
-    lv_obj_align(clock, LV_ALIGN_TOP_RIGHT, -DEP_X, 0);
+    big_clock_create(&s_dep_clock, root, DEP_X);
 
     s_dep_updated = lv_label_create(root);
     lv_obj_set_style_text_color(s_dep_updated, dep_dim_color(), 0);

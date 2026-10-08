@@ -5,6 +5,7 @@
  * air.c, tide.c and calendar.c. */
 
 #include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
@@ -183,6 +184,59 @@ const lv_font_t *load_font(uint8_t px, bool bold)
     const lv_font_t *font = esp_lv_adapter_ft_font_get(handle);
     assert(font != NULL);
     return font;
+}
+
+#define BIG_CLOCK_PX 48
+
+void big_clock_create(big_clock_t *c, lv_obj_t *root, int margin)
+{
+    /* A font of its own, big enough to read across a room; loaded once for
+     * every screen that has the clock. */
+    static const lv_font_t *font;
+    if (font == NULL) {
+        font = load_font(BIG_CLOCK_PX, true);
+    }
+    /* Each digit gets a cell as wide as the widest digit, each colon one as
+     * wide as a colon; the characters are centred in their cells. */
+    int digit_w = 0;
+    for (uint32_t ch = '0'; ch <= '9'; ch++) {
+        int w = lv_font_get_glyph_width(font, ch, 0);
+        digit_w = w > digit_w ? w : digit_w;
+    }
+    const int colon_w = lv_font_get_glyph_width(font, ':', 0) + 4;
+    c->obj = lv_obj_create(root);
+    lv_obj_remove_style_all(c->obj);
+    lv_obj_clear_flag(c->obj, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_font(c->obj, font, 0);
+    lv_obj_set_style_text_align(c->obj, LV_TEXT_ALIGN_CENTER, 0);
+    int x = 0;
+    for (int i = 0; i < BIG_CLOCK_CHARS; i++) {
+        const int w = (i == 2 || i == 5) ? colon_w : digit_w;
+        c->ch[i] = lv_label_create(c->obj);
+        lv_obj_set_pos(c->ch[i], x, 0);
+        lv_obj_set_width(c->ch[i], w);
+        lv_label_set_text(c->ch[i], (i == 2 || i == 5) ? ":" : "-");
+        x += w;
+    }
+    lv_obj_set_size(c->obj, x, lv_font_get_line_height(font));
+    lv_obj_align(c->obj, LV_ALIGN_TOP_RIGHT, -margin, 0);
+}
+
+void big_clock_set(big_clock_t *c, time_t now)
+{
+    char txt[BIG_CLOCK_CHARS + 1] = "--:--:--";
+    if (now > PLAUSIBLE_EPOCH_S) {
+        struct tm lt;
+        localtime_r(&now, &lt);
+        snprintf(txt, sizeof(txt), "%02u:%02u:%02u", (unsigned)lt.tm_hour % 100u, (unsigned)lt.tm_min % 100u,
+                 (unsigned)lt.tm_sec % 100u);
+    }
+    for (int i = 0; i < BIG_CLOCK_CHARS; i++) {
+        if (lv_label_get_text(c->ch[i])[0] != txt[i]) {
+            char ch[2] = { txt[i], '\0' };
+            lv_label_set_text(c->ch[i], ch);
+        }
+    }
 }
 
 static void init_fonts(void)

@@ -73,4 +73,19 @@ static inline bool stamp_fresh(const fetch_stamp_t *st, uint32_t max_ms)
 /* A full-screen, transparent container for one screen, hidden until shown. */
 lv_obj_t *screen_root_create(lv_obj_t *screen);
 
+/* The large 24-hour clock ("HH:MM:SS") at the top right of the departure
+ * board and the weather screen: one label per character in cells of a fixed
+ * width, so the digits don't shift as they change. */
+#define BIG_CLOCK_CHARS 8
+typedef struct {
+    lv_obj_t *obj;
+    lv_obj_t *ch[BIG_CLOCK_CHARS];
+} big_clock_t;
+
+/* Create `c` in `root`, top right, `margin` px from the right edge. */
+void big_clock_create(big_clock_t *c, lv_obj_t *root, int margin);
+/* Show the time `now`, or dashes until the clock is set; only characters
+ * that changed are redrawn. */
+void big_clock_set(big_clock_t *c, time_t now);
+
 #endif
