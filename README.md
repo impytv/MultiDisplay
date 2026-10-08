@@ -321,7 +321,7 @@ or more:
 
 - Its weather detail screen shows the worst one at the top, between the
   location's name and the clock, with the area it's meant for
-  (`OBS: Snø – Fjelloverganger i deler av Troms og Finnmark`, `(+N)` if
+  (`Snø – Fjelloverganger i deler av Troms og Finnmark`, `(+N)` if
   there's more than one), coloured by MET's own yellow/orange/red severity
   scale. A long one takes two lines.
 - A bar in the same colour along the top of the temperature chart runs from

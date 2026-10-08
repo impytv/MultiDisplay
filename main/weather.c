@@ -1294,10 +1294,10 @@ static void update_alert_banner(int loc)
         return;
     }
     lv_obj_set_style_bg_color(s_alert_label, alert_lv_color(worst->color), 0);
-    /* "OBS: Snø - Fjelloverganger i deler av Troms og Finnmark (+1)": the
+    /* "Snø - Fjelloverganger i deler av Troms og Finnmark (+1)": the
      * area says where in the region it's meant for. */
     char text[200];
-    int len = snprintf(text, sizeof(text), "OBS: %s", worst->event_name);
+    int len = snprintf(text, sizeof(text), "%s", worst->event_name);
     if (worst->area[0] != '\0' && len < (int)sizeof(text)) {
         len += snprintf(text + len, sizeof(text) - len, " \xE2\x80\x93 %s", worst->area);
     }
