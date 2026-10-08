@@ -86,10 +86,19 @@ void json_use_psram(void)
     }
 }
 
+/* Whether a date and time read from a server are in range: they come from
+ * the network, and out-of-range ones would overflow the arithmetic. */
+static bool civil_ok(int y, int mo, int d, int h, int mi, int se)
+{
+    return y >= 1900 && y <= 2200 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31 && h >= 0 && h <= 23 && mi >= 0 &&
+           mi <= 59 && se >= 0 && se <= 60;
+}
+
 int64_t iso8601_to_epoch(const char *s)
 {
     int y, mo, d, h, mi, se, n = 0;
-    if (s == NULL || sscanf(s, "%d-%d-%dT%d:%d:%d%n", &y, &mo, &d, &h, &mi, &se, &n) != 6) {
+    if (s == NULL || sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &se, &n) != 6 ||
+        !civil_ok(y, mo, d, h, mi, se)) {
         return 0;
     }
     const char *z = s + n;
@@ -102,7 +111,10 @@ int64_t iso8601_to_epoch(const char *s)
     int off = 0;
     if (*z == '+' || *z == '-') {
         int oh = 0, om = 0;
-        sscanf(z + 1, "%d:%d", &oh, &om);
+        sscanf(z + 1, "%2d:%2d", &oh, &om);
+        if (oh < 0 || oh > 23 || om < 0 || om > 59) {
+            return 0;
+        }
         off = (oh * 60 + om) * 60 * (*z == '-' ? -1 : 1);
     }
     return days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se - off;
@@ -113,7 +125,8 @@ int64_t http_date_to_epoch(const char *s)
     static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
     char mon[4];
     int d, y, h, mi, se;
-    if (s == NULL || sscanf(s, "%*3s, %d %3s %d %d:%d:%d", &d, mon, &y, &h, &mi, &se) != 6) {
+    if (s == NULL || sscanf(s, "%*3s, %2d %3s %4d %2d:%2d:%2d", &d, mon, &y, &h, &mi, &se) != 6 ||
+        !civil_ok(y, 1, d, h, mi, se)) {
         return 0;
     }
     const char *m = strstr(months, mon);

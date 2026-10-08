@@ -546,3 +546,33 @@ and CI (green for 1.9.1 and 1.9.2).
   *Done: a form over 12 KB is refused with 413 and nothing is saved
   (`PUT /config.json` answers 400 to the same). Tested with a 13 KB
   form: 413, settings unchanged.*
+
+## Eighth review: fuzzing what comes from the network (October 2026, 1.9.4)
+
+Three reviews have read the code; this one ran it on bad input. GCC's
+`-fanalyzer` found nothing in the parsers and config code. A mutation
+fuzzer (a few hundred lines, not in the repository) fed each parser that
+reads data from the network a real reply, cut, spliced and corrupted, with
+AddressSanitizer and UBSan: the calendar 600,000 times, the ADS-B, tide,
+aurora, air, pollen, alert and nowcast replies 20,000-200,000 times each,
+the forecast 3,000 times.
+
+- [x] **71. Calendar durations and intervals could overflow.** `ical.c`
+  added up a `DURATION` in a `long` with no limit, and stepped a
+  recurrence by `k * INTERVAL` in a `long`. That is 64 bits on the host
+  but 32 on the ESP32, so `DURATION:P30000D` or a large `INTERVAL` would
+  overflow on the display (undefined behaviour; in practice wrong times,
+  or events vanishing). Found within 3 seconds of fuzzing. *Done: the
+  duration's digits stop before they can overflow, and the recurrence
+  arithmetic is `int64_t`.*
+- [x] **72. Dates from servers weren't range-checked.**
+  `iso8601_to_epoch` and `http_date_to_epoch` read numbers of any length
+  and offsets of any size, so a garbled date overflowed `int` before
+  reaching `days_from_civil`. *Done: field widths in the `sscanf`
+  formats, years 1900-2200, months, days, hours, minutes, seconds and
+  zone offsets checked; anything else reads as "no date" (0), as a
+  malformed one already did. Four host tests added.*
+
+Nothing else turned up: no out-of-bounds read or write, and no other
+undefined behaviour in the hand-written ADS-B and tide parsers or the
+cJSON-based ones.

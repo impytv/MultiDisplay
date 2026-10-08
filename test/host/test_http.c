@@ -9,6 +9,11 @@ void test_http(void)
     CHECK_INT(iso8601_to_epoch("2026-09-27T18:31:00"), 1790533860);
     CHECK_INT(iso8601_to_epoch("nonsense"), 0);
     CHECK_INT(iso8601_to_epoch(NULL), 0);
+    /* Out of range: refused rather than overflowing. */
+    CHECK_INT(iso8601_to_epoch("2026-13-01T00:00:00Z"), 0);
+    CHECK_INT(iso8601_to_epoch("2026-09-27T18:31:00+99:00"), 0);
+    CHECK_INT(iso8601_to_epoch("999999999-09-27T18:31:00Z"), 0);
+    CHECK_INT(http_date_to_epoch("Mon, 28 Sep 99999 18:00:02 GMT"), 0);
 
     CHECK_INT(http_date_to_epoch("Mon, 28 Sep 2026 18:00:02 GMT"), 1790618402);
     CHECK_INT(http_date_to_epoch("Sun, 01 Mar 2026 00:00:00 GMT"), 1772323200);

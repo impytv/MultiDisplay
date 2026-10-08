@@ -131,11 +131,12 @@ static int64_t parse_duration(const char *v)
     if (*v++ != 'P') {
         return -1;
     }
-    int64_t s = 0;
-    long n = 0;
+    int64_t s = 0, n = 0;
     for (; *v; v++) {
         if (*v >= '0' && *v <= '9') {
-            n = n * 10 + (*v - '0');
+            if (n < 100000000) { /* more is nonsense: stop before it overflows */
+                n = n * 10 + (*v - '0');
+            }
             continue;
         }
         switch (*v) {
@@ -394,11 +395,11 @@ static void expand(ical_parser_t *p, const rule_t *r, int64_t dur_days, int64_t 
     const int64_t span_days = all_day ? dur_days : dur_s / 86400 + 1; /* how far an instance reaches */
     int counted = 0;
 
-    for (long k = 0; k < PERIODS_MAX; k++) {
+    for (int64_t k = 0; k < PERIODS_MAX; k++) {
         int64_t c[62];
         int n = 0;
         int64_t period_first;
-        const long step = k * r->interval;
+        const int64_t step = k * r->interval; /* int64: long is 32 bits on the ESP32 */
         if (r->freq == F_DAILY) {
             period_first = s->day + step;
             c[n++] = period_first;
@@ -411,7 +412,7 @@ static void expand(ical_parser_t *p, const rule_t *r, int64_t dur_days, int64_t 
                 c[n++] = period_first + r->by_wd[i];
             }
         } else {
-            const long months = r->freq == F_MONTHLY ? step : 12 * step;
+            const int64_t months = r->freq == F_MONTHLY ? step : 12 * step;
             const int y = sy + (int)((sm - 1 + months) / 12), m = (int)((sm - 1 + months) % 12) + 1;
             period_first = days_from_civil(y, m, 1);
             if (r->freq == F_MONTHLY) {
