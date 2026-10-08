@@ -142,8 +142,12 @@ static void nightly_housekeeping(void);
 /* Light the screen (or not), and on lighting have the weather task poll at
  * once rather than at the end of its slow wait (DARK_POLL_MS). LVGL
  * context. */
+static void nav_close(void);
 static void backlight(bool on)
 {
+    if (!on) {
+        nav_close(); /* the screen menu doesn't wait in the dark */
+    }
     if (on != s_backlight_on && waveshare_rgb_lcd_backlight_set(on) == ESP_OK) {
         s_backlight_on = on;
         if (on && s_yr_task != NULL) {
@@ -423,12 +427,184 @@ static void view_switch(int next, bool automatic)
     }
 }
 
-/* Tap the right half of the screen: next stop (overview -> location 1 ->
- * location 2 -> ... -> overview); tap the left half: previous stop. Runs in
- * the LVGL context, which already holds the adapter lock. */
+/* Tap the right half of the screen (at x, of a screen w wide): next stop
+ * (overview -> location 1 -> location 2 -> ... -> overview); the left half:
+ * previous stop. LVGL context. */
+static void screen_tap(int x, int w)
+{
+    /* Ignore a second press within 500 ms - covers finger bounce and keeps a
+     * quick double-tap from skipping two stops by accident. */
+    static uint32_t last_tap_ms;
+    uint32_t now_ms = lv_tick_get();
+    if (now_ms - last_tap_ms < 500) {
+        return;
+    }
+    last_tap_ms = now_ms;
+    bool left = x < w / 2;
+    view_switch((g_view_index + (left ? s_stop_count - 1 : 1)) % s_stop_count, false);
+}
+
+/* The screen menu (g_cfg->swipe_nav): a swipe up from the bottom edge shows
+ * a button for every screen, grouped by location as on the navigation page.
+ * A button switches to its screen; a tap beside them, a swipe down or
+ * NAV_CLOSE_MS untouched closes it. Built when opened, deleted when closed. */
+#define NAV_EDGE_PX  40 /* a swipe starts this close to the bottom */
+#define NAV_SWIPE_PX 80 /* and goes this far up (or, to close, down) */
+#define NAV_CLOSE_MS 30000
+#define NAV_NAME_W   170
+static lv_obj_t *s_nav;
+static lv_timer_t *s_nav_timer;
+static lv_point_t s_nav_press;   /* where the last press on the menu began */
+static bool s_edge_press;        /* a press from the bottom edge: a tap or a swipe, not yet known */
+static lv_point_t s_edge_start;
+
+static const char *const STOP_TITLES[] = {
+    [STOP_OVERVIEW] = "Oversikt", [STOP_WEATHER] = "V\xC3\xA6r", [STOP_RADAR] = "Fly", [STOP_SHIPS] = "Skip",
+    [STOP_RAIN] = "Nedb\xC3\xB8r", [STOP_DEPARTURES] = "Avganger", [STOP_AIR] = "Luft", [STOP_WEEK] = "Uke",
+    [STOP_TIDE] = "Tidevann", [STOP_CALENDAR] = "Kalender", [STOP_SAT_EUROPE] = "Europa",
+    [STOP_SAT] = "Satellitt",
+};
+
+static void nav_close(void)
+{
+    if (s_nav == NULL) {
+        return;
+    }
+    lv_obj_delete_async(s_nav); /* may be inside one of its own events */
+    s_nav = NULL;
+    lv_timer_delete(s_nav_timer);
+    s_nav_timer = NULL;
+}
+
+static void nav_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    nav_close();
+}
+
+/* Presses on the menu and on its buttons. */
+static void nav_event_cb(lv_event_t *e)
+{
+    const lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_PRESSED && code != LV_EVENT_RELEASED) {
+        return;
+    }
+    lv_point_t p = { 0, 0 };
+    lv_indev_t *indev = lv_indev_active();
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    s_last_touch_ms = lv_tick_get();
+    if (code == LV_EVENT_PRESSED) {
+        s_nav_press = p;
+        lv_timer_reset(s_nav_timer);
+        return;
+    }
+    if (indev != NULL && lv_indev_get_scroll_obj(indev) != NULL) {
+        return; /* scrolled through a long menu */
+    }
+    const int stop = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target_obj(e)) - 1;
+    nav_close();
+    if (stop >= 0 && p.y - s_nav_press.y < NAV_SWIPE_PX && stop != g_view_index) {
+        view_switch(stop, false);
+    }
+}
+
+static void nav_open(lv_obj_t *screen)
+{
+    const bool dark = (g_cfg->theme == APP_THEME_DARK);
+    s_nav = lv_obj_create(screen); /* the last child, so above everything */
+    lv_obj_remove_style_all(s_nav);
+    lv_obj_set_size(s_nav, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(s_nav, lv_obj_get_style_bg_color(screen, 0), 0);
+    lv_obj_set_style_bg_opa(s_nav, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(s_nav, 16, 0);
+    lv_obj_set_style_pad_row(s_nav, 12, 0);
+    lv_obj_set_flex_flow(s_nav, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(s_nav, LV_DIR_VER);
+    lv_obj_add_flag(s_nav, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_nav, nav_event_cb, LV_EVENT_ALL, NULL);
+
+    lv_obj_t *title = lv_label_create(s_nav);
+    lv_obj_set_style_text_font(title, g_font_large, 0);
+    lv_label_set_text(title, "Velg skjerm");
+
+    const lv_color_t dim = dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060);
+    lv_obj_t *btns = NULL;
+    int group = -2;
+    for (int i = 0; i < s_stop_count; i++) {
+        const view_stop_t *st = &s_stops[i];
+        const int g = stop_is_global(st->kind) ? -1 : st->loc;
+        if (g != group) {
+            group = g;
+            lv_obj_t *row = lv_obj_create(s_nav);
+            lv_obj_remove_style_all(row);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+            lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+            lv_obj_t *name = lv_label_create(row);
+            lv_obj_set_width(name, NAV_NAME_W);
+            lv_obj_set_style_pad_top(name, 10, 0);
+            lv_obj_set_style_text_color(name, dim, 0);
+            lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
+            lv_label_set_text(name, g < 0 ? "Felles" : g_cfg->locations[g].name);
+            btns = lv_obj_create(row);
+            lv_obj_remove_style_all(btns);
+            lv_obj_clear_flag(btns, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_set_height(btns, LV_SIZE_CONTENT);
+            lv_obj_set_flex_grow(btns, 1);
+            lv_obj_set_flex_flow(btns, LV_FLEX_FLOW_ROW_WRAP);
+            lv_obj_set_style_pad_column(btns, 10, 0);
+            lv_obj_set_style_pad_row(btns, 10, 0);
+        }
+        lv_obj_t *b = lv_button_create(btns);
+        lv_obj_add_event_cb(b, nav_event_cb, LV_EVENT_ALL, NULL);
+        lv_obj_set_user_data(b, (void *)(intptr_t)(i + 1));
+        lv_obj_set_style_pad_hor(b, 20, 0);
+        lv_obj_set_style_pad_ver(b, 10, 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        if (i != g_view_index) { /* the one on show keeps the theme's blue */
+            lv_obj_set_style_bg_color(b, dark ? lv_color_hex(0x3A3A3A) : lv_color_hex(0xE2E2E2), 0);
+            lv_obj_set_style_text_color(b, dark ? lv_color_white() : lv_color_hex(0x202020), 0);
+        }
+        lv_obj_t *l = lv_label_create(b);
+        lv_label_set_text(l, STOP_TITLES[st->kind]);
+    }
+    s_nav_timer = lv_timer_create(nav_timer_cb, NAV_CLOSE_MS, NULL);
+}
+
+/* Touches anywhere on screen (the tap layer): a tap switches screens on
+ * touch-down, so none is lost to finger movement; one from the bottom edge
+ * waits to see whether it's a swipe up to the menu. Runs in the LVGL
+ * context, which already holds the adapter lock. */
 static void screen_touch_cb(lv_event_t *e)
 {
-    /* Any touch holds off the automatic rotation for another idle period. */
+    const lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *layer = lv_event_get_target_obj(e);
+    lv_point_t p = { 0, 0 };
+    lv_indev_t *indev = lv_indev_active();
+    if (indev != NULL) {
+        lv_indev_get_point(indev, &p);
+    }
+    if (code == LV_EVENT_PRESSING) {
+        if (s_edge_press && s_edge_start.y - p.y >= NAV_SWIPE_PX) {
+            s_edge_press = false;
+            nav_open(lv_obj_get_screen(layer));
+        }
+        return;
+    }
+    if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        if (s_edge_press) {
+            s_edge_press = false;
+            if (code == LV_EVENT_RELEASED) {
+                screen_tap(s_edge_start.x, lv_obj_get_width(layer));
+            }
+        }
+        return;
+    }
+
+    /* LV_EVENT_PRESSED. Any touch holds off the automatic rotation for
+     * another idle period. */
     s_last_touch_ms = lv_tick_get();
     s_auto_running = false;
 
@@ -442,22 +618,12 @@ static void screen_touch_cb(lv_event_t *e)
         return; /* nothing to cycle through */
     }
 
-    /* Ignore a second press within 500 ms - covers finger bounce and keeps a
-     * quick double-tap from skipping two stops by accident. */
-    static uint32_t last_tap_ms;
-    uint32_t now_ms = lv_tick_get();
-    if (now_ms - last_tap_ms < 500) {
+    if (g_cfg->swipe_nav && p.y >= lv_obj_get_height(layer) - NAV_EDGE_PX) {
+        s_edge_press = true;
+        s_edge_start = p;
         return;
     }
-    last_tap_ms = now_ms;
-
-    lv_point_t p = { 0, 0 };
-    lv_indev_t *indev = lv_indev_active();
-    if (indev != NULL) {
-        lv_indev_get_point(indev, &p);
-    }
-    bool left = p.x < lv_obj_get_width(lv_event_get_target_obj(e)) / 2;
-    view_switch((g_view_index + (left ? s_stop_count - 1 : 1)) % s_stop_count, false);
+    screen_tap(p.x, lv_obj_get_width(layer));
 }
 
 /* Whether stop `i` is one the automatic rotation visits. */
@@ -489,7 +655,7 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
 {
     (void)t;
     const uint32_t now = lv_tick_get();
-    if (now - s_last_touch_ms < (uint32_t)g_cfg->auto_idle_min * 60000u) {
+    if (now - s_last_touch_ms < (uint32_t)g_cfg->auto_idle_min * 60000u || s_nav != NULL) {
         return;
     }
     /* Nobody's watching at night: stay put (and fetch for one screen only). */
@@ -721,6 +887,9 @@ static void build_ui(lv_obj_t *screen)
     /* PRESSED (not CLICKED): fires on touch-down regardless of tiny finger
      * movement, so a quick tap is never lost to scroll/gesture detection. */
     lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_RELEASED, NULL);
+    lv_obj_add_event_cb(s_tap_layer, screen_touch_cb, LV_EVENT_PRESS_LOST, NULL);
 
     lv_timer_create(night_timer_cb, 1000, NULL);
 

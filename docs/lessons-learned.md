@@ -245,3 +245,14 @@ screen of the real configuration and read `psram_lavest` and
 `psram_storste_blokk` in `/status`. Size large buffers to what is free
 (as the rain frames now are) rather than to a fixed budget, and never let
 an allocation failure quietly change what is drawn: log it, and retry.
+
+### Touch can't be tested from the desk
+
+The swipe menu (1.10.0) was checked by a build that opened it by itself and
+a screenshot, which showed the layout but not the touch: its buttons did
+nothing. LVGL passes an event up to a parent only while every object on the
+way has `LV_OBJ_FLAG_EVENT_BUBBLE`; the buttons had it, the rows they sat
+in didn't, so the menu's handler never heard them.
+*Lesson:* attach handlers to the widgets themselves rather than relying on
+bubbling, and ask the user to try anything touch-driven on the display
+before calling it done.

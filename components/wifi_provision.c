@@ -471,8 +471,12 @@ static char *build_page(const app_config_t *cfg)
                   "Vis navigasjonssiden</label></div>"
                   "<small>P&aring; <b>http://%s.local/</b>: knapper for alle skjermene, som bytter skjerm som et "
                   "trykk p&aring; den. Uten den er denne oppsettsiden der. Oppsettsiden er alltid p&aring; "
-                  "<b>/oppsett</b>.</small></fieldset>",
-                  cfg->nav_page ? " checked" : "", cfg->device_name);
+                  "<b>/oppsett</b>.</small>"
+                  "<div class=chk style='margin-top:.6rem'><label><input type=checkbox name=swipenav value=1%s>"
+                  "Sveip opp fra bunnen for &aring; velge skjerm</label></div>"
+                  "<small>P&aring; selve skjermen: et sveip opp fra nederste kant viser de samme knappene. "
+                  "Trykk utenfor dem, eller vent et halvt minutt, for &aring; lukke.</small></fieldset>",
+                  cfg->nav_page ? " checked" : "", cfg->device_name, cfg->swipe_nav ? " checked" : "");
     p = buf_append(p, end,
                   "<fieldset><legend>Skjermbilder</legend>"
                   "<div class=chk><label><input type=checkbox name=scrctl value=1%s>"
@@ -1135,6 +1139,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->ota_auto = form_field(body, "otaauto", val, sizeof(val)) ? 1 : 0;
         cfg->screen_ctl = form_field(body, "scrctl", val, sizeof(val)) ? 1 : 0; /* in the same section */
         cfg->nav_page = form_field(body, "navpage", val, sizeof(val)) ? 1 : 0;
+        cfg->swipe_nav = form_field(body, "swipenav", val, sizeof(val)) ? 1 : 0;
         char hhmm[8];
         int m;
         if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {

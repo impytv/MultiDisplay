@@ -50,6 +50,7 @@ char *app_config_to_json(const app_config_t *c)
     cJSON_AddNumberToObject(rot, "per_screen_s", c->auto_dwell_s);
     cJSON_AddBoolToObject(rot, "overview", c->auto_overview);
     cJSON_AddBoolToObject(rot, "pause_at_night", c->auto_night_pause);
+    cJSON_AddBoolToObject(root, "swipe_menu", c->swipe_nav);
 
     cJSON_AddStringToObject(root, "yr_email", c->yr_email);
     cJSON_AddStringToObject(root, "barentswatch_client_id", c->ais_client_id);
@@ -187,6 +188,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_u16(rot, "per_screen_s", &c->auto_dwell_s);
     get_bool(rot, "overview", &c->auto_overview);
     get_bool(rot, "pause_at_night", &c->auto_night_pause);
+    get_bool(root, "swipe_menu", &c->swipe_nav);
     ok &= get_str(root, "yr_email", c->yr_email, sizeof(c->yr_email));
     if (!app_config_email_valid(c->yr_email)) {
         c->yr_email[0] = '\0';

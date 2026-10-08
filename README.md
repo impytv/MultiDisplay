@@ -222,7 +222,13 @@ one fills in the name, latitude and longitude.
 
 Up to 5 forecast locations can be stored. **Tap the right half of the screen**
 for the next stop and **the left half** for the previous one (both wrap
-around):
+around). **Swipe up from the bottom edge** for a menu of every screen,
+grouped by location like the navigation page: a button switches to that
+screen, and a tap beside the buttons, a swipe down or half a minute
+untouched closes it. A tap in the bottom 40 px acts when the finger lifts
+rather than when it lands, to tell it from a swipe. The swipe can be turned
+off with **Sveip opp fra bunnen for å velge skjerm** under **Vedlikehold →
+Navigasjonsside**. The screens, in order:
 
 1. **Oversikt** – an overview table with one row per location that shows
    weather and 6-hour columns, each showing the weather icon, temperature and

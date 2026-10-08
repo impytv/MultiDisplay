@@ -112,6 +112,7 @@ static void sanitize_view_settings(app_config_t *c)
     c->ota_auto = c->ota_auto ? 1 : 0;
     c->screen_ctl = c->screen_ctl ? 1 : 0;
     c->nav_page = c->nav_page ? 1 : 0;
+    c->swipe_nav = c->swipe_nav ? 1 : 0;
     if (c->ota_at >= 24 * 60) {
         c->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
     }
@@ -156,6 +157,7 @@ static void seed_defaults(app_config_t *out)
     out->auto_night_pause = 1;
     out->ov_show = 1;
     out->nav_page = 1;
+    out->swipe_nav = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
     out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
@@ -276,6 +278,7 @@ esp_err_t app_config_load(app_config_t *out)
     load_str(h, "devname", out->device_name, sizeof(out->device_name));
     nvs_get_u8(h, "scrctl", &out->screen_ctl); /* off if never saved */
     nvs_get_u8(h, "navpage", &out->nav_page);  /* on if never saved */
+    nvs_get_u8(h, "swipenav", &out->swipe_nav); /* on if never saved */
     if (!app_config_email_valid(out->yr_email)) {
         out->yr_email[0] = '\0';
     }
@@ -389,6 +392,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_str(h, "devname", cfg->device_name);
     if (err == ESP_OK) err = nvs_set_u8(h, "scrctl", cfg->screen_ctl ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "navpage", cfg->nav_page ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "swipenav", cfg->swipe_nav ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);
