@@ -63,6 +63,10 @@ static const char *TAG = "radar";
 #define RAIN_ANIM_MS        500
 #define RAIN_HOLD_TICKS     4
 #define RAIN_BUDGET         (1024 * 1024) /* bytes for all the frames at most */
+/* PSRAM left free after the frames are allocated: the watchdog restarts
+ * below 300 KB, and a forecast parse needs ~350 KB for a moment. With
+ * less, the frames get coarser cells instead (see rain_prepare). */
+#define RAIN_RESERVE        (512 * 1024)
 /* Aircraft radar / ship traffic / rain radar colours, one set per theme.
  * ship[] is per ais_category_t, rain[] per rain level (1..RAIN_LEVELS). */
 typedef struct {
@@ -118,9 +122,14 @@ static uint8_t *s_water_px;         /* PSRAM, COAST_D x COAST_D */
 static lv_image_dsc_t s_coast_img;
 static lv_image_dsc_t s_water_img;
 /* Coastline segment middles with the normal to their water side, noted by
- * coast_seed for coast_fill_water. */
+ * coast_seed for coast_fill_water: the middle in 1/16 px, the unit normal
+ * times 127 - 6 bytes a seed rather than 16, as there may be tens of
+ * thousands. */
+#define SEED_POS 16.0f
+#define SEED_DIR 127.0f
 typedef struct {
-    float x, y, nx, ny;
+    int16_t x, y;
+    int8_t nx, ny;
 } water_seed_t;
 #define WATER_SEEDS_MAX 32768
 static water_seed_t *s_water_seeds; /* PSRAM, WATER_SEEDS_MAX */
@@ -1433,7 +1442,8 @@ static void coast_line(float x0, float y0, float x1, float y1)
 
 /* Water mask labels while coast_render works on s_water_px; afterwards it
  * holds 255 for water and 0 for everything else. */
-enum { WATER_UNKNOWN, WATER_SEA, WATER_LAND, WATER_COAST, WATER_COAST_SEA_TMP, WATER_DONE = 0x80, WATER_DONE_SEA = 0xC0 };
+enum { WATER_UNKNOWN, WATER_SEA, WATER_LAND, WATER_COAST, WATER_COAST_SEA_TMP, WATER_SEEN = 0x20, WATER_DONE = 0x80,
+       WATER_DONE_SEA = 0xC0 };
 
 static bool coast_in_disc(int x, int y)
 {
@@ -1456,15 +1466,18 @@ static void coast_seed(float x0, float y0, float x1, float y1)
         return;
     }
     /* On screen (y down), the left of direction (dx, dy) is (dy, -dx). */
-    s_water_seeds[s_water_n_seeds++] = (water_seed_t){ mx, my, dy / len, -dx / len };
+    s_water_seeds[s_water_n_seeds++] = (water_seed_t){ (int16_t)lroundf(mx * SEED_POS), (int16_t)lroundf(my * SEED_POS),
+                                                       (int8_t)lroundf(dy / len * SEED_DIR),
+                                                       (int8_t)lroundf(-dx / len * SEED_DIR) };
 }
 
 /* From a segment's middle, step along `dir` off the line and mark the first
  * pixel clear of it as `v`, unless another line comes first. */
 static void water_mark_side(const water_seed_t *sd, float dir, uint8_t v)
 {
+    const float sx = sd->x / SEED_POS, sy = sd->y / SEED_POS, nx = sd->nx / SEED_DIR, ny = sd->ny / SEED_DIR;
     for (float t = 0.5f; t <= 4.0f; t += 0.5f) {
-        int x = (int)lroundf(sd->x + dir * sd->nx * t), y = (int)lroundf(sd->y + dir * sd->ny * t);
+        int x = (int)lroundf(sx + dir * nx * t), y = (int)lroundf(sy + dir * ny * t);
         if (!coast_in_disc(x, y)) {
             return;
         }
@@ -1478,19 +1491,64 @@ static void water_mark_side(const water_seed_t *sd, float dir, uint8_t v)
     }
 }
 
+/* The flood fill's queue: a ring of pixel indices, which only ever holds
+ * the edge of the area being flooded (a few thousand pixels at most on a
+ * 353 px disc), not the whole area. Static in PSRAM: a run-time block of
+ * the whole image (500 KB) often wasn't there once the rain radar's frames
+ * and the image cache held theirs, and the water was then left out. */
+#define WATER_RING 16384
+static EXT_RAM_BSS_ATTR uint32_t s_water_ring[WATER_RING];
+
+/* Visit the area holding pixel `start` (4-connected, not crossing coast
+ * pixels): every pixel without a bit of `stop` gets `set` ORed in, or is
+ * replaced by `set` if `replace`. Counts the sea and land seed pixels met. */
+static void water_flood(int start, uint8_t stop, uint8_t set, bool replace, int *sea, int *land)
+{
+    static const int8_t nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    static bool warned;
+    uint32_t head = 0, tail = 0;
+    const uint8_t v0 = s_water_px[start] & 0x0F;
+    *sea += (v0 == WATER_SEA);
+    *land += (v0 == WATER_LAND);
+    s_water_px[start] = replace ? set : (s_water_px[start] | set);
+    s_water_ring[tail++ % WATER_RING] = (uint32_t)start;
+    while (head != tail) {
+        const int i = (int)s_water_ring[head++ % WATER_RING];
+        const int x = i % COAST_D, y = i / COAST_D;
+        for (int k = 0; k < 4; k++) {
+            const int nx = x + nb[k][0], ny = y + nb[k][1];
+            if (!coast_in_disc(nx, ny)) {
+                continue;
+            }
+            uint8_t *w = &s_water_px[ny * COAST_D + nx];
+            if (*w == WATER_COAST || (*w & stop)) {
+                continue;
+            }
+            if (tail - head >= WATER_RING) {
+                if (!warned) {
+                    warned = true;
+                    ESP_LOGW(TAG, "Water fill: queue full, an area is left partly unfilled");
+                }
+                continue;
+            }
+            const uint8_t v = *w & 0x0F;
+            *sea += (v == WATER_SEA);
+            *land += (v == WATER_LAND);
+            *w = replace ? set : (*w | set);
+            s_water_ring[tail++ % WATER_RING] = (uint32_t)(ny * COAST_D + nx);
+        }
+    }
+}
+
 /* Split the disc into the areas the coastline in s_coast_px separates, and
  * make each area sea or land by a vote of the seed pixels inside it (a few
  * seeds land on the wrong side where the coast bends tightly). An area with no
  * seeds (no coast in view) stays unfilled; coastline pixels take the side most
- * of their neighbours are on. */
+ * of their neighbours are on. Each area is flooded twice: once to count its
+ * votes (marking it WATER_SEEN), once to fill it. */
 static void coast_fill_water(void)
 {
     const int n = COAST_D * COAST_D;
-    uint32_t *q = heap_caps_malloc(n * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
-    if (q == NULL) {
-        memset(s_water_px, 0, n);
-        return;
-    }
     for (int i = 0; i < n; i++) {
         s_water_px[i] = s_coast_px[i] > 0 ? WATER_COAST : WATER_UNKNOWN;
     }
@@ -1500,38 +1558,14 @@ static void coast_fill_water(void)
     }
     static const int8_t nb[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
     for (int start = 0; start < n; start++) {
-        uint8_t v0 = s_water_px[start];
-        if (v0 == WATER_COAST || (v0 & WATER_DONE) || !coast_in_disc(start % COAST_D, start / COAST_D)) {
+        const uint8_t v0 = s_water_px[start];
+        if (v0 == WATER_COAST || (v0 & (WATER_DONE | WATER_SEEN)) || !coast_in_disc(start % COAST_D, start / COAST_D)) {
             continue;
         }
-        /* Flood the area, marking it done as it goes; q holds its pixels. */
-        int head = 0, tail = 0, sea = 0, land = 0;
-        q[tail++] = start;
-        s_water_px[start] |= WATER_DONE;
-        while (head < tail) {
-            int i = q[head++];
-            uint8_t v = s_water_px[i] & ~WATER_DONE;
-            sea += (v == WATER_SEA);
-            land += (v == WATER_LAND);
-            int x = i % COAST_D, y = i / COAST_D;
-            for (int k = 0; k < 4; k++) {
-                int nx = x + nb[k][0], ny = y + nb[k][1];
-                if (!coast_in_disc(nx, ny)) {
-                    continue;
-                }
-                uint8_t *w = &s_water_px[ny * COAST_D + nx];
-                if (*w != WATER_COAST && !(*w & WATER_DONE)) {
-                    *w |= WATER_DONE;
-                    q[tail++] = ny * COAST_D + nx;
-                }
-            }
-        }
-        const uint8_t fill = (sea > land) ? WATER_DONE_SEA : WATER_DONE;
-        for (int i = 0; i < tail; i++) {
-            s_water_px[q[i]] = fill;
-        }
+        int sea = 0, land = 0, unused = 0;
+        water_flood(start, WATER_DONE | WATER_SEEN, WATER_SEEN, false, &sea, &land);
+        water_flood(start, WATER_DONE, (sea > land) ? WATER_DONE_SEA : WATER_DONE, true, &unused, &unused);
     }
-    free(q);
     for (int i = 0; i < n; i++) {
         if (s_water_px[i] != WATER_COAST) {
             continue;
@@ -1824,13 +1858,19 @@ static bool rain_prepare(int loc, int range, const rain_area_t *area)
     }
 
     /* A pixel of margin all round for the blending; coarser cells if the
-     * hour of frames wouldn't fit in RAIN_BUDGET. */
+     * hour of frames wouldn't fit in RAIN_BUDGET, or in what PSRAM has
+     * beyond RAIN_RESERVE (counting the frames held now, which go first). */
+    const size_t held = s_rain_cells * (RAIN_FRAMES + 1);
+    const size_t avail = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) + held;
+    const size_t budget = avail > RAIN_RESERVE + RAIN_BUDGET ? RAIN_BUDGET
+                        : avail > RAIN_RESERVE + 64 * 1024 ? avail - RAIN_RESERVE
+                                                           : 64 * 1024;
     rain_crop_t c = { .x0 = (int)floorf(x_lo) - 1, .y0 = (int)floorf(y_lo) - 1, .step = 1 };
     const int px_w = (int)ceilf(x_hi) + 2 - c.x0, px_h = (int)ceilf(y_hi) + 2 - c.y0;
     for (;; c.step++) {
         c.w = (uint16_t)((px_w + c.step - 1) / c.step);
         c.h = (uint16_t)((px_h + c.step - 1) / c.step);
-        if ((size_t)c.w * c.h * (RAIN_FRAMES + 1) <= RAIN_BUDGET) {
+        if ((size_t)c.w * c.h * (RAIN_FRAMES + 1) <= budget) {
             break;
         }
     }

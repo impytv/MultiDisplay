@@ -232,3 +232,16 @@ invalidating the screen, and remove the endpoint afterwards.
   restored after tests that change them (download `/config.json` first).
 - Keep command output short (`head`, `grep`): large outputs used a fifth of
   a session's context.
+
+### PSRAM headroom is shared by every screen
+
+The image cache (1.9.2) was measured with the screens set up at the time.
+Two days later the user had added satellite close-ups, departures and
+tides, and the same firmware ran PSRAM out on the rain radar and
+restarted - while a 500 KB allocation in the water fill had already been
+failing quietly, leaving the sea white.
+*Lesson:* after adding anything that holds PSRAM, walk through every
+screen of the real configuration and read `psram_lavest` and
+`psram_storste_blokk` in `/status`. Size large buffers to what is free
+(as the rain frames now are) rather than to a fixed budget, and never let
+an allocation failure quietly change what is drawn: log it, and retry.

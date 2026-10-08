@@ -381,6 +381,7 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddNumberToObject(mem, "intern_storste_blokk", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(mem, "psram_ledig", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(mem, "psram_lavest", heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(mem, "psram_storste_blokk", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 
     cJSON *svcs = cJSON_AddArrayToObject(o, "tjenester");
     for (int i = 0; i < DIAG_SERVICE_COUNT; i++) {

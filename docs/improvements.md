@@ -576,3 +576,31 @@ the forecast 3,000 times.
 Nothing else turned up: no out-of-bounds read or write, and no other
 undefined behaviour in the hand-written ADS-B and tide parsers or the
 cJSON-based ones.
+
+## Found in use (October 2026, 1.9.4)
+
+- [x] **73. The ship radar sometimes had no water.** Reported with a
+  screenshot: the coastline drawn, the sea left white. The water fill
+  allocated a 500 KB queue (a pixel index for every pixel of the disc)
+  each time a coastline was drawn, and drew no water when that failed -
+  without trying again. With the rain radar's frames (up to 1 MB, kept
+  after the screen is left) and the image cache (#62, 256 KB) in PSRAM,
+  a block that size was often not there: the lowest free PSRAM was 374 KB
+  after a morning's rotation. *Done: the fill floods each area twice
+  (count the votes, then fill) through a 64 KB ring of the area's edge,
+  static in PSRAM, so it allocates nothing. The water came out
+  pixel-identical to before on the ship screen, and was drawn on the 150 km
+  aircraft and 100 km rain screens with no queue overflow.*
+- [x] **74. The rain radar could run PSRAM out and restart the display.**
+  With the screens set up since (satellite close-ups for two locations,
+  the Europe image, departures and tides), 963 KB of PSRAM was free after
+  start-up. Opening the rain radar at 100 km then sized its hour of
+  frames to its full 1 MB budget: PSRAM went down to 19 KB, the fetch
+  failed ("Kunne ikke hente nedbør"), and the watchdog restarted the
+  display ("minnet var nesten brukt opp"). *Done: the frames are sized
+  to what PSRAM has beyond a 512 KB reserve (coarser cells only if
+  needed), and the water fill's seed points take 6 bytes instead of 16
+  (512 → 192 KB), so 1,261 KB is free after start-up. A pass through all
+  20 screens: rain at full resolution, PSRAM lowest 614 KB, no restart.
+  `/status` now also gives PSRAM's largest free block, and the rain
+  client's log gave every image as "0 bytes" (logged after freeing it).*

@@ -301,12 +301,13 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
         return err != ESP_OK ? err : (status == 404 ? ESP_ERR_NOT_FOUND : ESP_FAIL);
     }
 
-    err = decode_levels(area, crop, (const uint8_t *)resp.body.buf, resp.body.len, level);
+    const size_t len = resp.body.len;
+    err = decode_levels(area, crop, (const uint8_t *)resp.body.buf, len, level);
     http_buf_free(&resp.body); /* not kept: PSRAM is short with the frames held */
     if (err != ESP_OK) {
         return err;
     }
     *taken = resp.time ? resp.time : when;
-    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)resp.body.len, (long long)*taken);
+    ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)len, (long long)*taken);
     return ESP_OK;
 }
