@@ -205,14 +205,16 @@ precipitation starting or stopping within the next hour and a half, that
 takes the sun times' place in blue: "Nedbør om 25 min", "Opphold om 10 min"
 or "Nedbør den neste timen".
 
-Hours worth looking up for the northern lights get a green glow down from
-the top of the chart, marked **Nordlys**: dark, the sky at most 75 %
-clouded, and an aurora value of at least 0.3 in Yr's aurora forecast for the
-place (about Kp 3 in Tromsø; Oslo needs a strong storm). That forecast is
-Yr's own website API (`www.yr.no/api/v0/locations/LAT,LON/auroraforecast`,
-what yr.no shows), not a documented one, so it may change without notice;
-the chart then just shows no aurora. Fetched hourly, as its cache headers
-allow.
+Hours worth looking up for the northern lights get a green bar down from the
+top of the chart, marked **Nordlys**, as long as Yr's aurora value for the
+hour (a value of 1 reaches the bottom), so the bars grow and shrink with the
+forecast intensity as in the Yr app. An hour is shown when it is dark, the
+sky at most 75 % clouded, and an aurora value of at least 0.3 in Yr's aurora
+forecast for the place (about Kp 3 in Tromsø; Oslo needs a strong storm).
+That forecast is Yr's own website API
+(`www.yr.no/api/v0/locations/LAT,LON/auroraforecast`, what yr.no shows), not
+a documented one, so it may change without notice; the chart then just shows
+no aurora. Fetched hourly, as its cache headers allow.
 
 To add a location, type a place name under **Finn sted** in a location block
 on the setup page: the hits come from Kartverket's place names, and picking

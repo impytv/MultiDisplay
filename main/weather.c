@@ -211,8 +211,8 @@ static EXT_RAM_BSS_ATTR http_cache_t s_aurora_http[APP_CONFIG_MAX_LOCATIONS];
 static bool s_aurora_valid[APP_CONFIG_MAX_LOCATIONS];
 static bool s_aurora_tried[APP_CONFIG_MAX_LOCATIONS]; /* s_aurora_tk is the last try, even a failed one */
 static TickType_t s_aurora_tk[APP_CONFIG_MAX_LOCATIONS];
-#define AURORA_BANDS 3
-static lv_obj_t *s_aurora_band[AURORA_BANDS], *s_aurora_label[AURORA_BANDS];
+#define AURORA_LABELS 3
+static lv_obj_t *s_aurora_label[AURORA_LABELS];
 
 /* A pair of bar series - one bar in front of a taller, paler one behind it
  * (the precipitation min and max, the wind and its gust) - drawn as one A8
@@ -227,6 +227,13 @@ typedef struct {
     lv_image_dsc_t img;
     lv_color_t color;
 } bars_t;
+
+/* The aurora bars: a bar down from the top of the main chart for each hour
+ * worth looking up for, as long as Yr's aurora value for it (see
+ * aurora_update). Drawn like the precipitation bars, fading downwards from
+ * s_aurora_opa. */
+static bars_t s_aurora_bars;
+static uint8_t s_aurora_opa;
 
 /* The frames (background/border/gridlines) under the bars: charts with no
  * series of their own. The temperature line and the markers are on top. */
@@ -939,44 +946,63 @@ static lv_obj_t *night_band(int y, int h, bool dark)
     return b;
 }
 
-/* Aurora: the runs of hours in location `loc`'s aurora forecast worth
- * looking up for (aurora_good: dark, a good chance, the sky at least partly
- * clear), each a green glow down from the top of the main chart with
- * "Nordlys" on it. Same x axis as sun_update (adapter lock held). */
+/* Aurora: the hours in location `loc`'s aurora forecast worth looking up
+ * for (aurora_good: dark, a good chance, the sky at least partly clear),
+ * each a green bar down from the top of the main chart, as long as Yr's
+ * aurora value (1 = the full height), so a stronger forecast shows longer
+ * bars; "Nordlys" on each run of them. Same x axis as sun_update (adapter
+ * lock held). */
 static void aurora_update(const yr_forecast_t *fc, int loc)
 {
-    int band = 0;
+    bars_t *b = &s_aurora_bars;
+    const int32_t img_h = b->img.header.h;
+    memset(b->px, 0, (size_t)CHART_W * img_h);
+    int label = 0;
     int label_end = -1000; /* right edge of the last label shown */
     const int n = fc->point_count;
     const aurora_t *a = s_aurora_valid[loc] ? s_aurora_cache[loc] : NULL;
     if (a != NULL && n > 1 && fc->points[0].epoch_utc > PLAUSIBLE_EPOCH_S) {
         const int64_t t0 = fc->points[0].epoch_utc, t1 = fc->points[n - 1].epoch_utc;
-        for (int i = 0; i < a->count && band < AURORA_BANDS; i++) {
+        for (int i = 0; i < a->count; i++) {
             if (!aurora_good(&a->hours[i])) {
                 continue;
             }
-            int64_t start = a->hours[i].start, end = a->hours[i].end;
-            while (i + 1 < a->count && aurora_good(&a->hours[i + 1]) && a->hours[i + 1].start == end) {
-                end = a->hours[++i].end;
+            /* The run of good hours from i, a bar for each. */
+            int run_x0 = -1, run_x1 = -1;
+            for (;; i++) {
+                const aurora_hour_t *h = &a->hours[i];
+                const int64_t start = h->start < t0 ? t0 : h->start, end = h->end > t1 ? t1 : h->end;
+                if (end > start) {
+                    const int x0 = (int)((start - t0) * (CHART_W - 1) / (t1 - t0));
+                    int x1 = (int)((end - t0) * (CHART_W - 1) / (t1 - t0));
+                    if (run_x0 < 0) {
+                        run_x0 = x0;
+                    }
+                    run_x1 = x1;
+                    if (x1 - x0 >= 4) {
+                        x1--; /* a gap between the hours */
+                    }
+                    const float v = h->value > 1.0f ? 1.0f : h->value;
+                    int32_t len = (int32_t)(v * img_h + 0.5f);
+                    len = len < 2 ? 2 : len;
+                    for (int32_t r = 0; r < len; r++) {
+                        /* From s_aurora_opa at the top to a quarter of it at the end. */
+                        const uint8_t op = (uint8_t)(s_aurora_opa - (s_aurora_opa * 3 / 4) * r / len);
+                        memset(b->px + (size_t)r * CHART_W + x0, op, (size_t)(x1 - x0));
+                    }
+                }
+                if (i + 1 >= a->count || !aurora_good(&a->hours[i + 1]) || a->hours[i + 1].start != h->end) {
+                    break;
+                }
             }
-            start = start < t0 ? t0 : start;
-            end = end > t1 ? t1 : end;
-            if (end <= start) {
-                continue; /* outside the chart */
-            }
-            const int x0 = (int)((start - t0) * (CHART_W - 1) / (t1 - t0));
-            const int x1 = (int)((end - t0) * (CHART_W - 1) / (t1 - t0));
-            if (x1 - x0 < 2) {
+            if (run_x1 - run_x0 < 2 || label >= AURORA_LABELS) {
                 continue;
             }
-            lv_obj_set_x(s_aurora_band[band], CHART_X + x0);
-            lv_obj_set_width(s_aurora_band[band], x1 - x0);
-            lv_obj_clear_flag(s_aurora_band[band], LV_OBJ_FLAG_HIDDEN);
             /* One label for runs close together (the same night). */
-            lv_obj_t *l = s_aurora_label[band];
+            lv_obj_t *l = s_aurora_label[label++];
             lv_obj_update_layout(l);
             const int w = lv_obj_get_width(l);
-            int x = CHART_X + (x0 + x1) / 2 - w / 2;
+            int x = CHART_X + (run_x0 + run_x1) / 2 - w / 2;
             x = x < CHART_X + 2 ? CHART_X + 2 : (x > CHART_X + CHART_W - 2 - w ? CHART_X + CHART_W - 2 - w : x);
             if (x >= label_end + 8) {
                 lv_obj_set_pos(l, x, CHART_Y + 3 + s_alert_rows * ALERT_ROW_H);
@@ -985,33 +1011,12 @@ static void aurora_update(const yr_forecast_t *fc, int loc)
             } else {
                 lv_obj_add_flag(l, LV_OBJ_FLAG_HIDDEN);
             }
-            band++;
         }
     }
-    for (; band < AURORA_BANDS; band++) {
-        lv_obj_add_flag(s_aurora_band[band], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_aurora_label[band], LV_OBJ_FLAG_HIDDEN);
+    for (; label < AURORA_LABELS; label++) {
+        lv_obj_add_flag(s_aurora_label[label], LV_OBJ_FLAG_HIDDEN);
     }
-}
-
-/* The glow of an aurora band: green at the top of the main chart, fading
- * out a little over half way down (placed by aurora_update). */
-static lv_obj_t *aurora_band(bool dark)
-{
-    lv_obj_t *b = lv_obj_create(s_detail_root);
-    lv_obj_remove_style_all(b);
-    lv_obj_set_style_bg_color(b, lv_color_hex(0x2ECC71), 0);
-    lv_obj_set_style_bg_grad_color(b, lv_color_hex(0x2ECC71), 0);
-    lv_obj_set_style_bg_grad_dir(b, LV_GRAD_DIR_VER, 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_main_opa(b, dark ? LV_OPA_50 : LV_OPA_40, 0);
-    lv_obj_set_style_bg_grad_opa(b, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_bg_grad_stop(b, 150, 0);
-    lv_obj_set_pos(b, CHART_X, CHART_Y + 1);
-    lv_obj_set_size(b, 1, CHART_H - 2);
-    lv_obj_clear_flag(b, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
-    return b;
+    lv_obj_invalidate(b->obj);
 }
 
 static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int loc)
@@ -1301,7 +1306,7 @@ static void alert_lines_update(int loc)
     for (; row < MET_ALERTS_MAX; row++) {
         lv_obj_add_flag(s_alert_line[row], LV_OBJ_FLAG_HIDDEN);
     }
-    for (int i = 0; i < AURORA_BANDS; i++) {
+    for (int i = 0; i < AURORA_LABELS; i++) {
         lv_obj_set_y(s_aurora_label[i], CHART_Y + 3 + s_alert_rows * ALERT_ROW_H);
     }
 }
@@ -1671,9 +1676,8 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     for (int i = 0; i < NIGHT_BANDS; i++) {
         s_night_main[i] = night_band(CHART_Y + 1, CHART_H - 2, dark);
     }
-    for (int i = 0; i < AURORA_BANDS; i++) {
-        s_aurora_band[i] = aurora_band(dark);
-    }
+    s_aurora_opa = dark ? LV_OPA_50 : LV_OPA_40;
+    bars_create(&s_aurora_bars, CHART_X, CHART_Y + 1, CHART_H - 2, lv_color_hex(0x2ECC71));
     for (int i = 0; i < MET_ALERTS_MAX; i++) {
         lv_obj_t *l = s_alert_line[i] = lv_obj_create(s_detail_root);
         lv_obj_remove_style_all(l);
@@ -1721,7 +1725,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
         lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    for (int i = 0; i < AURORA_BANDS; i++) {
+    for (int i = 0; i < AURORA_LABELS; i++) {
         s_aurora_label[i] = lv_label_create(s_detail_root);
         lv_obj_set_style_text_color(s_aurora_label[i], dark ? lv_color_hex(0x7DF0A8) : lv_color_hex(0x168A47), 0);
         lv_label_set_text(s_aurora_label[i], "Nordlys");
