@@ -227,6 +227,12 @@ invalidating the screen, and remove the endpoint afterwards.
 
 - Commit only when asked; the user pushes (or asks for the push).
 - Publish with `scripts/publish_firmware.py`; raise `version.txt` first.
+  Its signature check always prints "Signature block 1 invalid. Skipping."
+  and the same for block 2: an image has room for three signatures and we
+  fill only block 0 with our one key. That is harmless; what matters is
+  "Signature block 0 verification successful". A wrong key fails with
+  "Signature could not be verified" (exit 2), which stops the publish
+  before anything is copied (checked at 1.10.2).
 - Temporary test code (endpoints like `/tap` and `/crash`, fake data) is
   always removed before the final build, and the user's settings are
   restored after tests that change them (download `/config.json` first).
