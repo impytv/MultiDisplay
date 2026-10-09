@@ -98,6 +98,9 @@ static const char *TAG = "weather";
  * peaks for the smoother precipitation and wind series). An overflow just
  * drops the least important trailing label - no crash. */
 #define TEMP_MARKER_POOL 8
+/* A temperature marker on the precipitation bars is backed by the chart's
+ * background at this opacity, the bars just showing through. */
+#define TEMP_MARKER_BACKDROP_OPA LV_OPA_80
 #define PRECIP_MARKER_POOL 2 /* the two highest max-precipitation peaks - see place_precip_markers */
 #define WIND_MARKER_POOL 2   /* the two highest gust peaks - see place_wind_markers */
 #define WIND_MARKER_GAP  12  /* px kept between wind markers, or the weaker is left out */
@@ -553,9 +556,29 @@ static float temp_prominence(const yr_forecast_t *fc, int idx, bool want_max)
                     : ((left < right ? left : right) - t);
 }
 
+/* Whether the label (absolute coordinates) covers any drawn bar in `b`. */
+static bool label_over_bars(lv_obj_t *label, const bars_t *b)
+{
+    lv_area_t l, a;
+    lv_obj_get_coords(label, &l);
+    lv_obj_get_coords(b->obj, &a);
+    const int32_t x0 = LV_MAX(l.x1, a.x1) - a.x1, x1 = LV_MIN(l.x2, a.x2) - a.x1;
+    const int32_t y0 = LV_MAX(l.y1, a.y1) - a.y1, y1 = LV_MIN(l.y2, a.y2) - a.y1;
+    for (int32_t y = y0; y <= y1; y++) {
+        for (int32_t x = x0; x <= x1; x++) {
+            if (b->px[(size_t)y * CHART_W + x] != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /* Emit one temperature marker at points[m] (above = label over the line, a
  * max; else under it, a min), recording its epoch so later markers can space
- * themselves against it. No-op once the pool is full. */
+ * themselves against it. A label that lands on the precipitation bars gets a
+ * backdrop in the chart's background colour, as orange on blue is hard to
+ * read. No-op once the pool is full. */
 static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
                       int64_t placed_max[], int *n_max,
                       int64_t placed_min[], int *n_min)
@@ -568,6 +591,9 @@ static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
     lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
     place_marker_label(label, CHART_X + s_temp_line_points[m].x,
                        CHART_Y + s_temp_line_points[m].y, above);
+    lv_obj_update_layout(label);
+    lv_obj_set_style_bg_opa(label, label_over_bars(label, &s_precip_bars) ? TEMP_MARKER_BACKDROP_OPA : LV_OPA_TRANSP,
+                            0);
     if (above) {
         placed_max[(*n_max)++] = fc->points[m].epoch_utc;
     } else {
@@ -1686,6 +1712,11 @@ lv_obj_t *weather_build(lv_obj_t *screen)
         lv_obj_set_style_text_color(s_temp_markers[i],
                                     dark ? lv_palette_lighten(LV_PALETTE_ORANGE, 2)
                                          : lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+        /* The backdrop, shown only over the bars (see temp_emit). */
+        lv_obj_set_style_bg_color(s_temp_markers[i], lv_obj_get_style_bg_color(s_precip_frame, LV_PART_MAIN), 0);
+        lv_obj_set_style_bg_opa(s_temp_markers[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_radius(s_temp_markers[i], 4, 0);
+        lv_obj_set_style_pad_hor(s_temp_markers[i], 3, 0);
         lv_label_set_text(s_temp_markers[i], "");
         lv_obj_add_flag(s_temp_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
