@@ -85,6 +85,12 @@ char *app_config_to_json(const app_config_t *c)
         cJSON_AddNumberToObject(l, "ship_min_m", c->ship_min_len_m[i]);
         cJSON_AddNumberToObject(l, "ship_inner_km", c->ship_near_km[i]);
         cJSON_AddNumberToObject(l, "ship_inner_min_m", c->ship_near_min_len_m[i]);
+        if (c->ship_at[i].lat[0] != '\0') {
+            cJSON *sa = cJSON_AddObjectToObject(l, "ship_centre");
+            cJSON_AddStringToObject(sa, "name", c->ship_at[i].name);
+            cJSON_AddStringToObject(sa, "lat", c->ship_at[i].lat);
+            cJSON_AddStringToObject(sa, "lon", c->ship_at[i].lon);
+        }
         cJSON_AddNumberToObject(l, "rain_km", c->rain_km[i]);
         cJSON_AddStringToObject(l, "departures", c->departures[i]);
         cJSON_AddItemToArray(locs, l);
@@ -244,6 +250,13 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
             c->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
             c->ship_min_len_m[i] = c->ship_near_km[i] = c->ship_near_min_len_m[i] = 0;
             c->departures[i][0] = '\0';
+            memset(&c->ship_at[i], 0, sizeof(c->ship_at[i]));
+            const cJSON *sa = cJSON_GetObjectItemCaseSensitive(l, "ship_centre");
+            if (sa != NULL && !(get_str(sa, "name", c->ship_at[i].name, sizeof(c->ship_at[i].name)) &&
+                                get_str(sa, "lat", c->ship_at[i].lat, sizeof(c->ship_at[i].lat)) &&
+                                get_str(sa, "lon", c->ship_at[i].lon, sizeof(c->ship_at[i].lon)))) {
+                memset(&c->ship_at[i], 0, sizeof(c->ship_at[i])); /* unusable: ships around the location */
+            }
             get_u16(l, "show", &c->show[i]);
             get_u16(l, "rotate", &c->auto_show[i]);
             get_u16(l, "aircraft_km", &c->radar_km[i]);

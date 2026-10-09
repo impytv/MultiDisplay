@@ -51,21 +51,26 @@ T(a);T(o);S();if(o.parentNode.scrollIntoView)o.parentNode.scrollIntoView({block:
 addloc.onclick=()=>{let d=L.map(f=>f.parentNode).find(d=>d.hidden);if(!d)return;d.hidden=false;d.open=true;M();S();d.querySelector('.plq').focus()};
 document.querySelectorAll('.rm').forEach(b=>b.onclick=()=>{let f=b.closest('fieldset');
 if(!confirm('Fjerne '+(N(f,'name').value||'stedet')+'?'))return;
-['name','lat','lon'].forEach(k=>N(f,k).value='');f.querySelectorAll('input[type=checkbox]').forEach(x=>x.checked=false);
+['name','lat','lon','shipname','shiplat','shiplon'].forEach(k=>N(f,k).value='');f.querySelectorAll('input[type=checkbox]').forEach(x=>x.checked=false);
 let dp=N(f,'dep');dp.value='';dp.dispatchEvent(new Event('change'));f.parentNode.open=false;f.parentNode.hidden=true;T(f);M();S()});
-/* Place search (Kartverket's place names). */
-L.forEach(f=>{let q=f.querySelector('.plq'),h=f.querySelector('.hits'),t,c;q.oninput=()=>{clearTimeout(t);if(c)c.abort();let v=q.value.trim();
+/* Place search (Kartverket's place names): for the location, and for
+where its ships are centred. */
+function Q(q,h,pick){let t,c;q.oninput=()=>{clearTimeout(t);if(c)c.abort();let v=q.value.trim();
 if(v.length<2){h.innerHTML='';return}t=setTimeout(()=>{c=new AbortController();
 fetch('https://ws.geonorge.no/stedsnavn/v1/navn?fuzzy=true&utkoordsys=4258&treffPerSide=8&side=1&sok='+encodeURIComponent(v),{signal:c.signal})
 .then(r=>r.json()).then(d=>{h.innerHTML='';(d.navn||[]).forEach(n=>{let p=n.representasjonspunkt,b=document.createElement('button');b.type='button';
 b.innerHTML=E(n['skrivemåte'])+' <small>'+E(n.navneobjekttype)+', '+E((n.kommuner||[]).map(k=>k.kommunenavn).join(', '))+'</small>';
-b.onclick=()=>{N(f,'name').value=n['skrivemåte'];N(f,'lat').value=p.nord.toFixed(4);N(f,'lon').value=p['øst'].toFixed(4);
-h.innerHTML='';q.value='';T(f);S()};h.appendChild(b)});if(!h.children.length)h.innerHTML='<small>Ingen treff</small>'})
+b.onclick=()=>{pick(n['skrivemåte'],p.nord.toFixed(4),p['øst'].toFixed(4));h.innerHTML='';q.value='';S()};h.appendChild(b)});
+if(!h.children.length)h.innerHTML='<small>Ingen treff</small>'})
 .catch(e=>{if(e.name!='AbortError')h.innerHTML='<small>Søket trenger internett.</small>'})},300)};
-q.onkeydown=e=>{if(e.key=='Enter')e.preventDefault()}});
+q.onkeydown=e=>{if(e.key=='Enter')e.preventDefault()}}
+L.forEach(f=>{const set=(k,n,a,o)=>{N(f,k+'name').value=n;N(f,k+'lat').value=a;N(f,k+'lon').value=o;T(f)};
+Q(f.querySelector('.plq'),f.querySelector('.plq+.hits'),(n,a,o)=>set('',n,a,o));
+Q(f.querySelector('.spq'),f.querySelector('.spq+.hits'),(n,a,o)=>set('ship',n,a,o))});
 /* Unsaved changes. */
 let dirty=false;function S(){dirty=true;document.getElementById('dirty').textContent='Ulagrede endringer'}
-F.addEventListener('input',e=>{if(!e.target.classList.contains('plq'))S()});F.addEventListener('change',e=>{if(!e.target.classList.contains('plq')&&e.target.type!='file')S()});
+const SQ=x=>x.classList.contains('plq')||x.classList.contains('spq');
+F.addEventListener('input',e=>{if(!SQ(e.target))S()});F.addEventListener('change',e=>{if(!SQ(e.target)&&e.target.type!='file')S()});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 /* Times: phones' number pads often have no ':', so 2230, 930, 22.30 and
 22,30 are taken as well and shown as 22:30 once the field is left. */
@@ -81,11 +86,14 @@ if(x.value===''||v<+x.min||v>+x.max)bad.push(X(x,'Må være fra '+x.min+' til '+
 L.forEach(f=>{if(f.parentNode.hidden)return;let a=N(f,'lat'),o=N(f,'lon'),n=N(f,'name');
 if(!n.value.trim()&&!a.value.trim()&&!o.value.trim())return;
 if(!num(a.value)||Math.abs(+a.value.replace(',','.'))>90)bad.push(X(a,'Breddegrad fra -90 til 90.'));
-if(!num(o.value)||Math.abs(+o.value.replace(',','.'))>180)bad.push(X(o,'Lengdegrad fra -180 til 180.'))});
+if(!num(o.value)||Math.abs(+o.value.replace(',','.'))>180)bad.push(X(o,'Lengdegrad fra -180 til 180.'));
+let sa=N(f,'shiplat'),so=N(f,'shiplon');if(sa.closest('[hidden]')||!sa.value.trim()&&!so.value.trim())return;
+if(!num(sa.value)||Math.abs(+sa.value.replace(',','.'))>90)bad.push(X(sa,'Breddegrad fra -90 til 90, eller tomt.'));
+if(!num(so.value)||Math.abs(+so.value.replace(',','.'))>180)bad.push(X(so,'Lengdegrad fra -180 til 180, eller tomt.'))});
 TM.forEach(k=>{let x=F.querySelector('[name='+k+']'),t=hm(x.value);if(t===null)bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30 eller 2230.'));else x.value=t});
 F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;if(v&&!/^(https?|webcal):\/\/\S+$/.test(v))bad.push(X(x,'Adressen må begynne med https://, http:// eller webcal://.'))});
 let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv inn WiFi-nettet.'));
-F.querySelectorAll('[name^=lat],[name^=lon]').forEach(x=>x.value=x.value.replace(',','.'));
+F.querySelectorAll('[name^=lat],[name^=lon],[name^=shiplat],[name^=shiplon]').forEach(x=>x.value=x.value.replace(',','.'));
 if(bad.length){e.preventDefault();let d=bad[0].closest('details');while(d){d.open=true;d=d.parentNode.closest('details')}
 bad[0].scrollIntoView({block:'center'});bad[0].focus();return}dirty=false});
 

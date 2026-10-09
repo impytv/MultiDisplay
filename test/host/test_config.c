@@ -18,6 +18,7 @@ void test_config(void)
     CHECK_INT(a.screen_ctl, 0); /* off unless ticked */
     CHECK_INT(a.nav_page, 1);   /* on unless unticked */
     CHECK_INT(a.swipe_nav, 1);  /* on unless unticked */
+    CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
 
     /* Save and load again: everything comes back. */
     snprintf(a.wifi_ssid, sizeof(a.wifi_ssid), "home");
@@ -32,6 +33,9 @@ void test_config(void)
     a.show[1] = APP_SHOW_WEATHER | APP_SHOW_SHIPS | APP_SHOW_SAT; /* a bit past the first byte */
     a.auto_show[1] = APP_SHOW_SAT;
     a.ship_km[1] = 30;
+    snprintf(a.ship_at[1].name, sizeof(a.ship_at[1].name), "Troms\xC3\xB8ysundet");
+    snprintf(a.ship_at[1].lat, sizeof(a.ship_at[1].lat), "69.6650");
+    snprintf(a.ship_at[1].lon, sizeof(a.ship_at[1].lon), "18.9950");
     snprintf(a.departures[1], sizeof(a.departures[1]), "58858=VYG:Line:R31/v502");
     a.night_off = 1;
     a.dim_start = 22 * 60 + 23;
@@ -80,6 +84,9 @@ void test_config(void)
     CHECK_INT(c.location_count, 2);
     CHECK_STR(c.locations[1].name, "Kval\xC3\xB8ysletta");
     CHECK_INT(c.ship_km[1], 30);
+    CHECK_STR(app_config_ship_centre(&c, 1)->lat, "69.6650");     /* the ships' own centre */
+    CHECK_STR(c.ship_at[1].name, "Troms\xC3\xB8ysundet");
+    CHECK(app_config_ship_centre(&c, 0) == &c.locations[0]);      /* none for the first */
     CHECK_STR(c.departures[1], "58858=VYG:Line:R31/v502");
     CHECK_INT(c.show[0], APP_SHOW_WEATHER | APP_SHOW_TIDE);
     CHECK(c.cal_show && c.cal_rotate && c.cal_url[0][0] == '\0'); /* the calendar addresses aren't in it */
@@ -164,4 +171,12 @@ void test_config(void)
     CHECK_INT(c.show[0], APP_SHOW_WEATHER);
     CHECK_INT(c.sat_zoom, APP_CONFIG_SAT_ZOOM_DEFAULT);
     CHECK_INT(c.location_count, 1);
+    CHECK(c.ship_at[0].lat[0] == '\0');                            /* not in it: none */
+
+    /* A ship centre with bad coordinates is dropped: ships around the location. */
+    CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,\"locations\":"
+                               "[{\"name\":\"X\",\"lat\":\"60\",\"lon\":\"10\",\"ship_centre\":"
+                               "{\"name\":\"Y\",\"lat\":\"91\",\"lon\":\"10\"}}]}", &c, err, sizeof(err)));
+    CHECK(app_config_ship_centre(&c, 0) == &c.locations[0]);
+    CHECK_STR(c.ship_at[0].name, "");
 }

@@ -81,6 +81,11 @@ static void sanitize_view_settings(app_config_t *c)
         if (c->ship_near_min_len_m[i] > APP_CONFIG_SHIP_MIN_LEN_MAX) {
             c->ship_near_min_len_m[i] = 0;
         }
+        app_location_t *sa = &c->ship_at[i];
+        sa->name[APP_CONFIG_NAME_MAX - 1] = sa->lat[APP_CONFIG_COORD_MAX - 1] = sa->lon[APP_CONFIG_COORD_MAX - 1] = '\0';
+        if (!app_config_coord_valid(sa->lat, true) || !app_config_coord_valid(sa->lon, false)) {
+            memset(sa, 0, sizeof(*sa)); /* no place of its own: the location's */
+        }
     }
     if (c->theme != APP_THEME_DARK) {
         c->theme = APP_THEME_LIGHT;
@@ -252,6 +257,10 @@ esp_err_t app_config_load(app_config_t *out)
         len != sizeof(out->ship_near_min_len_m)) {
         memset(out->ship_near_min_len_m, 0, sizeof(out->ship_near_min_len_m));
     }
+    len = sizeof(out->ship_at); /* ships around the location itself if never saved */
+    if (nvs_get_blob(h, "shipat", out->ship_at, &len) != ESP_OK || len != sizeof(out->ship_at)) {
+        memset(out->ship_at, 0, sizeof(out->ship_at));
+    }
     if (!load_bits(h, "autoshow", "autoshowhi", out->auto_show)) {
         memset(out->auto_show, 0, sizeof(out->auto_show)); /* nothing in the rotation if never saved */
     }
@@ -329,8 +338,8 @@ esp_err_t app_config_load(app_config_t *out)
              out->sat_rotate ? ", in the rotation" : "", out->sat_zoom,
              out->sat_visible ? "visible light by day" : "infrared always");
     for (int i = 0; i < out->location_count; i++) {
-        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km, ships from %u m "
-                 "(%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
+        ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
+                 "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
                  i, out->locations[i].name,
                  (out->show[i] & APP_SHOW_WEATHER) ? " weather" : "",
                  (out->show[i] & APP_SHOW_RADAR) ? " radar" : "",
@@ -341,7 +350,7 @@ esp_err_t app_config_load(app_config_t *out)
                  (out->show[i] & APP_SHOW_AIR) ? " air" : "",
                  (out->show[i] & APP_SHOW_TIDE) ? " tide" : "",
                  (out->show[i] & APP_SHOW_SAT) ? " satellite" : "",
-                 out->radar_km[i], out->ship_km[i], out->ship_min_len_m[i],
+                 out->radar_km[i], out->ship_km[i], app_config_ship_centre(out, i)->name, out->ship_min_len_m[i],
                  out->ship_near_min_len_m[i], out->ship_near_km[i], out->rain_km[i],
                  out->departures[i], out->auto_show[i]);
     }
@@ -373,6 +382,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_blob(h, "shipminlens", cfg->ship_min_len_m, sizeof(cfg->ship_min_len_m));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipnearkms", cfg->ship_near_km, sizeof(cfg->ship_near_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "shipnearlens", cfg->ship_near_min_len_m, sizeof(cfg->ship_near_min_len_m));
+    if (err == ESP_OK) err = nvs_set_blob(h, "shipat", cfg->ship_at, sizeof(cfg->ship_at));
     if (err == ESP_OK) err = nvs_set_blob(h, "rainkms", cfg->rain_km, sizeof(cfg->rain_km));
     if (err == ESP_OK) err = nvs_set_blob(h, "deps", cfg->departures, sizeof(cfg->departures));
     if (err == ESP_OK) err = save_bits(h, "autoshow", "autoshowhi", cfg->auto_show);
@@ -528,6 +538,11 @@ bool app_config_coord_valid(const char *text, bool is_latitude)
     }
     double limit = is_latitude ? 90.0 : 180.0;
     return v >= -limit && v <= limit;
+}
+
+const app_location_t *app_config_ship_centre(const app_config_t *cfg, int i)
+{
+    return cfg->ship_at[i].lat[0] != '\0' ? &cfg->ship_at[i] : &cfg->locations[i];
 }
 
 bool app_config_cal_url_valid(const char *text)

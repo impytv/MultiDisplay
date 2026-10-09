@@ -141,6 +141,11 @@ typedef struct {
     uint16_t ship_near_km[APP_CONFIG_MAX_LOCATIONS];   /* in [0, APP_CONFIG_SHIP_NEAR_KM_MAX] */
     uint16_t ship_near_min_len_m[APP_CONFIG_MAX_LOCATIONS]; /* in [0, APP_CONFIG_SHIP_MIN_LEN_MAX] */
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS];  /* in [APP_CONFIG_RAIN_KM_MIN, APP_CONFIG_RAIN_KM_MAX] */
+    /* Where location i's ship traffic is centred, when not on the location
+     * itself (e.g. out on the fjord rather than in town): a place name and
+     * its coordinates, or all empty to use the location's own (see
+     * app_config_ship_centre). */
+    app_location_t ship_at[APP_CONFIG_MAX_LOCATIONS];
     /* Which of location i's screens the automatic rotation visits: APP_SHOW_*
      * bits, like show[i] (only screens that are shown count). */
     uint16_t auto_show[APP_CONFIG_MAX_LOCATIONS];
@@ -275,6 +280,12 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
  * lie within [-90, 90] / [-180, 180].
  */
 bool app_config_coord_valid(const char *text, bool is_latitude);
+
+/**
+ * Where location `i`'s ship traffic is centred: its own place for ships
+ * (ship_at[i]) if one is set, else the location itself.
+ */
+const app_location_t *app_config_ship_centre(const app_config_t *cfg, int i);
 
 /**
  * An iCal address the calendar screen can fetch: http://, https:// or

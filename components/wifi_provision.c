@@ -172,12 +172,31 @@ static char *build_screen_settings(char *p, char *end, const app_config_t *cfg, 
                       "<div><label>Korteste innenfor (m)</label>"
                       "<input name=shipnearlen%d type=number inputmode=numeric min=0 max=%d value=%d></div></div>"
                       "<small>Kortere skip, og skip som ikke oppgir lengde, vises ikke (0 viser alle). "
-                      "Innenfor den indre sonen (0 = ingen) gjelder en egen korteste lengde.</small></div>",
+                      "Innenfor den indre sonen (0 = ingen) gjelder en egen korteste lengde.</small>",
                       i, APP_CONFIG_SHIP_KM_MIN, APP_CONFIG_SHIP_KM_MAX,
                       filled ? cfg->ship_km[i] : APP_CONFIG_SHIP_KM_DEFAULT,
                       i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_min_len_m[i] : 0,
                       i, APP_CONFIG_SHIP_NEAR_KM_MAX, filled ? cfg->ship_near_km[i] : 0,
                       i, APP_CONFIG_SHIP_MIN_LEN_MAX, filled ? cfg->ship_near_min_len_m[i] : 0);
+        /* Optionally centred somewhere else than the location (ship_at). */
+        p = buf_append(p, end, "<label>Midtpunkt for skip (valgfritt)</label><input class=spq type=search "
+                      "autocomplete=off placeholder='S&oslash;k etter sted, f.eks. Bygd&oslash;y'><div class=hits></div>"
+                      "<label>Navn</label><input name=shipname%d value=\"", i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->ship_at[i].name);
+        }
+        p = buf_append(p, end, "\"><div class=row><div><label>Breddegrad</label>"
+                      "<input name=shiplat%d inputmode=decimal value=\"", i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->ship_at[i].lat);
+        }
+        p = buf_append(p, end, "\"></div><div><label>Lengdegrad</label>"
+                      "<input name=shiplon%d inputmode=decimal value=\"", i);
+        if (filled) {
+            p = html_escape_append(p, end, cfg->ship_at[i].lon);
+        }
+        p = buf_append(p, end, "\"></div></div><small>Tomt = rundt selve stedet. Velg f.eks. et sted ute p&aring; "
+                      "sj&oslash;en hvis skjermen viser mye land.</small></div>");
         break;
     case APP_SHOW_DEPARTURES:
         p = buf_append(p, end, "<div data-need=dp><input name=dep%d type=hidden data-max=%d value=\"",
@@ -1218,7 +1237,10 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     uint16_t ship_near_len[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     uint16_t rain_km[APP_CONFIG_MAX_LOCATIONS] = { 0 };
     char (*deps)[APP_CONFIG_DEPARTURES_MAX] = calloc(APP_CONFIG_MAX_LOCATIONS, APP_CONFIG_DEPARTURES_MAX);
-    if (deps == NULL) {
+    app_location_t *ship_at = calloc(APP_CONFIG_MAX_LOCATIONS, sizeof(*ship_at));
+    if (deps == NULL || ship_at == NULL) {
+        free(deps);
+        free(ship_at);
         return httpd_resp_send_500(req);
     }
     int n = 0;
@@ -1240,6 +1262,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         if (!app_config_coord_valid(lat, true) || !app_config_coord_valid(lon, false)) {
             free(deps);
+            free(ship_at);
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req,
                 "<meta charset=utf-8><p>Ugyldig: hvert sted m&aring; ha en "
@@ -1305,6 +1328,17 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         snprintf(key, sizeof(key), "shipnearlen%d", i);
         len = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         ship_near_len[n] = (len > 0 && len <= APP_CONFIG_SHIP_MIN_LEN_MAX) ? (uint16_t)len : 0;
+        /* The ships' own centre: kept only with valid coordinates, else
+         * the ships are around the location itself. */
+        snprintf(key, sizeof(key), "shipname%d", i);
+        form_field(body, key, ship_at[n].name, sizeof(ship_at[n].name));
+        snprintf(key, sizeof(key), "shiplat%d", i);
+        form_field(body, key, ship_at[n].lat, sizeof(ship_at[n].lat));
+        snprintf(key, sizeof(key), "shiplon%d", i);
+        form_field(body, key, ship_at[n].lon, sizeof(ship_at[n].lon));
+        if (!app_config_coord_valid(ship_at[n].lat, true) || !app_config_coord_valid(ship_at[n].lon, false)) {
+            memset(&ship_at[n], 0, sizeof(ship_at[n]));
+        }
         snprintf(key, sizeof(key), "rainkm%d", i);
         km = form_field(body, key, val, sizeof(val)) ? strtol(val, NULL, 10) : 0;
         rain_km[n] = (km >= APP_CONFIG_RAIN_KM_MIN && km <= APP_CONFIG_RAIN_KM_MAX)
@@ -1337,7 +1371,9 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->rain_km[i] = rain_km[i] ? rain_km[i] : APP_CONFIG_RAIN_KM_DEFAULT;
     }
     memcpy(cfg->departures, deps, sizeof(cfg->departures));
+    memcpy(cfg->ship_at, ship_at, sizeof(cfg->ship_at));
     free(deps);
+    free(ship_at);
 
     if (app_config_save(cfg) != ESP_OK) {
         return httpd_resp_send_500(req);

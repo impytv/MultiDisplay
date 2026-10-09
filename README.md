@@ -292,6 +292,12 @@ Fiske, Fritid, Slep, Annet - also the marker colour), speed in knots and
 distance in kilometres. Each location has its own **Radius (km)** under **Skip** (kilometres,
 2-100, default 20).
 
+The plot can be centred somewhere other than the location, for a place
+where the location itself would show mostly land (Oslo, say): search for a
+place under **Midtpunkt for skip (valgfritt)**, or type its coordinates. The
+screen is then titled after that place. Left empty, the ships are around
+the location.
+
 Positions come from the [BarentsWatch Live AIS
 API](https://developer.barentswatch.no/docs/AIS/live-ais-api), which needs a
 free API client: create one at [BarentsWatch](https://www.barentswatch.no/minside/)

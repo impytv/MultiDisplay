@@ -114,8 +114,8 @@ static bool s_rain_mode;
 
 /* Coastline under the aircraft or ships (see coast_render): an A8 coverage
  * image of the radar disc, drawn in s_rp->coast, over an A8 mask of the
- * water, drawn in s_rp->water. They show s_coast_loc at
- * s_coast_km; s_coast_valid gates drawing them. */
+ * water, drawn in s_rp->water. They show the disc around s_coast_at
+ * (a location, or a location's centre for ships) at s_coast_km; s_coast_valid gates drawing them. */
 #define COAST_D  (2 * RADAR_R + 1)
 static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
 static uint8_t *s_water_px;         /* PSRAM, COAST_D x COAST_D */
@@ -165,13 +165,14 @@ static int s_rain_pos = -1;         /* frame position on show */
 static int s_rain_hold;             /* ticks left resting on the latest */
 static bool s_rain_loading;         /* the hour's frames are being fetched: the latest held still */
 static time_t s_rain_time;          /* when the frame on show was taken */
-static int s_coast_loc = -1;
+static const app_location_t *s_coast_at;
 /* The location and range the rain frames are held for (see rain_prepare). */
 static int s_rain_prep_loc = -1, s_rain_prep_range;
 /* Frames older than this aren't shown again on coming back to the screen. */
 #define RAIN_KEEP_S         (15 * 60)
 static int s_coast_km;
 static int s_radar_loc = -1;        /* location the radar screen is set to */
+static const app_location_t *s_radar_at; /* where its disc is centred (in g_cfg) */
 #define RADAR_CACHE_MAX_MS  30000              /* dead-reckoned from here on */
 #define SHIP_CACHE_MAX_MS   (5 * 60 * 1000)
 static adsb_result_t *s_adsb_cache[APP_CONFIG_MAX_LOCATIONS];
@@ -182,12 +183,14 @@ static fetch_stamp_t s_ais_at[APP_CONFIG_MAX_LOCATIONS];
 static adsb_result_t *s_adsb_scratch;
 static ais_result_t *s_ais_scratch;
 
-/* The radar screen now shows `loc` at `range_km` (adapter lock held): stop
- * drawing a coastline image made for anything else until coast_render redoes it. */
-static void coast_mark(int loc, int range_km)
+/* The radar screen now shows `loc`, centred on `at`, at `range_km` (adapter
+ * lock held): stop drawing a coastline image made for anything else until
+ * coast_render redoes it. */
+static void coast_mark(int loc, const app_location_t *at, int range_km)
 {
     s_radar_loc = loc;
-    if (loc != s_coast_loc || range_km != s_coast_km) {
+    s_radar_at = at;
+    if (at != s_coast_at || range_km != s_coast_km) {
         s_coast_valid = false;
     }
 }
@@ -1280,18 +1283,20 @@ static void radar_set_location(int loc)
     s_rain_mode = false;
     lv_label_set_text_fmt(s_radar_title, "Fly n\xC3\xA6r %s", g_cfg->locations[loc].name);
     s_radar_range_km = g_cfg->radar_km[loc];
-    coast_mark(loc, s_radar_range_km);
+    coast_mark(loc, &g_cfg->locations[loc], s_radar_range_km);
     radar_load_airports(atof(g_cfg->locations[loc].lat), atof(g_cfg->locations[loc].lon));
 }
 
-/* Point the radar screen at location `loc`'s ship traffic (adapter lock held). */
+/* Point the radar screen at location `loc`'s ship traffic (adapter lock
+ * held), around its own centre for ships if it has one. */
 static void ships_set_location(int loc)
 {
+    const app_location_t *at = app_config_ship_centre(g_cfg, loc);
     s_ship_mode = true;
     s_rain_mode = false;
-    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", g_cfg->locations[loc].name);
+    lv_label_set_text_fmt(s_radar_title, "Skip n\xC3\xA6r %s", at->name[0] ? at->name : g_cfg->locations[loc].name);
     s_radar_range_km = g_cfg->ship_km[loc];
-    coast_mark(loc, s_radar_range_km);
+    coast_mark(loc, at, s_radar_range_km);
 }
 
 /* Point the radar screen at location `loc`'s rain radar (adapter lock held).
@@ -1316,7 +1321,7 @@ static void rain_set_location(int loc)
     }
     lv_label_set_text_fmt(s_radar_title, "Nedb\xC3\xB8r n\xC3\xA6r %s", g_cfg->locations[loc].name);
     s_radar_range_km = g_cfg->rain_km[loc];
-    coast_mark(loc, s_radar_range_km);
+    coast_mark(loc, &g_cfg->locations[loc], s_radar_range_km);
 }
 
 /* One ADS-B poll for the radar of location `loc`, shown only if the screen is
@@ -1587,14 +1592,14 @@ static void coast_fill_water(void)
     }
 }
 
-/* Draw location `loc`'s coastline at `range` km into s_coast_px, unless it's
- * already there. Runs in the weather task; flash reads, so not under the
+/* Draw the coastline around `at` (a location in g_cfg, or its centre for
+ * ships) at `range` km into s_coast_px, unless it's already there. Runs in the weather task; flash reads, so not under the
  * adapter lock except to flip s_coast_valid. */
-static void coast_render(int loc, int range)
+static void coast_render(const app_location_t *at, int range)
 {
     static const esp_partition_t *part;
     static coast_hdr_t hdr;
-    if (s_coast_px == NULL || (s_coast_loc == loc && s_coast_km == range && s_coast_valid && !s_coast_retry)) {
+    if (s_coast_px == NULL || (s_coast_at == at && s_coast_km == range && s_coast_valid && !s_coast_retry)) {
         return;
     }
     if (part == NULL) {
@@ -1614,8 +1619,8 @@ static void coast_render(int loc, int range)
     memset(s_coast_px, 0, COAST_D * COAST_D);
     s_water_n_seeds = 0;
 
-    const double lat0 = atof(g_cfg->locations[loc].lat);
-    const double lon0 = atof(g_cfg->locations[loc].lon);
+    const double lat0 = atof(at->lat);
+    const double lon0 = atof(at->lon);
     const float km_lat = 110.574f / 1e5f;                                   /* km per 1e-5 deg */
     const float km_lon = 111.320f * cosf((float)(lat0 * M_PI / 180.0)) / 1e5f;
     const float px_per_km = (float)RADAR_R / (float)range;
@@ -1726,15 +1731,15 @@ static void coast_render(int loc, int range)
     free(buf);
     free(pts);
     coast_fill_water();
-    ESP_LOGI(TAG, "Coastline for %s: %d line(s) in tiles %d-%d x %d-%d%s",
-             g_cfg->locations[loc].name, lines, r0, r1, c0, c1, complete ? "" : " - incomplete, redone next poll");
+    ESP_LOGI(TAG, "Coastline around %s (%s, %s): %d line(s) in tiles %d-%d x %d-%d%s",
+             at->name, at->lat, at->lon, lines, r0, r1, c0, c1, complete ? "" : " - incomplete, redone next poll");
 
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        s_coast_loc = loc;
+        s_coast_at = at;
         s_coast_km = range;
         /* Unless the screen moved on while drawing, or it's incomplete: then
          * it's drawn again on the next poll (it's still shown meanwhile). */
-        s_coast_valid = (s_radar_loc == loc && s_radar_range_km == range);
+        s_coast_valid = (s_radar_at == at && s_radar_range_km == range);
         s_coast_retry = !complete;
         lv_obj_invalidate(s_radar_canvas);
         esp_lv_adapter_unlock();
@@ -1743,8 +1748,9 @@ static void coast_render(int loc, int range)
 
 static void ships_poll(int loc, ais_result_t *scratch, int for_view)
 {
-    double lat = atof(g_cfg->locations[loc].lat);
-    double lon = atof(g_cfg->locations[loc].lon);
+    const app_location_t *at = app_config_ship_centre(g_cfg, loc);
+    double lat = atof(at->lat);
+    double lon = atof(at->lon);
     esp_err_t err = ais_client_fetch(g_cfg->ais_client_id, g_cfg->ais_client_secret,
                                      lat, lon, (float)g_cfg->ship_km[loc], g_cfg->ship_min_len_m[loc],
                                      (float)g_cfg->ship_near_km[loc], g_cfg->ship_near_min_len_m[loc],
@@ -2077,15 +2083,15 @@ uint32_t radar_poll(int kind, int loc, int for_view)
 {
     switch (kind) {
     case STOP_RADAR:
-        coast_render(loc, g_cfg->radar_km[loc]);
+        coast_render(&g_cfg->locations[loc], g_cfg->radar_km[loc]);
         aircraft_poll(loc, s_adsb_scratch, for_view);
         return ADSB_POLL_MS;
     case STOP_SHIPS:
-        coast_render(loc, g_cfg->ship_km[loc]);
+        coast_render(app_config_ship_centre(g_cfg, loc), g_cfg->ship_km[loc]);
         ships_poll(loc, s_ais_scratch, for_view);
         return SHIP_POLL_MS;
     default:
-        coast_render(loc, g_cfg->rain_km[loc]);
+        coast_render(&g_cfg->locations[loc], g_cfg->rain_km[loc]);
         return rain_poll(loc, for_view) ? RAIN_POLL_MS : RAIN_RETRY_MS;
     }
 }
