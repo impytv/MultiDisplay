@@ -305,7 +305,7 @@ are filtered out by BarentsWatch (fishing boats under 15 m, leisure boats under
 Both the ship traffic and the aircraft radar plots show the coastline, from
 [OpenStreetMap](https://www.openstreetmap.org/copyright) (© OpenStreetMap contributors, ODbL; credited on screen). The coast of Norway
 and its neighbours (57.5-71.5° N, 4-31.5° E) is simplified to about 40 m and
-stored as `components/coast.bin` (about 3.8 MB) in its own `coast` flash
+stored as `components/coast.bin` (about 2.1 MB) in its own `coast` flash
 partition; the tiles around a location are read and drawn once when its ship
 or aircraft screen is shown, leaving out islands under a couple of pixels
 across at that range. Regenerate it with `python3 scripts/build_coast.py`, which
