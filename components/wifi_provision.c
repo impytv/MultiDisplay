@@ -295,7 +295,7 @@ static char *build_calendar(char *p, char *end, const app_config_t *cfg)
  * first; everything else is in collapsed sections. */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 36864;
+    const size_t cap = 48 * 1024; /* PSRAM (over CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL); the page is ~32 KB */
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
