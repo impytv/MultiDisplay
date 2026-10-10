@@ -174,11 +174,16 @@ with a throwaway key, so displays won't accept it.
   the Date of the first response from MET. "Klokken er ikke stilt" shows
   bottom left if it still isn't set ten minutes after start.
 - **Settings backup:** under **Vedlikehold → Sikkerhetskopi** on the setup page, download
-  the settings as a file (everything except the WiFi network and the
-  passwords/secrets) and restore it, e.g. onto a new board. Restoring keeps
-  the display's own WiFi and secrets and restarts it. Also
-  `curl -O http://DEVICE-IP/config.json` and
+  the settings as a file and restore it, e.g. onto a new board. The WiFi
+  network, its password and the BarentsWatch secret are left out unless
+  **Ta med WiFi og BarentsWatch-hemmelighet** is ticked (the file then holds
+  them in plain text); the setup page's password and the calendar addresses
+  are never in it. Restoring keeps whatever the file doesn't have and
+  restarts the display. Also `curl -O http://DEVICE-IP/config.json` (add
+  `?hemmeligheter=1` for the secrets) and
   `curl --data-binary @multidisplay-innstillinger.json http://DEVICE-IP/config.json`.
+- **Passwords:** each password field on the setup page has **Vis passordet**
+  to show what's typed, to check it before saving.
 - **Offline:** "Ingen WiFi" or "Ingen internett" shows bottom left while the
   display is off the network or every fetch has failed for two minutes. A
   screen showing older data after a failed fetch has its info line in
@@ -444,9 +449,9 @@ again if MET changes the image.
 Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
 times (local time, default 22:00–07:00) either dims the screen (**Demp
 skjermen**: a dark layer over it, as the backlight can't be dimmed) or
-switches it off (**Slå av skjermen**). When it's off, a touch lights it for a
-minute; that touch only wakes it. While it's off, the automatic rotation
-stands still and the screen on show is refreshed at most every 5 minutes;
+switches it off (**Slå av skjermen**). When it's off, a touch lights it for two
+minutes (as does picking a screen over the web); that touch only wakes it.
+While it's off, the automatic rotation stands still and the screen on show is refreshed at most every 5 minutes;
 lighting it refreshes it at once.
 
 ### Public transport departures

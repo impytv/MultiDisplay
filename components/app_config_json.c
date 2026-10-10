@@ -1,6 +1,7 @@
 /* Settings backup (app_config_to_json / app_config_from_json): the setup
  * page's "Sikkerhetskopi". A versioned JSON file, readable and editable by
- * hand; the WiFi network and the secrets are never in it. */
+ * hand. The WiFi network, its password and the BarentsWatch secret are in it
+ * only when asked for; the setup password and the calendar addresses never. */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,7 @@ static void add_hhmm(cJSON *o, const char *key, uint16_t min)
     cJSON_AddStringToObject(o, key, t);
 }
 
-char *app_config_to_json(const app_config_t *c)
+char *app_config_to_json(const app_config_t *c, bool secrets)
 {
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
@@ -54,6 +55,12 @@ char *app_config_to_json(const app_config_t *c)
 
     cJSON_AddStringToObject(root, "yr_email", c->yr_email);
     cJSON_AddStringToObject(root, "barentswatch_client_id", c->ais_client_id);
+    if (secrets) {
+        cJSON_AddStringToObject(root, "barentswatch_client_secret", c->ais_client_secret);
+        cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+        cJSON_AddStringToObject(wifi, "ssid", c->wifi_ssid);
+        cJSON_AddStringToObject(wifi, "password", c->wifi_pass);
+    }
 
     cJSON *upd = cJSON_AddObjectToObject(root, "updates");
     cJSON_AddBoolToObject(upd, "automatic", c->ota_auto);
@@ -204,6 +211,16 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     ok &= get_str(root, "barentswatch_client_id", c->ais_client_id, sizeof(c->ais_client_id));
     if (strcmp(old_id, c->ais_client_id) != 0) {
         c->ais_client_secret[0] = '\0'; /* the secret went with the old client */
+    }
+    ok &= get_str(root, "barentswatch_client_secret", c->ais_client_secret, sizeof(c->ais_client_secret));
+    /* The WiFi, if the backup has it: a network without a password given is
+     * taken as an open one. */
+    const cJSON *wifi = cJSON_GetObjectItemCaseSensitive(root, "wifi");
+    const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(wifi, "ssid");
+    if (cJSON_IsString(ssid) && ssid->valuestring[0] != '\0') {
+        ok &= get_str(wifi, "ssid", c->wifi_ssid, sizeof(c->wifi_ssid));
+        c->wifi_pass[0] = '\0';
+        ok &= get_str(wifi, "password", c->wifi_pass, sizeof(c->wifi_pass));
     }
     const cJSON *upd = cJSON_GetObjectItemCaseSensitive(root, "updates");
     get_bool(upd, "automatic", &c->ota_auto);

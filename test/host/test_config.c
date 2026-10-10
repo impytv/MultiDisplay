@@ -60,7 +60,7 @@ void test_config(void)
     CHECK(memcmp(&a, &b, sizeof(a)) == 0);
 
     /* The backup leaves out the WiFi and the secrets. */
-    char *json = app_config_to_json(&a);
+    char *json = app_config_to_json(&a, false);
     CHECK(json != NULL);
     CHECK(strstr(json, "secret") == NULL);
     CHECK(strstr(json, "\"home\"") == NULL);
@@ -117,6 +117,27 @@ void test_config(void)
     CHECK_STR(c.ais_client_secret, "");
     cJSON_free(json);
 
+    /* Asked for, the backup has the WiFi and the BarentsWatch secret - but
+     * still not the setup password or the calendar addresses - and they
+     * are restored. */
+    json = app_config_to_json(&a, true);
+    CHECK(json != NULL);
+    CHECK(strstr(json, "\"home\"") != NULL);
+    CHECK(strstr(json, "secret1") != NULL && strstr(json, "secret3") != NULL);
+    CHECK(strstr(json, "secret2") == NULL && strstr(json, "secret4") == NULL && strstr(json, "secret5") == NULL);
+    CHECK(app_config_from_json(json, &c, err, sizeof(err)));
+    CHECK_STR(c.wifi_ssid, "home");
+    CHECK_STR(c.wifi_pass, "secret1");
+    CHECK_STR(c.ais_client_id, "me@example.com:client");
+    CHECK_STR(c.ais_client_secret, "secret3");
+    cJSON_free(json);
+
+    /* A network without a password given is an open one. */
+    CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,"
+                               "\"wifi\":{\"ssid\":\"cafe\"}}", &c, err, sizeof(err)));
+    CHECK_STR(c.wifi_ssid, "cafe");
+    CHECK_STR(c.wifi_pass, "");
+
     /* Refused, and nothing changed. */
     static app_config_t before;
     before = c;
@@ -151,7 +172,7 @@ void test_config(void)
     static app_config_t d;
     app_config_load(&d);
     CHECK_STR(d.device_name, "kjokken");
-    char *j2 = app_config_to_json(&d);
+    char *j2 = app_config_to_json(&d, false);
     CHECK(j2 != NULL && strstr(j2, "kjokken") == NULL);
     snprintf(d.device_name, sizeof(d.device_name), "stua");
     CHECK(app_config_from_json(j2, &d, err, sizeof(err)));

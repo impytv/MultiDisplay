@@ -260,16 +260,16 @@ void app_config_hostname(const char *in, char *out, size_t out_len);
 void app_config_sanitize(app_config_t *cfg);
 
 /**
- * The settings as JSON, for a backup (caller frees). The WiFi network and
- * every secret - WiFi password, BarentsWatch secret, setup password, calendar
- * addresses - are left out. NULL if out of memory.
+ * The settings as JSON, for a backup (caller frees). The WiFi network, its
+ * password and the BarentsWatch secret are included only with `secrets`; the
+ * setup password and the calendar addresses never are. NULL if out of memory.
  */
-char *app_config_to_json(const app_config_t *cfg);
+char *app_config_to_json(const app_config_t *cfg, bool secrets);
 
 /**
  * Apply a backup made by app_config_to_json on top of `cfg` (normally the
- * current settings, whose WiFi and secrets are then kept). Settings missing
- * from the JSON keep their value. False, with a Norwegian reason in `err`,
+ * current settings, whose WiFi and secrets are kept unless the backup has
+ * them). Settings missing from the JSON keep their value. False, with a Norwegian reason in `err`,
  * if it isn't such a backup or a location is invalid; `cfg` is then
  * unchanged.
  */

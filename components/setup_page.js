@@ -1,5 +1,5 @@
 // The setup page's behaviour (served as /setup.js; wifi_provision.c):
-// firmware upload, backup, health and update status, location summaries,
+// firmware upload, backup, password display, health and update status, location summaries,
 // adding/removing/moving locations, place search, unsaved-changes marker
 // and the checks before saving.
 function E(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}
@@ -16,6 +16,9 @@ if(s.krasjdump)h+=' <b>Krasjdump lagret'+(s.krasjgrunn?': '+E(s.krasjgrunn):'')+
 s.tjenester.forEach(v=>{h+='<br><small>'+(v.feiler?'&#9888; ':'&#10003; ')+E(v.navn)+(v.sist_ok=='aldri'?': aldri hentet':': ok '+E(v.sist_ok))+(v.feiler?', feil '+E(v.sist_feil)+' ('+E(v.feil)+')':'')+'</small>'});
 diag.innerHTML=h;cdl.hidden=!s.krasjdump}).catch(e=>{diag.innerHTML='<small>Ikke tilgjengelig i oppsettmodus.</small>'})}
 cde.onclick=e=>{e.preventDefault();fetch('/coredump/erase',{method:'POST'}).then(D)};D();
+cfgsec.onchange=()=>{cfgdl.href='/config.json'+(cfgsec.checked?'?hemmeligheter=1':'')};
+/* "Vis passordet": the password field named in data-show, in plain text. */
+document.querySelectorAll('[data-show]').forEach(c=>c.onchange=()=>{F.elements[c.dataset.show].type=c.checked?'text':'password'});
 cfgb.onclick=()=>{let f=cfgf.files[0];if(!f)return;cfgb.disabled=true;cfgs.textContent='Gjenoppretter...';
 fetch('/config.json',{method:'POST',body:f}).then(r=>r.text().then(t=>{cfgs.textContent=t;cfgb.disabled=r.ok}))
 .catch(e=>{cfgs.textContent='Feilet';cfgb.disabled=false})};
@@ -69,7 +72,8 @@ Q(f.querySelector('.plq'),f.querySelector('.plq+.hits'),(n,a,o)=>set('',n,a,o));
 Q(f.querySelector('.spq'),f.querySelector('.spq+.hits'),(n,a,o)=>set('ship',n,a,o))});
 /* Unsaved changes. */
 let dirty=false;function S(){dirty=true;document.getElementById('dirty').textContent='Ulagrede endringer'}
-const SQ=x=>x.classList.contains('plq')||x.classList.contains('spq');
+/* Not settings: the place searches, "Vis passordet" and the backup's checkbox. */
+const SQ=x=>x.classList.contains('plq')||x.classList.contains('spq')||x.dataset.show!==undefined||x.id=='cfgsec';
 F.addEventListener('input',e=>{if(!SQ(e.target))S()});F.addEventListener('change',e=>{if(!SQ(e.target)&&e.target.type!='file')S()});
 window.addEventListener('beforeunload',e=>{if(dirty){e.preventDefault();e.returnValue=''}});
 /* Times: phones' number pads often have no ':', so 2230, 930, 22.30 and

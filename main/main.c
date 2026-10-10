@@ -67,8 +67,8 @@ static const char *TAG = "main";
 #define NIGHT_DIM_OPA         LV_OPA_70
 
 /* With the screen switched off at night instead (g_cfg->night_off), a touch
- * lights it for this long. */
-#define NIGHT_WAKE_MS         60000
+ * (or a screen change from the web) lights it for this long. */
+#define NIGHT_WAKE_MS         (2 * 60 * 1000)
 
 /* While it is off, the screen on show is polled at most this often (the
  * aircraft screen would otherwise ask every 5 s all night); lighting it

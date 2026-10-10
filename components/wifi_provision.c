@@ -118,9 +118,11 @@ static const char PAGE_MAINT[] =
     " forrige om den nye ikke starter som den skal. Eldre versjoner godtas ogs\xC3\xA5.</small><input type=file id="
     "fw accept=.bin style='margin-top:.6rem'><button type=button id=fwb class=lt2>Last opp og start p\xC3\xA5 nytt<"
     "/button><small id=fws></small></fieldset><fieldset><legend>Sikkerhetskopi</legend><small>Alle innstillingene u"
-    "nntatt navn, WiFi og passord/hemmeligheter, som en fil. Gjenoppretting beholder skjermens navn, WiFi og passor"
-    "d, og starter den p\xC3\xA5 nytt.</small><p><a href=/config.json download>Last ned innstillingene</a></p><inpu"
-    "t type=file id=cfgf accept=.json><button type=button id=cfgb class=lt2>Gjenopprett</button><small id=cfgs></sm"
+    "nntatt navn, passordet for oppsettsiden og kalenderadressene, som en fil. WiFi-nett, WiFi-passord og BarentsWa"
+    "tch-hemmeligheten blir bare med om du krysser av for det - pass da godt p\xC3\xA5 filen. Gjenoppretting beho"
+    "lder det som ikke er i filen, og starter skjermen p\xC3\xA5 nytt.</small><div class=chk><label><input type=c"
+    "heckbox id=cfgsec>Ta med WiFi og BarentsWatch-hemmelighet</label></div><p><a href=/config.json id=cfgdl downl"
+    "oad>Last ned innstillingene</a></p><input type=file id=cfgf accept=.json><button type=button id=cfgb class=lt2>Gjenopprett</button><small id=cfgs></sm"
     "all></fieldset><fieldset><legend>Driftsstatus</legend><div id=diag><small>Henter...</small></div><p><small><a "
     "href=/log target=_blank>Logg</a> &middot; <a href=/screen.png target=_blank>Skjermbilde</a><span id=cdl hidden"
     "> &middot; <a href=/coredump>Krasjdump</a> &middot; <a href=# id=cde>slett den</a></span></small></p></fieldse"
@@ -361,7 +363,7 @@ static char *build_page(const app_config_t *cfg)
                   "<select name=nightoff style='margin-top:.5rem'>"
                   "<option value=0%s>Demp skjermen</option><option value=1%s>Sl&aring; av skjermen</option></select>"
                   "<small>Lokal tid, 24 timer. Dempet er skjermen fortsatt lesbar, bare m&oslash;rkere. "
-                  "Avsl&aring;tt lyser den i ett minutt n&aring;r du tar p&aring; den.</small>",
+                  "Avsl&aring;tt lyser den i to minutter n&aring;r du tar p&aring; den.</small>",
                   cfg->theme == APP_THEME_DARK ? "" : " selected", cfg->theme == APP_THEME_DARK ? " selected" : "",
                   cfg->dim_enabled ? " checked" : "",
                   cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
@@ -409,7 +411,7 @@ static char *build_page(const app_config_t *cfg)
      * them (see save_form_into). */
     p = buf_append(p, end, "<label>WiFi-passord</label>"
                   "<input name=pass type=password autocomplete=new-password placeholder=\"%s\">"
-                  "<small>%s</small>",
+                  "<div class=chk><label><input type=checkbox data-show=pass>Vis passordet</label></div><small>%s</small>",
                   cfg->wifi_pass[0] ? "Lagret" : "",
                   cfg->wifi_pass[0] ? "La st&aring; tomt for &aring; beholde det lagrede. Et nytt nett uten "
                                       "passord: la st&aring; tomt."
@@ -431,7 +433,7 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->ais_client_id);
     p = buf_append(p, end, "\"><label>Klienthemmelighet</label>"
                   "<input name=aissec type=password autocomplete=new-password placeholder=\"%s\">"
-                  "%s</fieldset>",
+                  "<div class=chk><label><input type=checkbox data-show=aissec>Vis passordet</label></div>%s</fieldset>",
                   cfg->ais_client_secret[0] ? "Lagret" : "",
                   cfg->ais_client_secret[0] ? "<small>La st&aring; tomt for &aring; beholde den lagrede.</small>" : "");
 
@@ -442,7 +444,8 @@ static char *build_page(const app_config_t *cfg)
                   "det? Hold BOOT inne mens skjermen sl&aring;s p&aring;, s&aring; &aring;pner oppsettnettet uten "
                   "passord.</small>"
                   "<label>Nytt passord</label>"
-                  "<input name=webpass type=password autocomplete=new-password placeholder=\"%s\">",
+                  "<input name=webpass type=password autocomplete=new-password placeholder=\"%s\">"
+                  "<div class=chk><label><input type=checkbox data-show=webpass>Vis passordet</label></div>",
                   cfg->web_pass[0] ? "Lagret - la st&aring; tomt for &aring; beholde" : "Ingen");
     if (cfg->web_pass[0]) {
         p = buf_append(p, end, "<div class=chk><label><input type=checkbox name=webpassoff>"
@@ -1404,7 +1407,8 @@ static esp_err_t save_form(httpd_req_t *req, const char *body)
 }
 
 /* GET /config.json: the settings as a backup file, without the WiFi network
- * and the secrets (app_config_json.c). */
+ * and the secrets - or, with ?hemmeligheter=1, with the WiFi and the
+ * BarentsWatch secret (app_config_json.c). */
 static esp_err_t h_config_get(httpd_req_t *req)
 {
     if (!authorized(req)) {
@@ -1414,8 +1418,12 @@ static esp_err_t h_config_get(httpd_req_t *req)
     if (cfg == NULL) {
         return httpd_resp_send_500(req);
     }
+    char q[32], val[4];
+    const bool secrets = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+                         httpd_query_key_value(q, "hemmeligheter", val, sizeof(val)) == ESP_OK &&
+                         strcmp(val, "1") == 0;
     app_config_load(cfg);
-    char *json = app_config_to_json(cfg);
+    char *json = app_config_to_json(cfg, secrets);
     free(cfg);
     if (json == NULL) {
         return httpd_resp_send_500(req);
@@ -1429,7 +1437,7 @@ static esp_err_t h_config_get(httpd_req_t *req)
 }
 
 /* POST /config.json: restore such a backup over the current settings (the
- * WiFi and secrets stay), save and restart. */
+ * WiFi and secrets stay unless it has them), save and restart. */
 static esp_err_t h_config_put(httpd_req_t *req)
 {
     if (!authorized(req) || !same_origin(req)) {
