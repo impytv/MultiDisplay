@@ -1,4 +1,4 @@
-/* The week screen: seven day cards from the location's forecast (the days
+/* The week screen: the big clock top right, and seven day cards from the location's forecast (the days
  * yr_client sums up): the weekday, MET's symbol for the day, the day's
  * temperature range as a bar on a scale shared by the whole week, with the
  * high above and the low below it, the precipitation total and the
@@ -17,7 +17,7 @@
 
 #define WEEK_DAYS      7
 #define WEEK_X         12
-#define WEEK_TOP       54
+#define WEEK_TOP       60 /* below the big clock, as on the weather screen */
 #define WEEK_GAP       6
 #define WEEK_ICON      64
 #define WEEK_BAR_W     14
@@ -25,6 +25,7 @@
 #define WEEK_RETRY_MS  20000
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
+static big_clock_t s_clock;
 static lv_obj_t *s_icon[WEEK_DAYS];
 static int s_loc = -1;
 
@@ -40,7 +41,7 @@ static int card_w(void)
 
 /* Where things go in a card, from the body font's line height. */
 typedef struct {
-    int day, date, icon, bar_top, bar_bot, precip, wind;
+    int day, date, icon, bar_top, bar_bot, precip, wind, bottom;
 } week_rows_t;
 
 static week_rows_t rows(void)
@@ -50,7 +51,8 @@ static week_rows_t rows(void)
     r.day = WEEK_TOP + 6;
     r.date = r.day + lh;
     r.icon = r.date + lh + 4;
-    r.wind = BOARD_LCD_V_RES - lh - 12;
+    r.bottom = BOARD_LCD_V_RES - lh - 10; /* above the "updated" line at the bottom right */
+    r.wind = r.bottom - lh - 6;
     r.precip = r.wind - lh - 2;
     r.bar_top = r.icon + WEEK_ICON + lh + 8; /* room for the high above the bar */
     r.bar_bot = r.precip - lh - 10;         /* and the low below it */
@@ -104,7 +106,7 @@ static void week_draw_cb(lv_event_t *e)
         struct tm lt;
         localtime_r(&st, &lt);
         const bool is_today = lt.tm_yday == today_lt.tm_yday && lt.tm_year == today_lt.tm_year;
-        draw_rect(layer, x, WEEK_TOP, x + w - 1, BOARD_LCD_V_RES - 6, 8, is_today ? c_today : c_card);
+        draw_rect(layer, x, WEEK_TOP, x + w - 1, r.bottom, 8, is_today ? c_today : c_card);
 
         char buf[24];
         draw_text(layer, is_today ? "I dag" : WDAY[lt.tm_wday], x, r.day, w, LV_TEXT_ALIGN_CENTER, c_txt);
@@ -170,6 +172,15 @@ static void week_show(void)
     lv_obj_invalidate(s_canvas);
 }
 
+/* Every second while the week is on show. */
+static void week_clock_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!lv_obj_has_flag(s_root, LV_OBJ_FLAG_HIDDEN)) {
+        big_clock_set(&s_clock, time(NULL));
+    }
+}
+
 lv_obj_t *week_build(lv_obj_t *screen)
 {
     s_root = screen_root_create(screen);
@@ -184,8 +195,9 @@ lv_obj_t *week_build(lv_obj_t *screen)
     lv_obj_set_pos(s_title, WEEK_X, 4);
     lv_obj_set_width(s_title, 520);
     lv_label_set_long_mode(s_title, LV_LABEL_LONG_MODE_DOTS);
+    big_clock_create(&s_clock, s_root, WEEK_X);
     s_updated = lv_label_create(s_root);
-    lv_obj_align(s_updated, LV_ALIGN_TOP_RIGHT, -WEEK_X, 4);
+    lv_obj_align(s_updated, LV_ALIGN_BOTTOM_RIGHT, -WEEK_X, -4);
     lv_label_set_text(s_updated, "");
 
     for (int d = 0; d < WEEK_DAYS; d++) {
@@ -193,6 +205,7 @@ lv_obj_t *week_build(lv_obj_t *screen)
         lv_obj_set_size(s_icon[d], WEEK_ICON, WEEK_ICON);
         lv_obj_add_flag(s_icon[d], LV_OBJ_FLAG_HIDDEN);
     }
+    lv_timer_create(week_clock_timer_cb, 1000, NULL);
     return s_root;
 }
 
@@ -200,6 +213,7 @@ void week_enter(int loc)
 {
     s_loc = loc;
     lv_label_set_text_fmt(s_title, "7 dager i %s", g_cfg->locations[loc].name);
+    big_clock_set(&s_clock, time(NULL));
     week_show();
 }
 
