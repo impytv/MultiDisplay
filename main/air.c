@@ -7,6 +7,8 @@
  *  - Below: one row per pollen type with its level now in NAAF's words and
  *    the next 24 hours as bars; out of season, one line saying so.
  *
+ * The big clock is top right, the "updated" line bottom right.
+ *
  * Painted by one draw handler like the departure board. Air quality is
  * fetched every 30 minutes (MET's Expires honoured), pollen every hour; the
  * screen is redrawn every few minutes so "now" moves on with the clock. */
@@ -30,7 +32,7 @@
 static const char *TAG = "air";
 
 #define AIR_X             12
-#define AIR_TOP           56
+#define AIR_TOP           60 /* below the big clock */
 #define AIR_BOX_W         240
 #define AIR_BOX_H         104
 #define AIR_CELL_H        34
@@ -43,6 +45,7 @@ static const char *TAG = "air";
 #define AIR_STALE_COLOUR  0xE07000
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
+static big_clock_t s_clock;
 static lv_obj_t *s_box, *s_box_level, *s_box_sub;
 static int s_loc = -1;
 
@@ -168,8 +171,9 @@ static void air_draw_cb(lv_event_t *e)
             }
         }
     }
-    draw_text(layer, "Pollen: Copernicus (CAMS) via Open-Meteo. Luft: MET Norge.", AIR_X, foot_y, 700,
-              LV_TEXT_ALIGN_LEFT, c_dim);
+    /* Left of the "updated" line, which shares the bottom row. */
+    const int foot_w = BOARD_LCD_H_RES - 2 * AIR_X - draw_text_w(lv_label_get_text(s_updated)) - 16;
+    draw_text_fit(layer, "Pollen: Copernicus (CAMS) via Open-Meteo. Luft: MET Norge.", AIR_X, foot_y, foot_w, c_dim);
 }
 
 /* Labels and box for what is held for s_loc (adapter lock held). */
@@ -206,6 +210,15 @@ static void air_show(void)
     lv_obj_invalidate(s_canvas);
 }
 
+/* Every second while the air screen is on show. */
+static void air_clock_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!lv_obj_has_flag(s_root, LV_OBJ_FLAG_HIDDEN)) {
+        big_clock_set(&s_clock, time(NULL));
+    }
+}
+
 lv_obj_t *air_build(lv_obj_t *screen)
 {
     s_root = screen_root_create(screen);
@@ -232,8 +245,9 @@ lv_obj_t *air_build(lv_obj_t *screen)
     lv_obj_set_width(s_title, 500);
     lv_label_set_long_mode(s_title, LV_LABEL_LONG_MODE_DOTS);
 
+    big_clock_create(&s_clock, s_root, AIR_X);
     s_updated = lv_label_create(s_root);
-    lv_obj_align(s_updated, LV_ALIGN_TOP_RIGHT, -AIR_X, 4);
+    lv_obj_align(s_updated, LV_ALIGN_BOTTOM_RIGHT, -AIR_X, -4);
     lv_label_set_text(s_updated, "");
 
     s_box = lv_obj_create(s_root);
@@ -250,6 +264,7 @@ lv_obj_t *air_build(lv_obj_t *screen)
     lv_label_set_text(s_box_sub, "luftforurensning");
     lv_obj_align(s_box_sub, LV_ALIGN_CENTER, 0, 20);
     lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN);
+    lv_timer_create(air_clock_timer_cb, 1000, NULL);
     return s_root;
 }
 
@@ -258,6 +273,7 @@ void air_enter(int loc)
     s_loc = loc;
     s_failed = false;
     lv_label_set_text_fmt(s_title, "Luft i %s", g_cfg->locations[loc].name);
+    big_clock_set(&s_clock, time(NULL));
     air_show();
 }
 
