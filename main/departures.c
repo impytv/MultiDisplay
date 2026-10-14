@@ -192,14 +192,11 @@ static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur
     draw_text(layer, grp->code, x0, y + (row_h - lh) / 2, DEP_BADGE_W, LV_TEXT_ALIGN_CENTER,
               lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
 
-    /* The quay: "(Spor 2)" for trains, none for the metro and trams
-     * (their platforms aren't marked for travellers), "(2)" otherwise -
-     * but not in two columns, where there's no room for it. */
+    /* The quay only for trains, as "(Spor 2)"; a bus stop's letter
+     * ("Fornebu (F)") is left out. */
     char dest[sizeof(grp->dest) + sizeof(grp->quay) + 16];
     if (grp->quay[0] && strcmp(grp->mode, "rail") == 0) {
         snprintf(dest, sizeof(dest), "%s (Spor %s)", grp->dest, grp->quay);
-    } else if (grp->quay[0] && !narrow && strcmp(grp->mode, "metro") != 0 && strcmp(grp->mode, "tram") != 0) {
-        snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
     } else {
         snprintf(dest, sizeof(dest), "%s", grp->dest);
     }
