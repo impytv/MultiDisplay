@@ -26,6 +26,7 @@
 #include "nvs.h"
 #include "ota_writer.h"
 #include "form_util.h"
+#include "holidays.h"
 #include "web_auth.h"
 #include "cJSON.h"
 #include "mdns.h"
@@ -326,6 +327,15 @@ static char *build_page(const app_config_t *cfg)
                   "begynner skjermene p&aring; kalenderen eller det f&oslash;rste stedet.</small></details>",
                   cfg->ov_show ? " checked" : "", cfg->auto_overview ? " checked" : "");
     p = build_calendar(p, end, cfg);
+    p = buf_append(p, end,
+                  "<details class=sec><summary>M&aring;nedskalender</summary>"
+                  "<div class=chk><label><input type=checkbox name=monshow value=1%s>"
+                  "Vis m&aring;nedskalenderen</label><label><input type=checkbox name=monrot value=1%s>"
+                  "i automatisk bytte</label></div>"
+                  "<small>Fem uker fra og med denne uken, med ukenummer, som en egen skjerm etter "
+                  "kalenderen. S&oslash;ndager og helligdager har r&oslash;d dato. Helligdagene er "
+                  "lagt inn til og med %d.</small></details>",
+                  cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year());
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
@@ -1139,6 +1149,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->sat_show = form_field(body, "satshow", val, sizeof(val)) ? 1 : 0;
         cfg->sat_rotate = form_field(body, "satrot", val, sizeof(val)) ? 1 : 0;
         cfg->sat_visible = form_field(body, "satvis", val, sizeof(val)) ? 1 : 0;
+        cfg->mon_show = form_field(body, "monshow", val, sizeof(val)) ? 1 : 0;
+        cfg->mon_rotate = form_field(body, "monrot", val, sizeof(val)) ? 1 : 0;
         if (form_field(body, "satzoom", val, sizeof(val)) && (val[0] == '2' || val[0] == '3') && val[1] == '\0') {
             cfg->sat_zoom = (uint8_t)(val[0] - '0');
         }

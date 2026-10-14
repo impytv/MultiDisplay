@@ -157,7 +157,7 @@ with a throwaway key, so displays won't accept it.
   - `/screen.png`: a screenshot of what's on the screen.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
-    one as a tap would (types: `oversikt`, `kalender`, `vaer`, `uke`, `fly`,
+    one as a tap would (types: `oversikt`, `kalender`, `maned`, `vaer`, `uke`, `fly`,
     `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`;
     `sted` counts from 1),
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
@@ -243,8 +243,9 @@ Navigasjonsside**. The screens, in order:
    oversikten** under **Andre skjermer → Oversikt** on the setup page is unticked (its **i
    automatisk bytte** puts it in the rotation).
 2. **Kalender**, if shown (see [Calendar](#calendar)).
-3. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
-4. For each location in order, whichever of its screens are enabled.
+3. **Månedskalender**, if shown (see [Month calendar](#month-calendar)).
+4. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
+5. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -420,6 +421,24 @@ Recurring events (daily, weekly, monthly, yearly, with exceptions and moved
 instances) are expanded; times with a time zone are taken as Norwegian time.
 The addresses are secret, so they are never shown on the page again (a blank
 field keeps the saved one) and are left out of settings backups.
+
+### Month calendar
+
+One screen for the whole display, after the calendar: under **Andre skjermer →
+Månedskalender** on the setup page, tick **Vis månedskalenderen** (and **i
+automatisk bytte** for the rotation). Five weeks from the Monday of this one
+as a grid, Monday first, with the week number (ISO 8601) on the left, the
+months shown in the title, and the month's short name on the first of each
+month. Sundays and public holidays have their date in red, holidays with
+their name under it; today is outlined, and days already past are faded.
+The buttons by the clock step four weeks back or ahead (the last week shown
+becomes the first) and **I dag** goes back to this week, as does leaving the
+screen or five minutes without a touch.
+
+The holidays are built in, read from [norskkalender.no](https://www.norskkalender.no/)
+by `python3 scripts/build_holidays.py` into `components/holidays_data.h`.
+The site has them up to 2029; after that only Sundays are red until the
+script is run again and the firmware rebuilt.
 
 ### Satellite
 

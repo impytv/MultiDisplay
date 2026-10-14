@@ -218,6 +218,10 @@ typedef struct {
     uint8_t sat_rotate;
     uint8_t sat_zoom;
     uint8_t sat_visible;
+    /* The month calendar (five weeks with week numbers and holidays):
+     * shown, and in the rotation. */
+    uint8_t mon_show;
+    uint8_t mon_rotate;
 } app_config_t;
 
 /**

@@ -79,6 +79,10 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddNumberToObject(sat, "zoom", c->sat_zoom);
     cJSON_AddBoolToObject(sat, "visible_by_day", c->sat_visible);
 
+    cJSON *mon = cJSON_AddObjectToObject(root, "month");
+    cJSON_AddBoolToObject(mon, "show", c->mon_show);
+    cJSON_AddBoolToObject(mon, "rotate", c->mon_rotate);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -238,6 +242,9 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(sat, "rotate", &c->sat_rotate);
     get_u8(sat, "zoom", &c->sat_zoom);
     get_bool(sat, "visible_by_day", &c->sat_visible);
+    const cJSON *mon = cJSON_GetObjectItemCaseSensitive(root, "month");
+    get_bool(mon, "show", &c->mon_show);
+    get_bool(mon, "rotate", &c->mon_rotate);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

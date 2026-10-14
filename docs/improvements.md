@@ -604,3 +604,9 @@ cJSON-based ones.
   20 screens: rain at full resolution, PSRAM lowest 614 KB, no restart.
   `/status` now also gives PSRAM's largest free block, and the rain
   client's log gave every image as "0 bytes" (logged after freeing it).*
+- [ ] **75. The month calendar's holidays end with 2029.** They are built in
+  from norskkalender.no (`scripts/build_holidays.py`), which publishes them
+  up to 2029; from 2030 only Sundays are red. Run the script again when the
+  site has later years (it reads on until a year has none) and rebuild. The
+  setup page says which year they go to. Computing them (Easter and the
+  days that follow it) would remove the limit.
