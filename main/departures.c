@@ -28,7 +28,6 @@
 #define DEP_BADGE_W         64
 #define DEP_TIME_W          112
 #define DEP_COL_GAP         24  /* between two columns of rows */
-#define DEP_DEST_MIN_W      150 /* narrower, and a column shows only the next departure */
 #define DEP_GONE_S          30  /* a departure this long past is no longer shown */
 #define DEP_NOTICE_COLOUR   0xD35400 /* disruption notices */
 #define DEP_SHARED_MAX      3        /* notices listed once at the bottom */
@@ -70,14 +69,15 @@ static uint32_t dep_mode_colour(const char *mode)
     return 0x607D8B;
 }
 
-/* "Nå" (under a minute), "N min" (under 15), otherwise HH:MM - as the web page. */
-static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now)
+/* "Nå" (under a minute), "N min" (under 15; "N m" if `short_min`),
+ * otherwise HH:MM - as the web page. */
+static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now, bool short_min)
 {
     const int64_t mins = (t - (int64_t)now) / 60;
     if (mins < 1) {
         snprintf(buf, n, "N\xC3\xA5");
     } else if (mins < 15) {
-        snprintf(buf, n, "%d min", (int)mins);
+        snprintf(buf, n, short_min ? "%d m" : "%d min", (int)mins);
     } else {
         time_t tt = (time_t)t;
         struct tm lt;
@@ -86,17 +86,20 @@ static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now)
     }
 }
 
-/* One departure in the time column `w` wide ending at x_right: red "Innstilt" if
- * cancelled, dimmed if it's only the timetable (no realtime data). */
-static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right, int w, int y, time_t now)
+/* One departure in the time column `w` wide ending at x_right ("N m" for
+ * minutes if `short_min`): red "Innstilt" if cancelled, dimmed if it's
+ * only the timetable (no realtime data). */
+static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right, int w, int y, time_t now,
+                          bool short_min)
 {
     char buf[16];
     lv_color_t color = dep_text_color();
     if (c->cancelled) {
-        snprintf(buf, sizeof(buf), "Innstilt");
+        /* "Innst." where "Innstilt" won't fit (in two columns). */
+        snprintf(buf, sizeof(buf), "%s", draw_text_w("Innstilt") <= w ? "Innstilt" : "Innst.");
         color = lv_palette_main(LV_PALETTE_RED);
     } else {
-        dep_fmt_time(buf, sizeof(buf), c->expected, now);
+        dep_fmt_time(buf, sizeof(buf), c->expected, now, short_min);
         if (!c->realtime) {
             color = dep_dim_color();
         }
@@ -145,13 +148,14 @@ typedef struct {
 } dep_layout_t;
 
 /* The width of a time column: room for "Innstilt" and "88 min" on one
- * column, measured to fit them on two. */
+ * column; on two, measured to fit "88 m", "88:88" and "Innst." (see
+ * dep_draw_call). */
 static int dep_time_w(int cols)
 {
     if (cols == 1) {
         return DEP_TIME_W;
     }
-    static const char *const widest[] = { "Innstilt", "88 min", "88:88", "N\xC3\xA5" };
+    static const char *const widest[] = { "88 m", "88:88", "N\xC3\xA5", "Innst." };
     int w = 0;
     for (size_t k = 0; k < sizeof(widest) / sizeof(widest[0]); k++) {
         const int tw = draw_text_w(widest[k]);
@@ -161,7 +165,8 @@ static int dep_time_w(int cols)
 }
 
 /* One row of group `grp` at x0, y in a column `col_w` wide: the line's
- * badge, the destination, and the next one or two of calls[0..n_calls). */
+ * badge, the destination (cut short to fit), and the next one or two of
+ * calls[0..n_calls). */
 static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur_group_t *grp,
                          const entur_call_t *const *calls, int n_calls, int x0, int col_w, int y, time_t now)
 {
@@ -170,9 +175,8 @@ static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur
     const int tw = dep_time_w(lay->cols);
     const int x_t2 = x0 + col_w;
     const int x_dest = x0 + DEP_BADGE_W + 14;
-    /* Two times if the destination keeps room enough beside them. */
-    const bool two = lay->cols == 1 || x_t2 - 2 * tw - 12 - x_dest - 8 >= DEP_DEST_MIN_W;
-    const int x_t1 = two ? x_t2 - tw - 12 : x_t2;
+    const bool narrow = lay->cols > 1;
+    const int x_t1 = x_t2 - tw - (narrow ? 8 : 12);
     const lv_color_t c_txt = dep_text_color();
 
     /* The line number on the line's own colour, as on the web page. */
@@ -189,11 +193,12 @@ static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur
               lv_color_hex(grp->has_colour ? grp->text_colour : 0xFFFFFF));
 
     /* The quay: "(Spor 2)" for trains, none for the metro and trams
-     * (their platforms aren't marked for travellers), "(2)" otherwise. */
+     * (their platforms aren't marked for travellers), "(2)" otherwise -
+     * but not in two columns, where there's no room for it. */
     char dest[sizeof(grp->dest) + sizeof(grp->quay) + 16];
     if (grp->quay[0] && strcmp(grp->mode, "rail") == 0) {
         snprintf(dest, sizeof(dest), "%s (Spor %s)", grp->dest, grp->quay);
-    } else if (grp->quay[0] && strcmp(grp->mode, "metro") != 0 && strcmp(grp->mode, "tram") != 0) {
+    } else if (grp->quay[0] && !narrow && strcmp(grp->mode, "metro") != 0 && strcmp(grp->mode, "tram") != 0) {
         snprintf(dest, sizeof(dest), "%s (%s)", grp->dest, grp->quay);
     } else {
         snprintf(dest, sizeof(dest), "%s", grp->dest);
@@ -211,9 +216,9 @@ static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur
         draw_text_fit(layer, dest, x_dest, y + (row_h - lh) / 2, dest_w, c_txt);
     }
 
-    dep_draw_call(layer, calls[0], x_t1, tw, y + (row_h - lh) / 2, now);
-    if (two && n_calls > 1) {
-        dep_draw_call(layer, calls[1], x_t2, tw, y + (row_h - lh) / 2, now);
+    dep_draw_call(layer, calls[0], x_t1, tw, y + (row_h - lh) / 2, now, narrow);
+    if (n_calls > 1) {
+        dep_draw_call(layer, calls[1], x_t2, tw, y + (row_h - lh) / 2, now, narrow);
     }
     if (grp->notice[0] && shared_i < 0) {
         draw_text_fit(layer, grp->notice, x_dest, y + row_h - 6, x_t2 - x_dest, lv_color_hex(DEP_NOTICE_COLOUR));

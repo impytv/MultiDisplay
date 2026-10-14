@@ -462,8 +462,9 @@ the next two per line and direction,
 under a large 24-hour clock. Refreshed every 30 seconds while on screen; the
 "N min" countdowns tick between refreshes. Times without realtime data are
 dimmed, cancelled departures say *Innstilt*. When the rows don't fit, they
-are first drawn closer together, then in two columns (with only the next
-departure per row if the destination would get too narrow for two).
+are first drawn closer together, then in two columns. There the times say
+"11 m" rather than "11 min", destinations are cut short to fit, and buses
+leave out their stop position ("Fornebu" rather than "Fornebu (F)").
 
 The stops and lines go in the location's **Avganger (holdeplasser og linjer)**
 field as one line of text:
