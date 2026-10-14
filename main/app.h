@@ -71,6 +71,43 @@ static inline bool stamp_fresh(const fetch_stamp_t *st, uint32_t max_ms)
     return st->valid && lv_tick_get() - st->tick < max_ms;
 }
 
+/* Failed fetches of one source: the first is tried again after a short wait
+ * (the screen may have nothing to show yet), later ones only every
+ * BACKOFF_MS, so a source that is down - or doesn't cover the place - isn't
+ * asked every few seconds. */
+#define BACKOFF_MS (5 * 60 * 1000)
+
+typedef struct {
+    fetch_stamp_t at; /* the last failure */
+    uint8_t count;    /* failures in a row */
+} backoff_t;
+
+static inline void backoff_fail(backoff_t *b)
+{
+    stamp_now(&b->at);
+    if (b->count < UINT8_MAX) {
+        b->count++;
+    }
+}
+
+static inline void backoff_ok(backoff_t *b)
+{
+    b->count = 0;
+}
+
+/* The wait after the last failure before asking again: `first_ms` after the
+ * first, BACKOFF_MS after more. */
+static inline uint32_t backoff_ms(const backoff_t *b, uint32_t first_ms)
+{
+    return b->count <= 1 ? first_ms : BACKOFF_MS;
+}
+
+/* Whether to hold off asking again yet. */
+static inline bool backoff_waiting(const backoff_t *b, uint32_t first_ms)
+{
+    return b->count > 0 && stamp_fresh(&b->at, backoff_ms(b, first_ms));
+}
+
 /* A full-screen, transparent container for one screen, hidden until shown. */
 lv_obj_t *screen_root_create(lv_obj_t *screen);
 

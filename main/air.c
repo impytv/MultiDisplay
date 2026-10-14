@@ -277,6 +277,8 @@ void air_enter(int loc)
     air_show();
 }
 
+static backoff_t s_q_fail[APP_CONFIG_MAX_LOCATIONS], s_p_fail[APP_CONFIG_MAX_LOCATIONS];
+
 uint32_t air_poll(int loc, int for_view)
 {
     if (s_q[loc] == NULL || s_p[loc] == NULL) {
@@ -285,13 +287,14 @@ uint32_t air_poll(int loc, int for_view)
     const double lat = atof(g_cfg->locations[loc].lat), lon = atof(g_cfg->locations[loc].lon);
     bool failed = false;
 
-    if (!stamp_fresh(&s_q_at[loc], AIR_QUALITY_MS)) {
+    if (!stamp_fresh(&s_q_at[loc], AIR_QUALITY_MS) && !backoff_waiting(&s_q_fail[loc], AIR_RETRY_MS)) {
         if (!s_q_at[loc].valid) {
             memset(&s_q_http[loc], 0, sizeof(s_q_http[loc]));
         }
         esp_err_t err = air_quality_fetch(lat, lon, s_q_scratch, &s_q_http[loc]);
         if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
             diag_ok(DIAG_AIR);
+            backoff_ok(&s_q_fail[loc]);
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 if (err == ESP_OK) {
                     *s_q[loc] = *s_q_scratch;
@@ -303,13 +306,15 @@ uint32_t air_poll(int loc, int for_view)
                      err == ESP_OK ? "fetched" : "unchanged");
         } else {
             diag_fail(DIAG_AIR, err);
+            backoff_fail(&s_q_fail[loc]);
             failed = true;
         }
     }
-    if (!stamp_fresh(&s_p_at[loc], AIR_POLLEN_MS)) {
+    if (!stamp_fresh(&s_p_at[loc], AIR_POLLEN_MS) && !backoff_waiting(&s_p_fail[loc], AIR_RETRY_MS)) {
         esp_err_t err = air_pollen_fetch(lat, lon, s_p_scratch);
         if (err == ESP_OK) {
             diag_ok(DIAG_POLLEN);
+            backoff_ok(&s_p_fail[loc]);
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 *s_p[loc] = *s_p_scratch;
                 stamp_now(&s_p_at[loc]);
@@ -317,10 +322,13 @@ uint32_t air_poll(int loc, int for_view)
             }
         } else {
             diag_fail(DIAG_POLLEN, err);
+            backoff_fail(&s_p_fail[loc]);
             failed = true;
         }
     }
 
+    /* Also while waiting to ask again after a failure. */
+    failed = failed || s_q_fail[loc].count > 0 || s_p_fail[loc].count > 0;
     bool shown = false;
     if (lock_for_view(for_view)) {
         s_failed = failed && (shown_q() != NULL || shown_p() != NULL);

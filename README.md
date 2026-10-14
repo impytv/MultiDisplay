@@ -504,8 +504,17 @@ times (local time, default 22:00–07:00) either dims the screen (**Demp
 skjermen**: a dark layer over it, as the backlight can't be dimmed) or
 switches it off (**Slå av skjermen**). When it's off, a touch lights it for two
 minutes (as does picking a screen over the web); that touch only wakes it.
-While it's off, the automatic rotation stands still and the screen on show is refreshed at most every 5 minutes;
-lighting it refreshes it at once.
+While it's off, the automatic rotation stands still and nothing is fetched
+at all - only the clock keeps itself set by NTP, and the firmware update
+check is still made at its time. Lighting it (in the morning, or by a touch)
+refreshes the screen on show at once. The one exception: firmware installed
+while the screen is off keeps fetching until something has worked, as that
+is what proves the update good (else the nightly restart would roll it
+back).
+
+When a fetch fails, the air quality, pollen and satellite image are asked
+for again once after a short wait (30 s, 1 min), then only every 5 minutes;
+with a satellite image still on show, after 5 minutes from the first.
 
 ### Public transport departures
 

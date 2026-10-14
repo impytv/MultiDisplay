@@ -84,6 +84,7 @@ static http_cache_t s_cache;
 static bool s_visible;   /* the image held is the visible-light one */
 static time_t s_taken;   /* when the image held was taken */
 static bool s_valid;     /* the views hold a whole image */
+static backoff_t s_fail; /* failed fetches, to wait longer after several */
 static bool s_failed;    /* the last fetch failed while an image is shown */
 static int s_loc = -1;   /* on show: a location, or -1 for Europe */
 
@@ -327,6 +328,21 @@ uint32_t satellite_poll(int loc, int for_view)
         return SAT_RETRY_MS; /* MET's Expires needs the clock */
     }
     const bool visible = want_visible(now);
+    /* After a failure: not again for a minute (the screen may be empty),
+     * later ones not for 5 min - the image is large. With an image on
+     * show, 5 min from the first. */
+    const uint32_t fail_wait = s_valid ? BACKOFF_MS : backoff_ms(&s_fail, SAT_RETRY_MS);
+    if (s_fail.count > 0 && stamp_fresh(&s_fail.at, fail_wait)) {
+        if (lock_for_view(for_view)) {
+            s_failed = s_valid;
+            satellite_show();
+            if (!s_valid) {
+                lv_label_set_text(g_status_label, "Kunne ikke hente satellittbildet. Pr\xC3\xB8ver igjen...");
+            }
+            esp_lv_adapter_unlock();
+        }
+        return fail_wait - (lv_tick_get() - s_fail.at.tick);
+    }
     if (!s_valid || visible != s_visible) {
         memset(&s_cache, 0, sizeof(s_cache)); /* not the image wanted: ask for the whole of it */
     }
@@ -341,6 +357,9 @@ uint32_t satellite_poll(int loc, int for_view)
         err = sat_client_fetch(visible, &s_cache, sat_row, NULL, &taken, &rows);
         sat_shrink_free(&s_shrink);
     }
+    if (err == ESP_OK || err == HTTP_NOT_MODIFIED) {
+        backoff_ok(&s_fail);
+    }
     if (err == ESP_OK) {
         diag_ok(DIAG_SATELLITE);
         if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -352,6 +371,7 @@ uint32_t satellite_poll(int loc, int for_view)
         ESP_LOGI(TAG, "New %s image, taken %lld", visible ? "visible" : "infrared", (long long)s_taken);
     } else if (err != HTTP_NOT_MODIFIED) {
         diag_fail(DIAG_SATELLITE, err);
+        backoff_fail(&s_fail);
         failed = true;
         if (rows > 0 && esp_lv_adapter_lock(-1) == ESP_OK) {
             s_valid = false; /* part old, part new: not worth showing */
@@ -367,7 +387,10 @@ uint32_t satellite_poll(int loc, int for_view)
         }
         esp_lv_adapter_unlock();
     }
-    if (failed || !s_valid) {
+    if (failed) {
+        return s_valid ? BACKOFF_MS : backoff_ms(&s_fail, SAT_RETRY_MS);
+    }
+    if (!s_valid) {
         return SAT_RETRY_MS;
     }
     /* Until MET's Expires, within limits. */

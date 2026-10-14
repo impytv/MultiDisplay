@@ -1029,19 +1029,43 @@ static void nightly_housekeeping(void)
  * one is on probation, and a restart goes back to the previous (see
  * wifi_provision's h_ota) - also after a night with no internet, which is
  * the price of not keeping one that can't fetch at all. No-op otherwise. */
+static bool s_firmware_kept; /* this firmware has fetched something, or wasn't on trial */
+
 static void keep_firmware(void)
 {
-    static bool done;
-    if (done) {
+    if (s_firmware_kept) {
         return;
     }
-    done = true;
+    s_firmware_kept = true;
     esp_ota_img_states_t st;
     if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
         st == ESP_OTA_IMG_PENDING_VERIFY) {
         ESP_LOGI(TAG, "New firmware works - keeping it");
         esp_ota_mark_app_valid_cancel_rollback();
     }
+}
+
+/* Whether this firmware is still to prove itself by fetching something (an
+ * update installed at night): polled for even with the screen off, or the
+ * nightly restart would roll it back. */
+static bool firmware_on_trial(void)
+{
+    if (s_firmware_kept) {
+        return false;
+    }
+    esp_ota_img_states_t st;
+    return esp_ota_get_state_partition(esp_ota_get_running_partition(), &st) == ESP_OK &&
+           st == ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+/* Drop every kept-alive HTTPS connection (and its TLS buffers). */
+static void close_clients(void)
+{
+    adsb_client_close();
+    ais_client_close();
+    rain_client_close();
+    entur_client_close();
+    http_met_close();
 }
 
 static void yr_weather_task(void *arg)
@@ -1124,41 +1148,52 @@ static void yr_weather_task(void *arg)
             ulTaskNotifyTake(pdTRUE, 0);
         }
 
+        /* Switched off for the night: nothing is fetched - nobody sees it -
+         * until the screen is lit again (by the morning, or a touch, which
+         * wakes this task at once). The clock keeps itself set by NTP on
+         * its own. The loop still comes round every DARK_POLL_MS for the
+         * watchdog and the firmware update check. */
         uint32_t wait_ms;
-        switch ((stop_kind_t)stop->kind) {
-        case STOP_RADAR:
-        case STOP_SHIPS:
-        case STOP_RAIN:
-            wait_ms = radar_poll(stop->kind, stop->loc, active_view);
-            break;
-        case STOP_DEPARTURES:
-            wait_ms = departures_poll(stop->loc, active_view);
-            break;
-        case STOP_AIR:
-            wait_ms = air_poll(stop->loc, active_view);
-            break;
-        case STOP_WEEK:
-            wait_ms = week_poll(stop->loc, active_view);
-            break;
-        case STOP_TIDE:
-            wait_ms = tide_poll(stop->loc, active_view);
-            break;
-        case STOP_CALENDAR:
-            wait_ms = calendar_poll(active_view);
-            break;
-        case STOP_MONTH:
-            wait_ms = month_poll(active_view);
-            break;
-        case STOP_SAT_EUROPE:
-            wait_ms = satellite_poll(-1, active_view);
-            break;
-        case STOP_SAT:
-            wait_ms = satellite_poll(stop->loc, active_view);
-            break;
-        default:
-            wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);
-            refetch_sel = false;
-            break;
+        const bool dark = !s_backlight_on && !firmware_on_trial();
+        if (dark) {
+            close_clients();
+            wait_ms = DARK_POLL_MS;
+        } else {
+            switch ((stop_kind_t)stop->kind) {
+            case STOP_RADAR:
+            case STOP_SHIPS:
+            case STOP_RAIN:
+                wait_ms = radar_poll(stop->kind, stop->loc, active_view);
+                break;
+            case STOP_DEPARTURES:
+                wait_ms = departures_poll(stop->loc, active_view);
+                break;
+            case STOP_AIR:
+                wait_ms = air_poll(stop->loc, active_view);
+                break;
+            case STOP_WEEK:
+                wait_ms = week_poll(stop->loc, active_view);
+                break;
+            case STOP_TIDE:
+                wait_ms = tide_poll(stop->loc, active_view);
+                break;
+            case STOP_CALENDAR:
+                wait_ms = calendar_poll(active_view);
+                break;
+            case STOP_MONTH:
+                wait_ms = month_poll(active_view);
+                break;
+            case STOP_SAT_EUROPE:
+                wait_ms = satellite_poll(-1, active_view);
+                break;
+            case STOP_SAT:
+                wait_ms = satellite_poll(stop->loc, active_view);
+                break;
+            default:
+                wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);
+                refetch_sel = false;
+                break;
+            }
         }
         if (g_view_index != active_view) {
             continue;
@@ -1167,8 +1202,7 @@ static void yr_weather_task(void *arg)
         if (diag_any_ok()) {
             keep_firmware();
         }
-
-        /* Switched off for the night: nobody sees it, so poll seldom. */
+        /* A poll made in the dark for a firmware on trial: no more till light. */
         if (!s_backlight_on && wait_ms < DARK_POLL_MS) {
             wait_ms = DARK_POLL_MS;
         }

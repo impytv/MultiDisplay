@@ -623,3 +623,17 @@ cJSON-based ones.
   the callsigns work; a new operator or callsign scheme needs adding in
   `components/adsb_owners.c`. Ambulance planes owned by leasing companies
   with no operator registered are found only by callsign.
+- [x] **78. Some sources were asked again every 30-60 s while failing, and
+  everything every 5 min at night.** The satellite image (large) was asked
+  for every minute after a failure even with the last image on show; air
+  quality every 30 s while nothing was shown - for good, at a place MET
+  doesn't cover - and pollen every poll. With the screen switched off for
+  the night, the screen on show still fetched every 5 minutes. *Done:
+  after a failure these wait 30 s / 1 min once, then 5 minutes
+  (`backoff_t` in `main/app.h`); with the screen off nothing is fetched
+  (the kept-alive connections are closed) until it is lit, except NTP, the
+  update check, and a firmware on trial proving itself. A 6-minute serial
+  log with the screen off showed no fetches. Still quick on failure, but
+  cheap or bounded: forecast and alerts (every poll, 5 min), departures
+  (15 s), tide and rain (30 s while nothing is shown), missing past rain
+  frames (each poll for up to an hour).*
