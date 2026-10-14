@@ -61,9 +61,9 @@ void adsb_client_close(void);
 
 /**
  * Fill in the route (IATA airports, e.g. "OSL-BGO") of the first `rows`
- * aircraft in `res`, from adsb.lol's route data by callsign. Routes are kept
- * for a day, and at most `max_fetches` new ones are looked up per call, so a
- * busy sky fills in over a few polls. Returns ESP_OK, or the error of a
+ * aircraft in `res`, from adsb.lol's route data by callsign. Each callsign is
+ * looked up once and the answer kept, route or not; at most `max_fetches`
+ * new ones are looked up per call, so a busy sky fills in over a few polls. Returns ESP_OK, or the error of a
  * lookup that failed (the others still apply).
  */
 esp_err_t adsb_routes_fill(adsb_result_t *res, int rows, int max_fetches);
@@ -76,9 +76,9 @@ void adsb_routes_close(void);
  * the callsign where the service has its own (rescue helicopters "SAVER..",
  * ambulances "DOC..", "BNO.."), else for Norwegian aircraft (LN-
  * registrations) from the owner and operator in the Civil Aviation
- * Authority's register. Register answers are kept for a week, and at most
- * `max_fetches` new registrations are looked up per call. Returns ESP_OK, or
- * the error of a lookup that failed.
+ * Authority's register. Each registration is looked up once and the answer
+ * kept, whatever it was; at most `max_fetches` new registrations are looked
+ * up per call. Returns ESP_OK, or the error of a lookup that failed.
  */
 esp_err_t adsb_owners_fill(adsb_result_t *res, int max_fetches);
 

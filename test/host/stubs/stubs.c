@@ -1,5 +1,6 @@
 /* Host-test implementations of the ESP-IDF calls the tested files make: an
- * in-memory NVS, a clock, and an HTTP client that never connects. */
+ * in-memory NVS, a clock, and an HTTP client that never connects unless a
+ * test scripts its answers (g_http_stub). */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,10 +35,16 @@ esp_err_t esp_crt_bundle_attach(void *conf)
     return ESP_OK;
 }
 
+http_stub_t g_http_stub;
+static http_event_handle_cb s_stub_handler;
+
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config)
 {
-    (void)config;
-    return NULL;
+    if (!g_http_stub.on) {
+        return NULL;
+    }
+    s_stub_handler = config->event_handler;
+    return (esp_http_client_handle_t)&g_http_stub; /* any non-NULL handle */
 }
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *k, const char *v) { return ESP_FAIL; }
 esp_err_t esp_http_client_set_url(esp_http_client_handle_t c, const char *url) { return ESP_FAIL; }
@@ -45,8 +52,23 @@ esp_err_t esp_http_client_set_user_data(esp_http_client_handle_t c, void *data) 
 esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t c, int timeout_ms) { return ESP_FAIL; }
 esp_err_t esp_http_client_delete_header(esp_http_client_handle_t c, const char *key) { return ESP_FAIL; }
 esp_err_t esp_http_client_set_post_field(esp_http_client_handle_t c, const char *d, int n) { return ESP_FAIL; }
-esp_err_t esp_http_client_perform(esp_http_client_handle_t c) { return ESP_FAIL; }
-int esp_http_client_get_status_code(esp_http_client_handle_t c) { return 0; }
+esp_err_t esp_http_client_perform(esp_http_client_handle_t c)
+{
+    if (!g_http_stub.on) {
+        return ESP_FAIL;
+    }
+    g_http_stub.requests++;
+    if (g_http_stub.err != ESP_OK) {
+        return g_http_stub.err;
+    }
+    if (g_http_stub.body != NULL && s_stub_handler != NULL) {
+        esp_http_client_event_t evt = { .event_id = HTTP_EVENT_ON_DATA, .client = c,
+                                        .data = (void *)g_http_stub.body, .data_len = (int)strlen(g_http_stub.body) };
+        s_stub_handler(&evt);
+    }
+    return ESP_OK;
+}
+int esp_http_client_get_status_code(esp_http_client_handle_t c) { return g_http_stub.on ? g_http_stub.status : 0; }
 esp_err_t esp_http_client_cleanup(esp_http_client_handle_t c) { return ESP_OK; }
 esp_err_t esp_http_client_open(esp_http_client_handle_t c, int n) { return ESP_FAIL; }
 int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) { return -1; }

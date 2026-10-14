@@ -42,3 +42,15 @@ esp_err_t esp_http_client_set_redirection(esp_http_client_handle_t c);
 int esp_http_client_read(esp_http_client_handle_t c, char *buf, int len);
 bool esp_http_client_is_complete_data_received(esp_http_client_handle_t c);
 esp_err_t esp_http_client_close(esp_http_client_handle_t c);
+
+/* Test control: with `on`, clients connect and every request answers with
+ * `status` and `body` (or fails with `err`); `requests` counts them. Off
+ * (the default), no client can be made. */
+typedef struct {
+    bool on;
+    esp_err_t err;
+    int status;
+    const char *body;
+    int requests;
+} http_stub_t;
+extern http_stub_t g_http_stub;

@@ -20,4 +20,39 @@ void test_routes(void)
     CHECK(adsb_routes_fill(&r, 14, 4) != ESP_OK);
     CHECK_STR(r.ac[0].route, "");
     CHECK_STR(r.ac[1].route, "");                   /* reset even when not looked up */
+
+    /* Each callsign is asked for once, whatever the answer; only a request
+     * that got no answer is tried again. */
+    adsb_routes_close();
+    g_http_stub = (http_stub_t){ .on = true, .status = 200, .body = "{\"_airport_codes_iata\":\"TOS-OSL\"}" };
+    r.count = 1;
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK_STR(r.ac[0].route, "TOS-OSL");
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK_STR(r.ac[0].route, "TOS-OSL");            /* from the cache */
+    CHECK_INT(g_http_stub.requests, 1);
+
+    g_http_stub.status = 404;                       /* no route known */
+    strcpy(r.ac[0].callsign, "NOZ632");
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK_STR(r.ac[0].route, "");
+    CHECK_INT(g_http_stub.requests, 2);
+
+    g_http_stub.status = 503;                       /* an error, but kept */
+    strcpy(r.ac[0].callsign, "WIF123");
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_ERR_INVALID_RESPONSE);
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 3);
+
+    g_http_stub.err = ESP_ERR_TIMEOUT;              /* no answer: asked again */
+    strcpy(r.ac[0].callsign, "DLH456");
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_ERR_TIMEOUT);
+    g_http_stub.err = ESP_OK;
+    g_http_stub.status = 404;
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK(adsb_routes_fill(&r, 14, 4) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 5);
+    adsb_routes_close();
+    g_http_stub = (http_stub_t){ 0 };
 }

@@ -76,4 +76,59 @@ void test_owners(void)
     CHECK(r.ac[0].role == ADSB_ROLE_NONE);
     CHECK(r.ac[1].role == ADSB_ROLE_NONE); /* reset even when not looked up */
     CHECK(r.ac[2].role == ADSB_ROLE_RESCUE);
+
+    /* Each registration is asked for once, whatever the answer: an owner,
+     * not in the register, or a page without the entry. Only a request that
+     * got no answer is tried again. */
+    static const char police[] = "&quot;operator&quot;:null,&quot;mainOwner&quot;:&quot;STATEN v/ POLITIDIREKTORATET&quot;";
+    adsb_owners_close();
+    g_http_stub = (http_stub_t){ .on = true, .status = 200, .body = police };
+    memset(&r, 0, sizeof(r));
+    r.count = 1;
+    strcpy(r.ac[0].callsign, "HEP01");
+    strcpy(r.ac[0].reg, "LN-ORB");
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK(r.ac[0].role == ADSB_ROLE_POLICE);
+    g_http_stub.body = NULL;
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK(r.ac[0].role == ADSB_ROLE_POLICE); /* from the cache */
+    CHECK_INT(g_http_stub.requests, 1);
+
+    g_http_stub.status = 404; /* not in the register */
+    strcpy(r.ac[0].reg, "LN-XQZ");
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK(r.ac[0].role == ADSB_ROLE_NONE);
+    CHECK_INT(g_http_stub.requests, 2);
+
+    g_http_stub.status = 200; /* a page without the entry: an error, but kept */
+    g_http_stub.body = "<html>Noe gikk galt</html>";
+    strcpy(r.ac[0].reg, "LN-XQY");
+    CHECK(adsb_owners_fill(&r, 2) == ESP_ERR_INVALID_RESPONSE);
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 3);
+
+    g_http_stub.status = 500;
+    strcpy(r.ac[0].reg, "LN-XQX");
+    CHECK(adsb_owners_fill(&r, 2) == ESP_ERR_INVALID_RESPONSE);
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 4);
+
+    g_http_stub.err = ESP_ERR_TIMEOUT; /* no answer: asked again next time */
+    strcpy(r.ac[0].reg, "LN-XQW");
+    CHECK(adsb_owners_fill(&r, 2) == ESP_ERR_TIMEOUT);
+    g_http_stub.err = ESP_OK;
+    g_http_stub.status = 404;
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 6);
+
+    /* The same aircraft twice in one fetch is asked for once. */
+    r.count = 2;
+    strcpy(r.ac[0].reg, "LN-XQV");
+    r.ac[1] = r.ac[0];
+    CHECK(adsb_owners_fill(&r, 2) == ESP_OK);
+    CHECK_INT(g_http_stub.requests, 7);
+    adsb_owners_close();
+    g_http_stub = (http_stub_t){ 0 };
 }

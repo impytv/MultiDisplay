@@ -282,7 +282,9 @@ callsign where the service has its own (the Air Force's rescue helicopters
 aircraft by the operator or owner in the Civil Aviation Authority's
 [aircraft register](https://www.luftfartstilsynet.no/aktorer/norges-luftfartoyregister/registrerte-luftfartoy/)
 (owned by the Police Directorate, or an air ambulance operator), looked up
-two registrations per poll and kept for a week.
+two registrations per poll. Each callsign's route and each registration's
+owner is looked up once and the answer kept while the display runs, also
+when nothing was found; only a lookup that got no answer is tried again.
 Airports within range are drawn under the aircraft - runway lines, or a dot
 where they'd be too small to see, plus the airport's IATA code (its ICAO code
 where it has no IATA one; labels that would land on another label are

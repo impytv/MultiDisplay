@@ -10,8 +10,11 @@
  * web page per registration, .../registrerte-luftfartoy/?mark=LN-ORA, with
  * the entry as HTML-escaped JSON in a data attribute - "operator":null,
  * "mainOwner":"STATEN v/ POLITIDIREKTORATET". The page is ~46 KB, so it is
- * scanned as it arrives instead of being kept. Owners change rarely: each
- * answer - including "not in the register" (404) - is kept for a week. */
+ * scanned as it arrives instead of being kept. Each registration is looked
+ * up once: every answer - an owner, "not in the register" (404) or a page
+ * without the entry - is kept while the display runs (the oldest give way
+ * when the cache is full). Only a lookup that got no answer at all is tried
+ * again. */
 
 #include "esp_attr.h"
 #include <ctype.h>
@@ -27,8 +30,7 @@
 
 static const char *TAG = "adsb_owners";
 
-#define OWNER_CACHE      64
-#define OWNER_KEEP_US    (7 * 24 * 3600 * 1000000LL)
+#define OWNER_CACHE      256 /* 6 KB of PSRAM */
 #define OWNER_TIMEOUT_MS 10000
 #define OWNER_URL        "https://www.luftfartstilsynet.no/aktorer/norges-luftfartoyregister/registrerte-luftfartoy/?mark="
 
@@ -177,10 +179,10 @@ static bool is_norwegian(const char *reg)
     return strncmp(reg, "LN-", 3) == 0 && reg[3] != '\0';
 }
 
-static owner_entry_t *find(const char *reg, int64_t now)
+static owner_entry_t *find(const char *reg)
 {
     for (int i = 0; i < OWNER_CACHE; i++) {
-        if (s_cache[i].at_us != 0 && now - s_cache[i].at_us < OWNER_KEEP_US && strcmp(s_cache[i].reg, reg) == 0) {
+        if (s_cache[i].at_us != 0 && strcmp(s_cache[i].reg, reg) == 0) {
             return &s_cache[i];
         }
     }
@@ -199,7 +201,9 @@ static owner_entry_t *slot(void)
     return e;
 }
 
-/* Look `reg` up: ESP_OK with its role in `role`. */
+/* Look `reg` up: ESP_OK with its role in `role`, ESP_ERR_INVALID_RESPONSE
+ * (and no role) for an answer without the entry, or the error of a lookup
+ * that got no answer. */
 static esp_err_t lookup(const char *reg, adsb_role_t *role)
 {
     char url[sizeof(OWNER_URL) + 12];
@@ -231,7 +235,7 @@ static esp_err_t lookup(const char *reg, adsb_role_t *role)
         return ESP_OK; /* not in the register */
     }
     if (status != 200 || !scan_done(&s_scan)) {
-        return ESP_FAIL; /* the page has changed? */
+        return ESP_ERR_INVALID_RESPONSE; /* the page has changed? */
     }
     *role = role_of_name(s_scan.f[FIELD_OPERATOR].value);
     if (*role == ADSB_ROLE_NONE) {
@@ -251,20 +255,21 @@ esp_err_t adsb_owners_fill(adsb_result_t *res, int max_fetches)
         if (a->role != ADSB_ROLE_NONE || !is_norwegian(a->reg)) {
             continue;
         }
-        const owner_entry_t *hit = find(a->reg, now);
+        const owner_entry_t *hit = find(a->reg);
         if (hit == NULL && max_fetches > 0) {
             max_fetches--;
             adsb_role_t role;
             esp_err_t err = lookup(a->reg, &role);
-            if (err == ESP_OK) {
+            if (err == ESP_OK || err == ESP_ERR_INVALID_RESPONSE) { /* an answer: not asked again */
                 owner_entry_t *e = slot();
                 snprintf(e->reg, sizeof(e->reg), "%s", a->reg);
                 e->role = role;
                 e->at_us = now;
                 hit = e;
-            } else {
+            }
+            if (err != ESP_OK) {
                 result = err;
-                max_fetches = 0; /* the site is having trouble: try again next poll */
+                max_fetches = 0; /* the site is having trouble: no more this poll */
             }
         }
         if (hit != NULL) {

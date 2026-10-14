@@ -1,8 +1,10 @@
 /* Aircraft routes by callsign, from the route data adsb.lol publishes (the
  * Virtual Radar Server "standing data"): one small JSON file per callsign,
  * https://vrs-standing-data.adsb.lol/routes/SA/SAS4417.json, whose
- * "_airport_codes_iata" is e.g. "TOS-OSL". Scheduled routes change rarely,
- * so each answer - including "no route known" - is kept for a day. */
+ * "_airport_codes_iata" is e.g. "TOS-OSL". Each callsign is looked up once:
+ * every answer - a route, "no route known" (404) or one that makes no sense
+ * - is kept while the display runs (the oldest give way when the cache is
+ * full). Only a lookup that got no answer at all is tried again. */
 
 #include "esp_attr.h"
 #include <ctype.h>
@@ -20,8 +22,7 @@
 
 static const char *TAG = "adsb_routes";
 
-#define ROUTE_CACHE      96
-#define ROUTE_KEEP_US    (24 * 3600 * 1000000LL)
+#define ROUTE_CACHE      512 /* 16 KB of PSRAM */
 #define ROUTE_TIMEOUT_MS 8000
 #define ROUTE_MAX_BODY   (8 * 1024)
 
@@ -52,11 +53,10 @@ static bool is_flight(const char *cs)
            isdigit((unsigned char)cs[3]);
 }
 
-static route_entry_t *find(const char *cs, int64_t now)
+static route_entry_t *find(const char *cs)
 {
     for (int i = 0; i < ROUTE_CACHE; i++) {
-        if (s_cache[i].at_us != 0 && now - s_cache[i].at_us < ROUTE_KEEP_US &&
-            strcmp(s_cache[i].callsign, cs) == 0) {
+        if (s_cache[i].at_us != 0 && strcmp(s_cache[i].callsign, cs) == 0) {
             return &s_cache[i];
         }
     }
@@ -75,7 +75,9 @@ static route_entry_t *slot(void)
     return e;
 }
 
-/* Look `cs` up: ESP_OK with the route in `out` ("" if none is known). */
+/* Look `cs` up: ESP_OK with the route in `out` ("" if none is known),
+ * ESP_ERR_INVALID_RESPONSE (and "") for an answer that makes no sense, or
+ * the error of a lookup that got no answer. */
 static esp_err_t lookup(const char *cs, char *out, size_t out_len)
 {
     char url[96];
@@ -107,7 +109,7 @@ static esp_err_t lookup(const char *cs, char *out, size_t out_len)
         return ESP_OK; /* no route known for this callsign */
     }
     if (status != 200 || s_body.buf == NULL) {
-        return ESP_FAIL;
+        return ESP_ERR_INVALID_RESPONSE;
     }
     json_use_psram();
     cJSON *root = cJSON_Parse(s_body.buf);
@@ -129,21 +131,22 @@ esp_err_t adsb_routes_fill(adsb_result_t *res, int rows, int max_fetches)
         if (!is_flight(a->callsign)) {
             continue;
         }
-        const route_entry_t *hit = find(a->callsign, now);
+        const route_entry_t *hit = find(a->callsign);
         if (hit == NULL && max_fetches > 0) {
             max_fetches--;
             char route[sizeof(a->route)];
             esp_err_t err = lookup(a->callsign, route, sizeof(route));
-            if (err == ESP_OK) {
+            if (err == ESP_OK || err == ESP_ERR_INVALID_RESPONSE) { /* an answer: not asked again */
                 route_entry_t *e = slot();
                 snprintf(e->callsign, sizeof(e->callsign), "%s", a->callsign);
                 snprintf(e->route, sizeof(e->route), "%s", route);
                 e->at_us = now;
                 hit = e;
                 ESP_LOGD(TAG, "%s: %s", a->callsign, route[0] ? route : "no route");
-            } else {
+            }
+            if (err != ESP_OK) {
                 result = err;
-                max_fetches = 0; /* the site is having trouble: try again next poll */
+                max_fetches = 0; /* the site is having trouble: no more this poll */
             }
         }
         if (hit != NULL) {
