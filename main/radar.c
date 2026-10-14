@@ -471,6 +471,50 @@ static radar_col_t s_ac_col[AC_COLS];
 /* The route column shows only the destination ("Til": "BGO") when the whole
  * route ("OSL-BGO") doesn't fit. */
 static bool s_route_short;
+
+/* What the route column shows for a police, rescue or ambulance aircraft,
+ * in place of its route or type, shortened in the narrow destination-only
+ * column; NULL for others. */
+static const char *radar_role_text(adsb_role_t role, bool narrow)
+{
+    switch (role) {
+    case ADSB_ROLE_POLICE:
+        return narrow ? "Pol." : "Politi";
+    case ADSB_ROLE_RESCUE:
+        return narrow ? "Redn." : "Redning";
+    case ADSB_ROLE_AMBULANCE:
+        return narrow ? "Amb." : "Ambulanse";
+    default:
+        return NULL;
+    }
+}
+
+/* The route column's header: "Type" when it shows only aircraft types and
+ * roles (no route known for any row - helicopters, private and military
+ * flights),
+ * "Rute/type" when it shows both (if that fits), else "Rute" ("Til" when it's narrow and
+ * shows destinations only). */
+static const char *radar_type_header(void)
+{
+    const adsb_result_t *res = (s_radar_valid && s_radar_data != NULL) ? s_radar_data : NULL;
+    bool route = false, type = false;
+    for (int i = 0; res != NULL && i < res->count && i < RADAR_LIST_ROWS; i++) {
+        const bool role = res->ac[i].role != ADSB_ROLE_NONE;
+        route |= !role && res->ac[i].route[0] != '\0';
+        type |= role || (res->ac[i].route[0] == '\0' && res->ac[i].type[0] != '\0');
+    }
+    if (s_route_short) {
+        return "Til";
+    }
+    if (!type) {
+        return "Rute";
+    }
+    if (!route) {
+        return "Type";
+    }
+    return draw_text_w("Rute/type") <= s_ac_col[AC_TYPE].w ? "Rute/type" : "Rute";
+}
+
 static int s_col_gap = RADAR_COL_GAP;
 static radar_col_t s_sh_col[SH_COLS];
 
@@ -510,7 +554,7 @@ static void radar_layout_tables(void)
 {
     int ac[AC_COLS] = {
         /* "WWW": the widest any three-letter airport code can be. */
-        [AC_TYPE] = radar_max_w((const char *[]){ "Rute", "B77W", "WWW-WWW" }, 3),
+        [AC_TYPE] = radar_max_w((const char *[]){ "Rute", "B77W", "WWW-WWW", "Politi", "Redning", "Ambulanse" }, 6),
         [AC_ALT] = radar_max_w((const char *[]){ "H\xC3\xB8yde", "00.0 km", "88.8 km", "000 m", "888 m" }, 5),
         [AC_GS] = radar_max_w((const char *[]){ "kt", "000", "888" }, 3),
         [AC_DIST] = radar_max_w((const char *[]){ "km", "000", "888" }, 3),
@@ -524,7 +568,7 @@ static void radar_layout_tables(void)
         const int gs_w = ac[AC_GS], dist_w = ac[AC_DIST];
         s_route_short = true;
         s_col_gap = RADAR_COL_GAP - 2;
-        ac[AC_TYPE] = radar_max_w((const char *[]){ "Til", "WWW" }, 2);
+        ac[AC_TYPE] = radar_max_w((const char *[]){ "Til", "WWW", "Pol.", "Redn.", "Amb." }, 5);
         if (radar_layout_cols(s_ac_col, ac, AC_COLS) < call_w) {
             ac[AC_GS] = 0;
         }
@@ -970,7 +1014,7 @@ static void radar_draw_cb(lv_event_t *e)
     /* Table header + divider. */
     draw_line(layer, RADAR_LIST_X - 10, 48, RADAR_LIST_X - 10, 470, 1, c_ring);
     radar_cell(layer, &s_ac_col[AC_CALL], "Fly", 50, LV_TEXT_ALIGN_LEFT, c_dim);
-    radar_cell(layer, &s_ac_col[AC_TYPE], s_route_short ? "Til" : "Rute", 50, LV_TEXT_ALIGN_LEFT, c_dim);
+    radar_cell(layer, &s_ac_col[AC_TYPE], radar_type_header(), 50, LV_TEXT_ALIGN_LEFT, c_dim);
     radar_cell(layer, &s_ac_col[AC_ALT], "H\xC3\xB8yde", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
     radar_cell(layer, &s_ac_col[AC_GS], "kt", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
     radar_cell(layer, &s_ac_col[AC_DIST], "km", 50, LV_TEXT_ALIGN_RIGHT, c_dim);
@@ -981,9 +1025,11 @@ static void radar_draw_cb(lv_event_t *e)
     int n_tags = 0;
     const float age_s = (float)(lv_tick_get() - s_radar_tick) / 1000.0f;
     const float deg = (float)M_PI / 180.0f;
+    lv_point_t at[ADSB_MAX_AIRCRAFT]; /* where each is drawn; x < 0: out of range */
 
     for (int i = 0; res != NULL && i < res->count; i++) {
         const adsb_aircraft_t *a = &res->ac[i];
+        at[i].x = -1;
 
         /* Where it is now: its reported position moved along its track for the
          * time since the report (fetch age + the report's own age). */
@@ -1002,6 +1048,7 @@ static void radar_draw_cb(lv_event_t *e)
         }
         int px = RADAR_CX + (int)lroundf(sx);
         int py = RADAR_CY - (int)lroundf(sy);
+        at[i] = (lv_point_t){ px, py };
 
         /* Heading triangle plus a 60-second speed vector ahead of it. */
         float fx = sinf(tr), fy = -cosf(tr); /* unit vector along the track, screen coords */
@@ -1031,10 +1078,18 @@ static void radar_draw_cb(lv_event_t *e)
                        1, c_vec);
         }
         draw_triangle(layer, tri, c_plane);
+    }
 
-        /* Callsign tag for the nearest few, on the side facing the centre;
-         * skipped if it would land on a tag already placed. */
-        if (i < RADAR_TAGS) {
+    /* Callsign tags, on the side facing the centre: police, rescue and
+     * ambulance aircraft first, then the nearest few; each skipped if it
+     * would land on a tag already placed. */
+    for (int pass = 0; res != NULL && pass < 2; pass++) {
+        for (int i = 0; i < res->count && n_tags < RADAR_TAGS; i++) {
+            const adsb_aircraft_t *a = &res->ac[i];
+            if (at[i].x < 0 || (pass == 0) != (a->role != ADSB_ROLE_NONE) || (pass == 1 && i >= RADAR_TAGS)) {
+                continue;
+            }
+            const int px = at[i].x, py = at[i].y;
             lv_point_t sz;
             lv_text_get_size(&sz, a->callsign, g_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             lv_area_t tag = { (px < RADAR_CX) ? px + 12 : px - 12 - sz.x, py - lh / 2, 0, py + lh / 2 };
@@ -1075,9 +1130,13 @@ static void radar_draw_cb(lv_event_t *e)
         snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
         snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
         radar_cell(layer, &s_ac_col[AC_CALL], a->callsign, y, LV_TEXT_ALIGN_LEFT, c_txt);
-        /* The route when it's known, else the aircraft type (not in the
-         * narrow destination-only column). */
-        if (a->route[0] != '\0') {
+        /* The role of a police, rescue or ambulance aircraft, else the
+         * route when it's known, else the aircraft type (not in the narrow
+         * destination-only column). */
+        const char *role = radar_role_text(a->role, s_route_short);
+        if (role != NULL) {
+            radar_cell(layer, &s_ac_col[AC_TYPE], role, y, LV_TEXT_ALIGN_LEFT, c_txt);
+        } else if (a->route[0] != '\0') {
             const char *dest = strrchr(a->route, '-');
             radar_cell(layer, &s_ac_col[AC_TYPE], (s_route_short && dest) ? dest + 1 : a->route, y,
                        LV_TEXT_ALIGN_LEFT, c_txt);
@@ -1343,6 +1402,15 @@ static void aircraft_poll(int loc, adsb_result_t *scratch, int for_view)
             } else {
                 diag_fail(DIAG_ROUTES, rerr);
             }
+        }
+        /* Police, rescue and ambulance aircraft, for the table and to tag
+         * them first on the plot; register lookups are a large page each,
+         * so two per poll. */
+        esp_err_t oerr = adsb_owners_fill(scratch, 2);
+        if (oerr == ESP_OK) {
+            diag_ok(DIAG_OWNERS);
+        } else {
+            diag_fail(DIAG_OWNERS, oerr);
         }
     } else {
         diag_fail(DIAG_AIRCRAFT, err);

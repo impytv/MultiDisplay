@@ -38,6 +38,7 @@ void adsb_client_close(void)
     }
     http_buf_free(&s_resp);
     adsb_routes_close();
+    adsb_owners_close();
 }
 
 /* --------------------------------------------------------------------------
@@ -265,6 +266,7 @@ static bool parse_response(const char *json, size_t len, adsb_result_t *out)
         snprintf(a.callsign, sizeof(a.callsign), "%s",
                  r.flight[0] ? r.flight : (r.reg[0] ? r.reg : r.hex));
         snprintf(a.type, sizeof(a.type), "%s", r.type);
+        snprintf(a.reg, sizeof(a.reg), "%s", r.reg);
         a.alt_ft = r.has_alt ? (int32_t)lroundf(r.alt) : ADSB_ALT_UNKNOWN;
         a.dist_km = r.dst * KM_PER_NM;
         a.bearing_deg = r.dir;

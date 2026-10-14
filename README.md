@@ -270,9 +270,19 @@ rings at quarter steps, a heading triangle and a 60-second speed vector per
 aircraft, callsign tags for the nearest ones) and a table of the nearest 14
 aircraft: callsign, route (e.g. "OSL-BGO", from adsb.lol's route data,
 or just the destination under **Til** at large font sizes; the type when no
-route is known), altitude (metres, or kilometres from 1000 m), ground
-speed in knots (left out at large font sizes) and distance in kilometres.
-Aircraft on the ground are left out.
+route is known, with the column then headed **Type** or **Rute/type**),
+altitude (metres, or kilometres from 1000 m), ground speed in knots (left
+out at large font sizes) and distance in kilometres. Aircraft on the ground
+are left out.
+Police, rescue and ambulance aircraft show **Politi**, **Redning** or
+**Ambulanse** (Pol., Redn., Amb. under **Til**) in place of the route, and
+get their callsign tag on the plot before the others. They are known by
+callsign where the service has its own (the Air Force's rescue helicopters
+"SAVER..", ambulances "DOC..", "BNO..", "DFL.."), and for Norwegian
+aircraft by the operator or owner in the Civil Aviation Authority's
+[aircraft register](https://www.luftfartstilsynet.no/aktorer/norges-luftfartoyregister/registrerte-luftfartoy/)
+(owned by the Police Directorate, or an air ambulance operator), looked up
+two registrations per poll and kept for a week.
 Airports within range are drawn under the aircraft - runway lines, or a dot
 where they'd be too small to see, plus the airport's IATA code (its ICAO code
 where it has no IATA one; labels that would land on another label are

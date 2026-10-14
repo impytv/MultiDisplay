@@ -614,3 +614,12 @@ cJSON-based ones.
   seasons, meteor showers and eclipses are built in for 2026-2035 by
   `scripts/build_astro.py` (Skyfield and DE440s). Run it again with later
   years before then and rebuild.
+- [ ] **77. Police, rescue and ambulance aircraft are found by name.** The
+  aircraft screen reads the owner and operator from Luftfartstilsynet's web
+  page for each Norwegian registration (no API; ~46 KB a page, scanned for
+  `operator` and `mainOwner` as it arrives), and knows the rescue and
+  ambulance services' callsign prefixes (SAVER, DOC, BNO, DFL). If the page
+  changes, the lookups fail ("Luftfartøyregisteret" in `/status`) and only
+  the callsigns work; a new operator or callsign scheme needs adding in
+  `components/adsb_owners.c`. Ambulance planes owned by leasing companies
+  with no operator registered are found only by callsign.

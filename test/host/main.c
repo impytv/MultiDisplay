@@ -17,6 +17,7 @@ void test_sun(void);
 void test_entur(void);
 void test_adsb(void);
 void test_routes(void);
+void test_owners(void);
 void test_config(void);
 void test_air(void);
 void test_yr(void);
@@ -35,7 +36,7 @@ int main(int argc, char **argv)
     struct { const char *name; void (*fn)(void); } tests[] = {
         { "version", test_version }, { "form", test_form },   { "http", test_http },
         { "sun", test_sun },         { "entur", test_entur }, { "adsb", test_adsb },
-        { "routes", test_routes },   { "config", test_config }, { "air", test_air }, { "yr", test_yr },
+        { "routes", test_routes },   { "owners", test_owners }, { "config", test_config }, { "air", test_air }, { "yr", test_yr },
         { "tide", test_tide }, { "ical", test_ical }, { "sat", test_sat }, { "aurora", test_aurora }, { "alerts", test_alerts },
         { "webauth", test_web_auth }, { "holidays", test_holidays }, { "astro", test_astro },
     };

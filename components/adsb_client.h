@@ -8,6 +8,15 @@
 /* Aircraft kept per fetch: the nearest ones win when there are more in range. */
 #define ADSB_MAX_AIRCRAFT 32
 
+/* What an aircraft is out on, when it's one of the emergency services
+ * (adsb_owners_fill). */
+typedef enum {
+    ADSB_ROLE_NONE,
+    ADSB_ROLE_POLICE,
+    ADSB_ROLE_RESCUE,    /* search and rescue */
+    ADSB_ROLE_AMBULANCE, /* air ambulance */
+} adsb_role_t;
+
 /* alt_ft value meaning "not reported". */
 #define ADSB_ALT_UNKNOWN INT32_MIN
 
@@ -21,6 +30,8 @@ typedef struct {
     float track_deg;      /* ground track, clockwise from north */
     float seen_pos_s;     /* age of the position report at fetch time */
     char route[12];       /* "OSL-BGO" from adsb_routes_fill, "" if unknown */
+    char reg[9];          /* registration, e.g. "LN-ORA"; "" if unknown */
+    adsb_role_t role;     /* police, rescue or ambulance (adsb_owners_fill) */
 } adsb_aircraft_t;
 
 typedef struct {
@@ -59,5 +70,19 @@ esp_err_t adsb_routes_fill(adsb_result_t *res, int rows, int max_fetches);
 
 /** Drop the route lookups' kept-alive connection. */
 void adsb_routes_close(void);
+
+/**
+ * Set the role of the police, rescue and ambulance aircraft in `res`: from
+ * the callsign where the service has its own (rescue helicopters "SAVER..",
+ * ambulances "DOC..", "BNO.."), else for Norwegian aircraft (LN-
+ * registrations) from the owner and operator in the Civil Aviation
+ * Authority's register. Register answers are kept for a week, and at most
+ * `max_fetches` new registrations are looked up per call. Returns ESP_OK, or
+ * the error of a lookup that failed.
+ */
+esp_err_t adsb_owners_fill(adsb_result_t *res, int max_fetches);
+
+/** Drop the register lookups' kept-alive connection. */
+void adsb_owners_close(void);
 
 #endif

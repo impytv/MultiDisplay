@@ -206,6 +206,7 @@ static const char *const SERVICE_NAMES[DIAG_SERVICE_COUNT] = {
     [DIAG_RAIN] = "Nedb\xC3\xB8rsradar",
     [DIAG_DEPARTURES] = "Avganger",
     [DIAG_ROUTES] = "Flyruter",
+    [DIAG_OWNERS] = "Luftfart\xC3\xB8yregisteret",
     [DIAG_AIR] = "Luftkvalitet",
     [DIAG_POLLEN] = "Pollen",
     [DIAG_TIDE] = "Tidevann",
