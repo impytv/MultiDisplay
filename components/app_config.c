@@ -139,6 +139,8 @@ static void sanitize_view_settings(app_config_t *c)
     c->sat_visible = c->sat_visible ? 1 : 0;
     c->mon_show = c->mon_show ? 1 : 0;
     c->mon_rotate = c->mon_rotate ? 1 : 0;
+    c->mon_moon = c->mon_moon ? 1 : 0;
+    c->mon_astro = c->mon_astro ? 1 : 0;
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         c->cal_url[i][APP_CONFIG_CAL_URL_MAX - 1] = '\0';
         if (!app_config_cal_url_valid(c->cal_url[i])) {
@@ -165,6 +167,8 @@ static void seed_defaults(app_config_t *out)
     out->ov_show = 1;
     out->nav_page = 1;
     out->swipe_nav = 1;
+    out->mon_moon = 1;
+    out->mon_astro = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
     out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
@@ -310,6 +314,8 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "satvis", &out->sat_visible);
     nvs_get_u8(h, "monshow", &out->mon_show); /* no month calendar if never saved */
     nvs_get_u8(h, "monrot", &out->mon_rotate);
+    nvs_get_u8(h, "monmoon", &out->mon_moon); /* both on if never saved */
+    nvs_get_u8(h, "monastro", &out->mon_astro);
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);
@@ -341,8 +347,9 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "satellite image of Europe: %s%s; close-ups x%u; %s", out->sat_show ? "shown" : "not shown",
              out->sat_rotate ? ", in the rotation" : "", out->sat_zoom,
              out->sat_visible ? "visible light by day" : "infrared always");
-    ESP_LOGI(TAG, "month calendar: %s%s", out->mon_show ? "shown" : "not shown",
-             out->mon_rotate ? ", in the rotation" : "");
+    ESP_LOGI(TAG, "month calendar: %s%s%s%s", out->mon_show ? "shown" : "not shown",
+             out->mon_rotate ? ", in the rotation" : "", out->mon_moon ? ", moon phases" : "",
+             out->mon_astro ? ", astronomy" : "");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -426,6 +433,8 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "satvis", cfg->sat_visible ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monshow", cfg->mon_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monrot", cfg->mon_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "monmoon", cfg->mon_moon ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "monastro", cfg->mon_astro ? 1 : 0);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);

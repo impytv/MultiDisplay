@@ -82,6 +82,8 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON *mon = cJSON_AddObjectToObject(root, "month");
     cJSON_AddBoolToObject(mon, "show", c->mon_show);
     cJSON_AddBoolToObject(mon, "rotate", c->mon_rotate);
+    cJSON_AddBoolToObject(mon, "moon_phases", c->mon_moon);
+    cJSON_AddBoolToObject(mon, "astronomy", c->mon_astro);
 
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
@@ -245,6 +247,8 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     const cJSON *mon = cJSON_GetObjectItemCaseSensitive(root, "month");
     get_bool(mon, "show", &c->mon_show);
     get_bool(mon, "rotate", &c->mon_rotate);
+    get_bool(mon, "moon_phases", &c->mon_moon);
+    get_bool(mon, "astronomy", &c->mon_astro);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

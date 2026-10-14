@@ -36,6 +36,7 @@ idf_component_register(
         "../components/tide_client.c"
         "../components/ical.c"
         "../components/holidays.c"
+        "../components/astro.c"
         "../components/cal_client.c"
         "../components/sat_util.c"
         "../components/sat_client.c"

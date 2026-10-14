@@ -26,6 +26,7 @@
 #include "nvs.h"
 #include "ota_writer.h"
 #include "form_util.h"
+#include "astro.h"
 #include "holidays.h"
 #include "web_auth.h"
 #include "cJSON.h"
@@ -334,8 +335,17 @@ static char *build_page(const app_config_t *cfg)
                   "i automatisk bytte</label></div>"
                   "<small>Fem uker fra og med denne uken, med ukenummer, som en egen skjerm etter "
                   "kalenderen. S&oslash;ndager og helligdager har r&oslash;d dato. Helligdagene er "
-                  "lagt inn til og med %d.</small></details>",
-                  cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year());
+                  "lagt inn til og med %d.</small>"
+                  "<div class=chk><label><input type=checkbox name=monmoon value=1%s>M&aring;nefaser</label>"
+                  "<label><input type=checkbox name=monastro value=1%s>Andre hendelser p&aring; himmelen"
+                  "</label></div>"
+                  "<small>Nym&aring;ne, halvm&aring;ne og fullm&aring;ne som symboler ved datoen. Andre "
+                  "hendelser er jevnd&oslash;gn, solverv, superm&aring;ner, toppen av de store "
+                  "stjerneskuddsvermene og sol- og m&aring;neform&oslash;rkelser som kan ses fra det "
+                  "f&oslash;rste stedet (for solform&oslash;rkelser hvor mye av sola som dekkes). "
+                  "Lagt inn til og med %d.</small></details>",
+                  cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year(),
+                  cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year());
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
@@ -1151,6 +1161,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->sat_visible = form_field(body, "satvis", val, sizeof(val)) ? 1 : 0;
         cfg->mon_show = form_field(body, "monshow", val, sizeof(val)) ? 1 : 0;
         cfg->mon_rotate = form_field(body, "monrot", val, sizeof(val)) ? 1 : 0;
+        cfg->mon_moon = form_field(body, "monmoon", val, sizeof(val)) ? 1 : 0;
+        cfg->mon_astro = form_field(body, "monastro", val, sizeof(val)) ? 1 : 0;
         if (form_field(body, "satzoom", val, sizeof(val)) && (val[0] == '2' || val[0] == '3') && val[1] == '\0') {
             cfg->sat_zoom = (uint8_t)(val[0] - '0');
         }

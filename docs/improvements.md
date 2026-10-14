@@ -610,3 +610,7 @@ cJSON-based ones.
   site has later years (it reads on until a year has none) and rebuild. The
   setup page says which year they go to. Computing them (Easter and the
   days that follow it) would remove the limit.
+- [ ] **76. The month calendar's astronomy ends with 2035.** The phases,
+  seasons, meteor showers and eclipses are built in for 2026-2035 by
+  `scripts/build_astro.py` (Skyfield and DE440s). Run it again with later
+  years before then and rebuild.

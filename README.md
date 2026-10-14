@@ -435,6 +435,28 @@ The buttons by the clock step four weeks back or ahead (the last week shown
 becomes the first) and **I dag** goes back to this week, as does leaving the
 screen or five minutes without a touch.
 
+Two options under it, both on unless unticked:
+
+- **Månefaser** draws the moon's phase beside the date on the day of each new
+  moon, first quarter, full moon and last quarter (as seen from the north:
+  waxing on the right).
+- **Andre hendelser på himmelen** names, under the date and any holiday:
+  equinoxes and solstices, supermoons (full moons closer than 360 000 km),
+  the peaks of the main meteor showers (Quadrantids, Lyrids, Perseids,
+  Orionids, Leonids, Geminids; on the evening the night of the peak
+  begins), and the eclipses that can be seen from the first location - a
+  lunar eclipse with an umbral phase when the moon is up for it, and a solar
+  eclipse with how much of the sun is covered there ("83 % sol-formørkelse").
+  When a day has more than fits, eclipses come first.
+
+The events are built in for 2026-2035 by `scripts/build_astro.py`, which
+computes them with [Skyfield](https://rhodesmill.org/skyfield/) and JPL's
+DE440s ephemeris (download `de440s.bsp` and pass its path). A solar eclipse
+is stored as the sun's and moon's positions every 10 minutes; the display
+shifts the moon for parallax at its own location and works out how much of
+the sun's disc it covers while the sun is up (for 12 August 2026 in Oslo,
+83 %, as Skyfield gets).
+
 The holidays are built in, read from [norskkalender.no](https://www.norskkalender.no/)
 by `python3 scripts/build_holidays.py` into `components/holidays_data.h`.
 The site has them up to 2029; after that only Sundays are red until the

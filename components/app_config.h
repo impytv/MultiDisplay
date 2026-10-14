@@ -222,6 +222,11 @@ typedef struct {
      * shown, and in the rotation. */
     uint8_t mon_show;
     uint8_t mon_rotate;
+    /* On it: the moon's phases, and other astronomical events (equinoxes,
+     * solstices, eclipses, supermoons, meteor showers); both on unless
+     * unticked. */
+    uint8_t mon_moon;
+    uint8_t mon_astro;
 } app_config_t;
 
 /**

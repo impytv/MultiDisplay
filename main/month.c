@@ -4,7 +4,11 @@
  * month's short name on the first of a month (and the first day shown),
  * and a holiday's name. Sundays and holidays have their date in red
  * (components/holidays.c, from norskkalender.no); today is outlined, and
- * days already past are faded. Months alternate in shade.
+ * days already past are faded. Months alternate in shade. If ticked on
+ * the setup page, the moon's phases are drawn beside the date, and other
+ * events in the sky (components/astro.c: equinoxes, solstices, supermoons,
+ * meteor showers, and eclipses seen from the first location) named under
+ * it after any holiday.
  *
  * Buttons by the clock step four weeks back or ahead (the last week shown
  * becomes the first), and "I dag" goes back to this week; so does leaving
@@ -15,10 +19,14 @@
  * changes (checked with the clock, every second). */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
+#include "esp_attr.h"
+
 #include "app.h"
+#include "astro.h"
 #include "draw.h"
 #include "holidays.h"
 #include "month.h"
@@ -29,13 +37,15 @@
 #define MON_GAP     4
 #define MON_WEEKS   5
 #define MON_DATE_PX 30 /* the date in each day */
-#define MON_NOTE_PX 15 /* the month and holiday names */
+#define MON_NOTE_PX 14 /* the month and holiday names, the sky's events */
 #define MON_POLL_MS (10 * 60 * 1000)
 #define MON_STEP    4                /* weeks a button moves */
 #define MON_MAX_OFF (2 * 52)         /* how far either way, in weeks */
 #define MON_BACK_MS (5 * 60 * 1000)  /* back to this week after this long untouched */
 #define MON_BTN_H   44
 #define MON_BTN_W   60
+#define MON_MOON_R  8  /* the moon's phase beside the date */
+#define MON_ASTRO   4  /* events a day can have */
 
 static lv_obj_t *s_root, *s_canvas, *s_title;
 static big_clock_t s_clock;
@@ -46,19 +56,27 @@ static uint32_t s_touch_ms;  /* the last press on a button */
 enum { BTN_TODAY, BTN_BACK, BTN_AHEAD, BTN_COUNT };
 static lv_obj_t *s_btn[BTN_COUNT];
 
+/* The sky's events for each day shown, worked out when the days change
+ * (3.5 KB, in PSRAM). */
+static EXT_RAM_BSS_ATTR struct {
+    astro_item_t it[MON_ASTRO];
+    int n;
+} s_astro[MON_WEEKS * 7];
+
 static const char *const MONTH[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli",
                                      "august", "september", "oktober", "november", "desember" };
 static const char *const MONTH_SHORT[] = { "jan.", "feb.", "mars", "apr.", "mai", "juni", "juli",
                                            "aug.", "sep.", "okt.", "nov.", "des." };
 static const char *const WDAY[] = { "Man", "Tir", "Ons", "Tor", "Fre", "L\xC3\xB8r", "S\xC3\xB8n" };
 
-/* Holiday names too long for a day at MON_NOTE_PX, as shown: shortened, or
- * with a hyphen where they may break. */
+/* Holiday and meteor shower names too long for a day at MON_NOTE_PX, as
+ * shown: shortened, or with a hyphen where they may break. */
 static const char *const SHORTER[][2] = {
     { "Kristi Himmelfartsdag", "Kristi himmelfart" },
     { "Grunnlovsdag", "Grunnlovs-dag" },
     { "Skj\xC3\xA6rtorsdag", "Skj\xC3\xA6r-torsdag" },
     { "Palmes\xC3\xB8ndag", "Palme-s\xC3\xB8ndag" },
+    { "Kvadrantidene", "Kvadrant-idene" },
 };
 
 static const char *shown_name(const char *name)
@@ -158,6 +176,80 @@ static struct tm add_days(const struct tm *t0, int days)
     return t;
 }
 
+/* Which events come first under a date when there is room for few. */
+static int rank(astro_kind_t k)
+{
+    return k == ASTRO_SOLAR_ECLIPSE || k == ASTRO_LUNAR_ECLIPSE ? 0
+         : k >= ASTRO_MARCH_EQUINOX && k <= ASTRO_DECEMBER_SOLSTICE ? 1
+         : k == ASTRO_SUPERMOON ? 2
+         : k == ASTRO_METEORS ? 3 : 4;
+}
+
+/* The text for an event under the date, or NULL for none (the phases are
+ * drawn, not named). Hyphens where the names may break. */
+static const char *astro_text(const astro_item_t *it, char *buf, size_t n)
+{
+    switch (it->kind) {
+    case ASTRO_MARCH_EQUINOX:
+        return "V\xC3\xA5r-jevnd\xC3\xB8gn";
+    case ASTRO_JUNE_SOLSTICE:
+        return "Sommer-solverv";
+    case ASTRO_SEPTEMBER_EQUINOX:
+        return "H\xC3\xB8st-jevnd\xC3\xB8gn";
+    case ASTRO_DECEMBER_SOLSTICE:
+        return "Vinter-solverv";
+    case ASTRO_SUPERMOON:
+        return "Superm\xC3\xA5ne";
+    case ASTRO_METEORS:
+        return shown_name(astro_shower_name(it->value));
+    case ASTRO_LUNAR_ECLIPSE:
+        return it->value == 2 ? "Total m\xC3\xA5ne-form\xC3\xB8rkelse" : "M\xC3\xA5ne-form\xC3\xB8rkelse";
+    case ASTRO_SOLAR_ECLIPSE:
+        if (it->value >= 100) {
+            return "Total sol-form\xC3\xB8rkelse";
+        }
+        snprintf(buf, n, it->annular ? "Ringformet sol-form\xC3\xB8rkelse" : "%d %% sol-form\xC3\xB8rkelse",
+                 it->value);
+        return buf;
+    default:
+        return NULL;
+    }
+}
+
+/* The moon's phase as a disc r around cx, cy: dark, with the lit part
+ * (as seen from the north: waxing on the right) in light. */
+static void moon(lv_layer_t *layer, int cx, int cy, astro_kind_t phase, lv_color_t dark_c, lv_color_t lit)
+{
+    if (phase == ASTRO_FULL_MOON) {
+        draw_dot(layer, cx, cy, MON_MOON_R, lit);
+        return;
+    }
+    draw_dot(layer, cx, cy, MON_MOON_R, dark_c);
+    if (phase == ASTRO_NEW_MOON) {
+        return;
+    }
+    /* Half of it: the lit disc, clipped to its side. */
+    const lv_area_t clip = layer->_clip_area;
+    const lv_area_t half = phase == ASTRO_FIRST_QUARTER
+                         ? (lv_area_t){ cx, cy - MON_MOON_R - 1, cx + MON_MOON_R + 1, cy + MON_MOON_R + 1 }
+                         : (lv_area_t){ cx - MON_MOON_R - 1, cy - MON_MOON_R - 1, cx - 1, cy + MON_MOON_R + 1 };
+    const lv_area_t cut = { LV_MAX(clip.x1, half.x1), LV_MAX(clip.y1, half.y1), LV_MIN(clip.x2, half.x2),
+                            LV_MIN(clip.y2, half.y2) };
+    if (cut.x1 <= cut.x2 && cut.y1 <= cut.y2) {
+        layer->_clip_area = cut;
+        draw_dot(layer, cx, cy, MON_MOON_R, lit);
+        layer->_clip_area = clip;
+    }
+}
+
+/* Height of `txt` in `font` wrapped to `w`. */
+static int text_h(const lv_font_t *font, const char *txt, int w)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, txt, font, 0, 0, w, LV_TEXT_FLAG_NONE);
+    return sz.y;
+}
+
 static void month_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -176,6 +268,9 @@ static void month_draw_cb(lv_event_t *e)
                                    lv_color_hex(dark() ? 0x2A3846 : 0xDDE3EA) };
     const lv_color_t c_today = lv_color_hex(dark() ? 0x2A3A4A : 0xDCE6F0);
     const lv_color_t c_ring = lv_palette_main(LV_PALETTE_BLUE);
+    const lv_color_t c_sky = lv_color_hex(dark() ? 0x7FB3E6 : 0x1F5F9E);
+    const lv_color_t c_moon_dark = lv_color_hex(dark() ? 0x55606B : 0x8A96A3);
+    const lv_color_t c_moon_lit = lv_color_hex(dark() ? 0xF4D35E : 0xE0A800);
 
     /* The weekdays over the columns, Sunday in red. */
     text(layer, g_font_body, "Uke", MON_X, MON_TOP, g.wk_w, lh, LV_TEXT_ALIGN_CENTER, c_dim);
@@ -229,11 +324,38 @@ static void month_draw_cb(lv_event_t *e)
                 text(layer, s_note_font, MONTH_SHORT[t.tm_mon], x + pad, y + 2 + date_lh - note_lh - 4,
                      g.day_w - 2 * pad, note_lh, LV_TEXT_ALIGN_RIGHT, c_note);
             }
+            /* Under the date (its line has room below the digits): the
+             * holiday, then the sky's events, as far as there is room. */
+            const int nx = x + 4, nw = g.day_w - 8, bottom = y + cell_h - 1;
+            int ny = y + date_lh - 4;
             if (holiday != NULL) {
-                /* Close under the date (its line has room below the digits), for two lines. */
-                const int ny = y + date_lh - 4;
-                text(layer, s_note_font, shown_name(holiday), x + pad - 2, ny, g.day_w - 2 * pad + 4, y + cell_h - 1 - ny,
-                     LV_TEXT_ALIGN_LEFT, c_hol);
+                const char *name = shown_name(holiday);
+                text(layer, s_note_font, name, nx, ny, nw, bottom - ny, LV_TEXT_ALIGN_LEFT, c_hol);
+                ny += text_h(s_note_font, name, nw);
+            }
+            const int idx = w * 7 + d;
+            lv_color_t c_ev = past ? lv_color_mix(c_sky, card, LV_OPA_50) : c_sky;
+            for (int k = 0; k < s_astro[idx].n; k++) {
+                const astro_item_t *it = &s_astro[idx].it[k];
+                if (it->kind <= ASTRO_LAST_QUARTER) {
+                    if (g_cfg->mon_moon) {
+                        lv_point_t sz;
+                        lv_text_get_size(&sz, buf, s_date_font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+                        moon(layer, x + pad + sz.x + 6 + MON_MOON_R, y + 2 + date_lh / 2, it->kind,
+                             past ? lv_color_mix(c_moon_dark, card, LV_OPA_50) : c_moon_dark,
+                             past ? lv_color_mix(c_moon_lit, card, LV_OPA_50) : c_moon_lit);
+                    }
+                    continue;
+                }
+                if (!g_cfg->mon_astro || ny >= bottom - note_lh / 2) {
+                    continue;
+                }
+                char tb[48];
+                const char *t = astro_text(it, tb, sizeof(tb));
+                if (t != NULL) {
+                    text(layer, s_note_font, t, nx, ny, nw, bottom - ny, LV_TEXT_ALIGN_LEFT, c_ev);
+                    ny += text_h(s_note_font, t, nw);
+                }
             }
         }
     }
@@ -273,6 +395,28 @@ static void month_show(void)
         }
         lv_label_set_text(s_title, title);
         lv_label_set_text(g_status_label, "");
+
+        /* The sky, seen from the first location. */
+        const double lat = atof(g_cfg->locations[0].lat), lon = atof(g_cfg->locations[0].lon);
+        for (int i = 0; i < MON_WEEKS * 7; i++) {
+            s_astro[i].n = 0;
+            if (!g_cfg->mon_moon && !g_cfg->mon_astro) {
+                continue;
+            }
+            struct tm d0 = add_days(&a, i), d1 = add_days(&a, i + 1);
+            d0.tm_hour = d1.tm_hour = 0;
+            d0.tm_isdst = d1.tm_isdst = -1;
+            astro_item_t *it = s_astro[i].it;
+            const int n = s_astro[i].n = astro_day(mktime(&d0), mktime(&d1), lat, lon, it, MON_ASTRO);
+            for (int j = 1; j < n; j++) { /* by rank, keeping time order within one */
+                const astro_item_t x = it[j];
+                int k = j;
+                for (; k > 0 && rank(it[k - 1].kind) > rank(x.kind); k--) {
+                    it[k] = it[k - 1];
+                }
+                it[k] = x;
+            }
+        }
     }
     for (int i = 0; i < BTN_COUNT; i++) {
         const bool on = s_shown_day != 0 && (i != BTN_TODAY || s_offset != 0);

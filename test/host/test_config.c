@@ -53,6 +53,8 @@ void test_config(void)
     a.sat_zoom = 2;
     a.sat_visible = 1;
     a.mon_show = 1;
+    a.mon_moon = 1;
+    a.mon_astro = 0;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
     CHECK(app_config_save(&a) == ESP_OK);
@@ -97,7 +99,7 @@ void test_config(void)
     CHECK(c.sat_show && !c.sat_rotate);
     CHECK_INT(c.sat_zoom, 2);
     CHECK_INT(c.sat_visible, 1);
-    CHECK(c.mon_show && !c.mon_rotate);
+    CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro);
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
     CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));
