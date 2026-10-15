@@ -1790,9 +1790,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
      * top, in the wind bar's colour. */
     for (int i = 0; i < WIND_MARKER_POOL; i++) {
         s_wind_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_wind_markers[i],
-                                    dark ? lv_palette_lighten(LV_PALETTE_TEAL, 2)
-                                         : lv_palette_darken(LV_PALETTE_TEAL, 2), 0);
+        lv_obj_set_style_text_color(s_wind_markers[i], dark ? lv_color_white() : lv_color_black(), 0);
         lv_label_set_text(s_wind_markers[i], "");
         lv_obj_add_flag(s_wind_markers[i], LV_OBJ_FLAG_HIDDEN);
     }
