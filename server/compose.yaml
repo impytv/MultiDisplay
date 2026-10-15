@@ -25,6 +25,10 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       # Calendar feeds straight from the repo, so an edit is live at once.
       - ./kalender:/usr/share/nginx/html/kalender:ro
+      # The assembly and usage guides, likewise; each needs an empty folder of
+      # its name in the site folder to mount onto.
+      - ./montering:/usr/share/nginx/html/montering:ro
+      - ./bruk:/usr/share/nginx/html/bruk:ro
     read_only: true
     tmpfs:
       - /tmp

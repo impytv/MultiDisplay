@@ -138,6 +138,7 @@ th{color:var(--muted);font-weight:600}.sha{font-family:monospace;color:var(--mut
 <p>Bruk en av disse som oppdateringsadresse p&aring; skjermens oppsettside:<br>
 <code>manifest.json</code> for stabile versjoner, <code>manifest-test.json</code> for testversjoner.
 Hver fil nedenfor kan ogs&aring; installeres for h&aring;nd med opplastingen p&aring; oppsettsiden.</p>
+<p><a href="montering/">Monteringsveiledning</a> for skjermen med bakplate og stativ, og <a href="bruk/">bruksanvisning</a>.</p>
 <table><tr><th>Versjon</th><th>Utgitt</th><th>Endringer</th><th>SHA-256</th></tr>
 %s
 </table>

@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="no">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Montering av MultiDisplay</title>
+<style>
+:root{--bg:#f6f6f4;--fg:#222;--muted:#666;--line:#ddd;--card:#fff;--accent:#2d5a86;--warn:#a05a00}
+@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#eee;--muted:#999;--line:#333;--card:#26262a;--accent:#7fb0e0;--warn:#e0a050}}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;line-height:1.5;max-width:52rem;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
+h1{font-size:1.6rem;margin-bottom:.2rem}h2{font-size:1.2rem;margin:0 0 .5rem}
+a{color:var(--accent)}.lead{color:var(--muted);margin-top:0}
+nav ol{padding-left:1.3rem;columns:2;column-gap:2rem}
+.step{background:var(--card);border:1px solid var(--line);border-radius:.6rem;padding:1.2rem;margin:1.5rem 0}
+.num{display:inline-flex;align-items:center;justify-content:center;width:1.8rem;height:1.8rem;border-radius:50%;
+ background:var(--accent);color:var(--bg);font-weight:700;margin-right:.5rem;font-size:.95rem}
+.pics{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.75rem;margin-top:1rem}
+figure{margin:0}
+figure img{width:100%;height:18rem;object-fit:cover;border-radius:.4rem;display:block;cursor:zoom-in;background:var(--line)}
+figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
+.note{border-left:3px solid var(--warn);padding:.2rem .8rem;margin:.8rem 0}
+ul,ol{padding-left:1.3rem}li{margin:.2rem 0}
+dialog{border:0;padding:0;background:transparent;max-width:96vw;max-height:96vh}
+dialog::backdrop{background:rgba(0,0,0,.85)}
+dialog img{max-width:96vw;max-height:92vh;display:block;border-radius:.3rem}
+dialog p{color:#eee;margin:.4rem 0 0;font-size:.9rem;text-align:center}
+@media (max-width:40rem){nav ol{columns:1}figure img{height:14rem}}
+</style>
+
+<p><a href="../">&larr; MultiDisplay programvare</a> &middot; <a href="../bruk/">Bruksanvisning</a></p>
+<h1>Montering av MultiDisplay</h1>
+<p class="lead">Slik setter du sammen skjermen (Waveshare ESP32-S3-Touch-LCD-7) med bakplate og stativ.
+Det tar rundt et kvarter. Trykk på et bilde for å se det større.</p>
+
+<nav><ol>
+<li><a href="#innhold">Pakk ut</a></li>
+<li><a href="#avstand">Skru inn avstandsstykkene</a></li>
+<li><a href="#bakplate">Legg på bakplaten</a></li>
+<li><a href="#ben">Sett på bena</a></li>
+<li><a href="#skru">Skru fast bena</a></li>
+<li><a href="#reis">Reis skjermen opp</a></li>
+<li><a href="#strom">Koble til strøm</a></li>
+<li><a href="#oppsett">Første oppstart</a></li>
+</ol></nav>
+
+<section class="step" id="innhold">
+<h2><span class="num">1</span>Pakk ut</h2>
+<p>Legg skjermen med glasset ned på noe mykt, for eksempel skumplaten fra esken. I esken ligger:</p>
+<ul>
+<li>Skjermen, med kortet <b>ESP32-S3-Touch-LCD-7</b> skrudd fast på baksiden</li>
+<li>En svart bakplate i akryl med to utsparinger</li>
+<li>To støtteben med en trekant i enden</li>
+<li>En pose med fire <b>messingavstandsstykker</b> og noen små sølvskruer</li>
+<li>En pose med fire <b>lange svarte skruer</b></li>
+<li>Noen kabler med pluggtilkoblinger</li>
+</ul>
+<p>Du trenger i tillegg et lite stjerneskrujern og en USB-C-kabel med lader (5 V).
+Kablene og de små sølvskruene blir til overs.</p>
+<p>La beskyttelsesfilmen på glasset sitte til du er ferdig.</p>
+<div class="pics">
+<figure><img src="bilder/01-innhold.jpg" alt="Skjermen med kortet på baksiden, bakplaten, to støtteben og to poser med skruer" loading="lazy"><figcaption>Alt som ligger i esken.</figcaption></figure>
+<figure><img src="bilder/02-kabler-og-skruer.jpg" alt="Kabler og en pose med messingavstandsstykker og små sølvskruer" loading="lazy"><figcaption>Kablene og posen med avstandsstykker. Kablene trengs ikke.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="avstand">
+<h2><span class="num">2</span>Skru inn avstandsstykkene</h2>
+<p>Ta ut de fire messingavstandsstykkene. Skru dem inn med fingrene i de fire grå festene i hjørnene av metallplaten bak på skjermen.
+Det holder å skru dem til de stopper. Ikke bruk tang, for gjengene er små.</p>
+<div class="pics">
+<figure><img src="bilder/03-avstandsstykker.jpg" alt="Fire messingavstandsstykker på bordet" loading="lazy"><figcaption>De fire avstandsstykkene.</figcaption></figure>
+<figure><img src="bilder/04-forste-avstandsstykke.jpg" alt="Et avstandsstykke skrudd inn i festet øverst til høyre" loading="lazy"><figcaption>Det første avstandsstykket er skrudd inn i festet i hjørnet.</figcaption></figure>
+<figure><img src="bilder/05-alle-avstandsstykker.jpg" alt="Alle fire avstandsstykkene står i hjørnene rundt kortet" loading="lazy"><figcaption>Alle fire er på plass.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="bakplate">
+<h2><span class="num">3</span>Legg på bakplaten</h2>
+<p>Snu bakplaten slik at den store utsparingen havner over de hvite kontaktene til høyre på kortet, de som er merket <i>Sensor</i>, <i>CAN</i>, <i>I2C</i>, <i>RS-485</i> og <i>Battery</i>.
+Den lille utsparingen øverst til venstre skal ligge over den hvite kontakten der.
+Legg platen ned slik at de fire hullene treffer avstandsstykkene.</p>
+<div class="pics">
+<figure><img src="bilder/06-bakplate.jpg" alt="Bakplaten holdes over skjermen før den legges ned" loading="lazy"><figcaption>Bakplaten holdes riktig vei over skjermen.</figcaption></figure>
+<figure><img src="bilder/07-bakplate-pa.jpg" alt="Bakplaten ligger på avstandsstykkene, og kontaktene synes gjennom utsparingene" loading="lazy"><figcaption>Bakplaten ligger på plass, og kontaktene synes gjennom utsparingene.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="ben">
+<h2><span class="num">4</span>Sett på bena</h2>
+<p>Legg de to støttebena oppå bakplaten, ett ved hver kortside. Trekantene skal peke bort fra kanten med knappene (<i>RESET</i> og <i>BOOT</i>).
+Hvert ben har to hull, og de skal ligge rett over hullene i bakplaten.</p>
+<div class="pics">
+<figure><img src="bilder/08-ben.jpg" alt="To støtteben ligger på bakplaten med trekantene opp, bort fra knappene" loading="lazy"><figcaption>Bena ligger på plass. Trekantene peker bort fra knappene nederst i bildet.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="skru">
+<h2><span class="num">5</span>Skru fast bena</h2>
+<p>Stikk de fire lange svarte skruene gjennom hullene i bena og bakplaten. Skru dem inn i avstandsstykkene under.
+Bytt mellom skruene og stram litt om gangen. Stram bare til de sitter, for akrylen kan sprekke hvis du strammer for hardt.</p>
+<div class="pics">
+<figure><img src="bilder/09-skruer.jpg" alt="Stjerneskrujern og fire lange svarte skruer" loading="lazy"><figcaption>De fire lange svarte skruene.</figcaption></figure>
+<figure><img src="bilder/10-ben-skrudd-fast.jpg" alt="Begge bena er skrudd fast med to skruer hver" loading="lazy"><figcaption>Begge bena er skrudd fast.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="reis">
+<h2><span class="num">6</span>Reis skjermen opp</h2>
+<p>Sett skjermen på bordet slik at den står på trekantene, og ta av beskyttelsesfilmen. Skjermen heller litt bakover.</p>
+<div class="pics">
+<figure><img src="bilder/11-star.jpg" alt="Skjermen sett fra siden, stående på de to trekantene" loading="lazy"><figcaption>Sett fra siden står skjermen på bena og heller litt bakover.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="strom">
+<h2><span class="num">7</span>Koble til strøm</h2>
+<p>På venstre side av kortet er det to USB-C-porter. Plugg kabelen inn i den som er merket <b>USB</b>, og koble den andre enden til laderen.
+Kabelen går inn i åpningen mellom bakplaten og skjermen. Skjermen starter av seg selv.</p>
+<p class="note">Begge portene gir strøm. Det er porten merket USB som brukes når ny programvare legges inn med kabel.</p>
+<div class="pics">
+<figure><img src="bilder/12-usb-c.jpg" alt="En USB-C-plugg" loading="lazy"><figcaption>En vanlig USB-C-kabel.</figcaption></figure>
+<figure><img src="bilder/13-usb-tilkoblet.jpg" alt="USB-C-kabelen er koblet til kortet under bakplaten" loading="lazy"><figcaption>Kabelen er koblet til kortet under bakplaten.</figcaption></figure>
+</div>
+</section>
+
+<section class="step" id="oppsett">
+<h2><span class="num">8</span>Første oppstart</h2>
+<p>Hvis skjermen ikke er satt opp ennå, lager den sitt eget trådløse nett:</p>
+<ol>
+<li>Koble telefonen eller PC-en til det åpne nettet <b>MultiDisplay-XXXX</b>.</li>
+<li>Oppsettsiden åpnes som regel av seg selv. Hvis den ikke gjør det, gå til <b>http://192.168.4.1/</b>.</li>
+<li>Velg ditt trådløse nett og skriv inn passordet. Fyll inn ett eller flere steder med navn og koordinater, og trykk <b>Lagre og start på nytt</b>.</li>
+</ol>
+<p>Etterpå finner du oppsettsiden på <b>http://multidisplay.local/oppsett</b>.
+Hold inne <i>BOOT</i>-knappen mens du kobler til strømmen hvis du vil komme tilbake til oppsettnettet.</p>
+<p>Les videre i <a href="../bruk/">bruksanvisningen</a> om hvordan du bruker skjermen og hva hvert skjermbilde viser.</p>
+</section>
+
+<dialog id="zoom"><img alt=""><p></p></dialog>
+<script>
+const d = document.getElementById("zoom"), di = d.querySelector("img"), dp = d.querySelector("p");
+document.querySelectorAll("figure img").forEach(img => img.addEventListener("click", () => {
+  di.src = img.src; di.alt = img.alt;
+  dp.textContent = img.closest("figure").querySelector("figcaption").textContent;
+  d.showModal();
+}));
+d.addEventListener("click", () => d.close());
+</script>
+</html>

@@ -262,3 +262,12 @@ in didn't, so the menu's handler never heard them.
 *Lesson:* attach handlers to the widgets themselves rather than relying on
 bubbling, and ask the user to try anything touch-driven on the display
 before calling it done.
+
+### A new folder mounted into the update site needs a mount point
+
+Mounting `server/montering/` into the site like `server/kalender/` stopped
+the update site: the container's root is read-only and the site folder is
+mounted read-only, so Docker couldn't create `/usr/share/nginx/html/montering`
+and the container didn't start until `/srv/multidisplay/montering` existed.
+*Lesson:* create the empty folder in `/srv/multidisplay` first, then run
+`docker compose up -d update-site`, and check that `/` answers afterwards.

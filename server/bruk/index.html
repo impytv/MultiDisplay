@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="no">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bruk av MultiDisplay</title>
+<style>
+:root{--bg:#f6f6f4;--fg:#222;--muted:#666;--line:#ddd;--card:#fff;--accent:#2d5a86;--warn:#a05a00}
+@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#eee;--muted:#999;--line:#333;--card:#26262a;--accent:#7fb0e0;--warn:#e0a050}}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;line-height:1.5;max-width:52rem;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--fg)}
+h1{font-size:1.6rem;margin-bottom:.2rem}h2{font-size:1.3rem;margin:2.5rem 0 .5rem}h3{font-size:1.1rem;margin:0 0 .4rem}
+a{color:var(--accent)}.lead{color:var(--muted);margin-top:0}
+nav ol{padding-left:1.3rem;columns:2;column-gap:2rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:.6rem;padding:1.2rem;margin:1.2rem 0}
+figure{margin:.8rem 0 0}
+figure img{width:100%;max-width:800px;aspect-ratio:5/3;display:block;border-radius:.4rem;border:1px solid var(--line);cursor:zoom-in;background:var(--line)}
+figcaption{font-size:.85rem;color:var(--muted);margin-top:.3rem}
+.pair{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.set{border-left:3px solid var(--accent);padding:.3rem .8rem;margin:.8rem 0;font-size:.95rem}
+.set b:first-child{display:block;color:var(--accent);font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}
+.note{border-left:3px solid var(--warn);padding:.2rem .8rem;margin:.8rem 0}
+code{font-size:.9em}
+ul,ol{padding-left:1.3rem}li{margin:.2rem 0}
+table{border-collapse:collapse;width:100%;font-size:.95rem}
+td,th{text-align:left;padding:.35rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+dialog{border:0;padding:0;background:transparent;max-width:96vw;max-height:96vh}
+dialog::backdrop{background:rgba(0,0,0,.85)}
+dialog img{max-width:96vw;max-height:92vh;display:block;border-radius:.3rem}
+dialog p{color:#eee;margin:.4rem 0 0;font-size:.9rem;text-align:center}
+@media (max-width:40rem){nav ol{columns:1}.pair{grid-template-columns:1fr}}
+</style>
+
+<p><a href="../">&larr; MultiDisplay programvare</a> &middot; <a href="../montering/">Monteringsveiledning</a></p>
+<h1>Bruk av MultiDisplay</h1>
+<p class="lead">Hvordan du bruker skjermen, hvilke skjermbilder den kan vise, og hvor på oppsettsiden hvert av dem slås på og justeres.
+Er skjermen ikke satt sammen ennå, se <a href="../montering/">monteringsveiledningen</a>. Trykk på et bilde for å se det større.</p>
+
+<nav><ol>
+<li><a href="#betjening">Betjening</a></li>
+<li><a href="#oppsett">Oppsettsiden</a></li>
+<li><a href="#oversikt">Oversikt</a></li>
+<li><a href="#kalender">Kalender</a></li>
+<li><a href="#maned">Månedskalender</a></li>
+<li><a href="#europa">Satellittbilde over Europa</a></li>
+<li><a href="#vaer">Vær</a></li>
+<li><a href="#uke">Uke</a></li>
+<li><a href="#fly">Fly</a></li>
+<li><a href="#skip">Skip</a></li>
+<li><a href="#nedbor">Nedbør</a></li>
+<li><a href="#avganger">Avganger</a></li>
+<li><a href="#luft">Luft</a></li>
+<li><a href="#tidevann">Tidevann</a></li>
+<li><a href="#satellitt">Satellitt</a></li>
+<li><a href="#visning">Tema, natt og skrift</a></li>
+<li><a href="#bytte">Automatisk bytte</a></li>
+<li><a href="#vedlikehold">Vedlikehold</a></li>
+<li><a href="#problemer">Når noe ikke virker</a></li>
+</ol></nav>
+
+<h2 id="betjening">Betjening</h2>
+<div class="card">
+<ul>
+<li><b>Trykk på høyre halvdel</b> av skjermen for å gå til neste skjermbilde, og <b>på venstre halvdel</b> for å gå til forrige. Etter det siste kommer det første igjen.</li>
+<li><b>Sveip opp fra nederste kant</b> for å få en meny med alle skjermbildene, gruppert etter sted. Trykk på et for å gå dit. Menyen lukkes hvis du trykker ved siden av knappene, sveiper ned eller lar den være i et halvt minutt.</li>
+<li>På en telefon eller PC på samme nett har <b>navigasjonssiden</b> på <a href="http://multidisplay.local/">http://multidisplay.local/</a> en knapp for hvert skjermbilde. Den viser også hvilket som vises nå.</li>
+</ul>
+<p>Skjermbildene kommer i denne rekkefølgen: Oversikt, Kalender, Månedskalender og Satellittbilde over Europa. Deretter kommer skjermbildene for hvert sted, i den rekkefølgen stedene står på oppsettsiden.
+Skjermen husker hvilket skjermbilde du sist trykket deg fram til, også etter en omstart.</p>
+</div>
+
+<h2 id="oppsett">Oppsettsiden</h2>
+<div class="card">
+<p>Alt stilles inn på <a href="http://multidisplay.local/oppsett">http://multidisplay.local/oppsett</a>. Du kan også gå via lenken på navigasjonssiden.
+Hvis skjermen har fått et annet navn, bytter du ut <code>multidisplay</code> med det.</p>
+<ul>
+<li><b>Steder</b> kommer først, med opptil fem steder. Åpne et sted for å endre det. Under <b>Finn sted</b> kan du skrive et stedsnavn, så fylles navn og koordinater ut. Kryss av for skjermbildene stedet skal ha. De innstillingene hvert skjermbilde har, dukker opp rett under avkrysningen.
+Ved siden av hvert skjermbilde er det en <b>i automatisk bytte</b>-boks (se <a href="#bytte">Automatisk bytte</a>).</li>
+<li><b>Andre skjermer</b> er skjermbildene som gjelder hele skjermen og ikke et bestemt sted. Det er Oversikt, Kalender, Månedskalender og Satellittbilde.</li>
+<li><b>Innstillinger</b> har delene Visning, Automatisk bytte, Tilgang og passord og Vedlikehold.</li>
+</ul>
+<p>Det står «Ulagrede endringer» til du lagrer. Klokkeslett skrives med 24 timer (TT:MM).</p>
+</div>
+
+<h2>Skjermbilder for hele skjermen</h2>
+
+<section class="card" id="oversikt">
+<h3>Oversikt</h3>
+<p>Én rad per sted som viser vær, og fire kolonner med seks timers mellomrom. Hver kolonne har værsymbol, temperatur og nedbør for de seks timene.
+En farget prikk ved stedsnavnet betyr at Meteorologisk institutt har sendt ut farevarsel for stedet. Fargen er gul, oransje eller rød etter hvor alvorlig varselet er.</p>
+<div class="set"><b>Oppsett</b>Andre skjermer → Oversikt → <i>Vis oversikten</i> (på fra start) og <i>i automatisk bytte</i>.</div>
+<figure><img src="skjermer/oversikt.jpg" alt="Oversikt med været for fem steder" loading="lazy"><figcaption>Oversikten. Vestpollen har et gult farevarsel.</figcaption></figure>
+</section>
+
+<section class="card" id="kalender">
+<h3>Kalender</h3>
+<p>Avtalene de neste to ukene, fra opptil tre kalendere, med én farge per kalender. Den hentes på nytt hvert kvarter.
+Det fungerer med Google Kalender (<i>Hemmelig adresse i iCal-format</i>), en publisert Outlook-kalender eller en annen <code>.ics</code>-adresse.</p>
+<div class="set"><b>Oppsett</b>Andre skjermer → Kalender → <i>Vis kalenderen</i>, <i>i automatisk bytte</i> og opptil tre kalenderadresser.
+Adressene er hemmelige, så de vises ikke igjen på siden. Et tomt felt beholder den adressen som er lagret.</div>
+<figure><img src="skjermer/kalender.jpg" alt="Kalenderskjermen uten avtaler" loading="lazy"><figcaption>Kalenderen. Her er det ingen avtaler de neste to ukene.</figcaption></figure>
+</section>
+
+<section class="card" id="maned">
+<h3>Månedskalender</h3>
+<p>Fem uker fra og med denne uken, med ukenummer. Søndager og helligdager har rød dato, og dagen i dag har ramme rundt.
+Pilene ved klokken blar fire uker fram eller tilbake. Skjermen går tilbake til denne uken når du forlater den, eller etter fem minutter uten trykk.</p>
+<div class="set"><b>Oppsett</b>Andre skjermer → Månedskalender → <i>Vis månedskalenderen</i>, <i>i automatisk bytte</i>, og:
+<ul>
+<li><i>Månefaser</i> viser nymåne, halvmåne og fullmåne som symboler ved datoen.</li>
+<li><i>Andre hendelser på himmelen</i> viser jevndøgn og solverv, supermåner, stjerneskudd og formørkelser som kan ses fra det første stedet.</li>
+</ul></div>
+<figure><img src="skjermer/maned.jpg" alt="Månedskalender for oktober og november med månefaser og Orionidene" loading="lazy"><figcaption>Månedskalenderen med månefaser og stjerneskuddsvermen Orionidene.</figcaption></figure>
+</section>
+
+<section class="card" id="europa">
+<h3>Satellittbilde over Europa</h3>
+<p>Det siste bildet fra Meteosat over Europa, fra Meteorologisk institutt. Det kommer et nytt bilde hvert kvarter.</p>
+<div class="set"><b>Oppsett</b>Andre skjermer → Satellittbilde → <i>Vis Europa</i> og <i>i automatisk bytte</i>.
+Med <i>Synlig lys når det er lyst</i> vises bildet i synlig lys om dagen i stedet for det infrarøde.</div>
+<figure><img src="skjermer/europa.jpg" alt="Infrarødt satellittbilde over Europa" loading="lazy"><figcaption>Infrarødt bilde over Europa.</figcaption></figure>
+</section>
+
+<h2>Skjermbilder for hvert sted</h2>
+<p>Disse krysses av under hvert sted på oppsettsiden. Hvert av dem har sin egen <i>i automatisk bytte</i>-boks.</p>
+
+<section class="card" id="vaer">
+<h3>Vær</h3>
+<p>Værvarselet fra Yr for de neste to døgnene, med en stor klokke. Øverst står værsymbolene. Diagrammet viser temperatur (oransje) og nedbør (blå søyler), og under det står vindstyrke og vindretning.
+Natten er skyggelagt. Ved siden av klokken står soloppgang og solnedgang. Når det begynner eller slutter å regne innen halvannen time, står det i stedet for eksempel «Nedbør om 50 min».</p>
+<ul>
+<li><b>Farevarsler</b> fra Meteorologisk institutt vises øverst i gult, oransje eller rødt. En stripe i samme farge over diagrammet viser når varselet gjelder.</li>
+<li><b>Nordlys</b> vises som grønne søyler fra toppen i timer det er verdt å se etter nordlys, altså når det er mørkt, ikke for skyet og stor nok aktivitet.</li>
+</ul>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Vær</i>. Bare steder med <i>Vær</i> kommer med i oversikten.</div>
+<figure><img src="skjermer/vaer.jpg" alt="Værskjerm for Vestpollen med farevarsel og nordlys" loading="lazy"><figcaption>Vestpollen med farevarsel for storm og en time med nordlys.</figcaption></figure>
+</section>
+
+<section class="card" id="uke">
+<h3>Uke</h3>
+<p>Sju dager fra i dag. Hver dag har symbol midt på dagen, høyeste og laveste temperatur som en søyle, nedbør og sterkeste vind.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Uke</i>.</div>
+<figure><img src="skjermer/uke.jpg" alt="Sju dager i Nittedal" loading="lazy"><figcaption>Uken i Nittedal.</figcaption></figure>
+</section>
+
+<section class="card" id="fly">
+<h3>Fly</h3>
+<p>Flyene i lufta rundt stedet, på en radar med nord opp og flyplassene inntegnet. Ved siden av er en tabell over de nærmeste flyene med kallesignal, rute, høyde, fart og avstand.
+Politi-, rednings- og ambulansefly står som <i>Politi</i>, <i>Redning</i> eller <i>Ambulanse</i>. Posisjonene oppdateres hvert femte sekund mens skjermbildet vises.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Fly</i> → <i>Radius (km)</i>, fra 10 til 185 km (40 km fra start).</div>
+<figure><img src="skjermer/fly.jpg" alt="Flyradar rundt Vestpollen med ett fly" loading="lazy"><figcaption>Fly innen 150 km fra Vestpollen.</figcaption></figure>
+</section>
+
+<section class="card" id="skip">
+<h3>Skip</h3>
+<p>Skipstrafikken rundt stedet fra BarentsWatch. Hvert skip er en markør som peker dit skipet går, med farge etter type (last, tank, passasjer, fiske, fritid, slep). Tabellen viser de nærmeste skipene.
+Dette dekker bare norske farvann.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Skip</i>:
+<ul>
+<li><i>Radius (km)</i>, fra 2 til 100 km.</li>
+<li><i>Korteste skip (m)</i> skjuler mindre skip (0 viser alle).</li>
+<li><i>Indre sone (km)</i> og <i>Korteste innenfor (m)</i> gir en egen lengdegrense nær stedet.</li>
+<li><i>Midtpunkt for skip</i> legger midten av kartet et annet sted, for eksempel ute på sjøen.</li>
+</ul>
+Det krever en gratis API-klient fra BarentsWatch. Den legges inn under Innstillinger → Tilgang og passord → <i>BarentsWatch (skipstrafikk)</i>.</div>
+<figure><img src="skjermer/skip.jpg" alt="Skipstrafikk rundt Vestpollen" loading="lazy"><figcaption>Skip rundt Vestpollen: alle innen 5 km, og skip over 60 m innen 20 km.</figcaption></figure>
+</section>
+
+<section class="card" id="nedbor">
+<h3>Nedbør</h3>
+<p>Nedbørradar fra Meteorologisk institutt for området rundt stedet. Skjermbildet spiller av den siste timen i bilder med fem minutters mellomrom, og fargene viser hvor kraftig nedbøren er.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Nedbør</i> → <i>Radius (km)</i>.</div>
+<figure><img src="skjermer/nedbor.jpg" alt="Nedbørradar rundt Vestpollen" loading="lazy"><figcaption>Nedbør den siste timen innen 100 km fra Vestpollen.</figcaption></figure>
+</section>
+
+<section class="card" id="avganger">
+<h3>Avganger</h3>
+<p>Sanntidsavganger fra Entur for buss, trikk, T-bane, tog og båt, med de to neste avgangene per linje og retning. Tavla oppdateres hvert halve minutt.
+Avganger uten sanntid vises svakere, og innstilte avganger merkes <i>Innstilt</i>. For tog står sporet.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Avganger</i>. Søk opp holdeplassen i velgeren under, kryss av for linjer (ingen avkrysning gir alle linjer) og eventuelt retning.
+Du kan velge opptil fire holdeplasser. Velgeren trenger internett, så den virker ikke mens telefonen er koblet til skjermens eget oppsettnett.</div>
+<figure><img src="skjermer/avganger.jpg" alt="Avgangstavle for Nittedal med busser og tog" loading="lazy"><figcaption>Avganger i Nittedal, med busser fra én holdeplass og tog fra stasjonen.</figcaption></figure>
+</section>
+
+<section class="card" id="luft">
+<h3>Luft</h3>
+<p>Luftkvaliteten nå og det neste døgnet fra Meteorologisk institutt, og hva som bidrar mest.
+Den viser også pollen av or, bjørk, gress og burot fra den europeiske modellen CAMS. Utenom sesongen står det «Ingen pollen i lufta nå».</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Luft</i>.</div>
+<figure><img src="skjermer/luft.jpg" alt="Luftkvalitet i Oslo: lite luftforurensning, ingen pollen" loading="lazy"><figcaption>Luft i Oslo.</figcaption></figure>
+</section>
+
+<section class="card" id="tidevann">
+<h3>Tidevann</h3>
+<p>Vannstanden fra Kartverket ved den nærmeste målestasjonen. Skjermbildet viser nivået nå, om vannet stiger eller synker, og hvor mye været påvirker det.
+Det viser også de neste fire flo- og fjæretidene, og et diagram fra seks timer tilbake til 30 timer fram. Høydene er i cm over sjøkartnull. Inne i landet finnes det ingen data.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Tidevann</i>.</div>
+<figure><img src="skjermer/tidevann.jpg" alt="Tidevann i Vestpollen målt i Kabelvåg" loading="lazy"><figcaption>Tidevann for Vestpollen, målt i Kabelvåg.</figcaption></figure>
+</section>
+
+<section class="card" id="satellitt">
+<h3>Satellitt</h3>
+<p>Et nærbilde fra satellittbildet over Europa rundt stedet, med en ring der stedet ligger.</p>
+<div class="set"><b>Oppsett</b>Steder → stedet → <i>Satellitt</i>. Under Andre skjermer → Satellittbilde velger du <i>Forstørrelse i nærbildene</i>: 3 ganger (omtrent 2000 km bredt) eller 2 ganger (omtrent 3200 km bredt, skarpere).
+<i>Synlig lys når det er lyst</i> gjelder også her.</div>
+<figure><img src="skjermer/satellitt.jpg" alt="Satellittbilde over Nord-Norge med ring rundt Kvaløysletta" loading="lazy"><figcaption>Nærbilde over Kvaløysletta.</figcaption></figure>
+</section>
+
+<h2 id="visning">Tema, natt og skrift</h2>
+<div class="card">
+<div class="set"><b>Oppsett</b>Innstillinger → Visning</div>
+<ul>
+<li><b>Tema</b>: <i>Lyst</i> eller <i>Mørkt</i>, for alle skjermbildene.</li>
+<li><b>Natt</b>: <i>Nattmodus</i> med <i>Fra</i> og <i>Til</i> (for eksempel 22:00–07:00). Du velger mellom <i>Demp skjermen</i> og <i>Slå av skjermen</i>.
+Når skjermen er avslått, tennes den i to minutter ved et trykk. Mens den er av, henter den ingenting.</li>
+<li><b>Skrift</b>: størrelse i piksler og fet skrift for <i>Stedsnavn (px)</i> og <i>Annen tekst (px)</i>.</li>
+</ul>
+<div class="pair">
+<figure><img src="skjermer/vaer-morkt.jpg" alt="Værskjermen i mørkt tema" loading="lazy"><figcaption>Mørkt tema.</figcaption></figure>
+<figure><img src="skjermer/natt.jpg" alt="Oversikten dempet om natten" loading="lazy"><figcaption>Dempet om natten.</figcaption></figure>
+</div>
+</div>
+
+<h2 id="bytte">Automatisk bytte</h2>
+<div class="card">
+<p>Skjermen kan bla gjennom skjermbildene selv når ingen bruker den.</p>
+<div class="set"><b>Oppsett</b>Innstillinger → Automatisk bytte
+<ul>
+<li><i>Etter (min uten trykk)</i>: hvor lenge skjermen skal stå urørt før den begynner å bytte. 0 slår funksjonen av.</li>
+<li><i>Per skjerm (s)</i>: hvor lenge hvert skjermbilde vises.</li>
+<li><i>Stopp om natta</i>: skjermen står stille mens nattmodus er på.</li>
+</ul></div>
+<p>Bare skjermbilder med <i>i automatisk bytte</i> krysset av kommer med. Et trykk stopper byttingen til skjermen har stått urørt like lenge igjen.</p>
+</div>
+
+<h2 id="vedlikehold">Vedlikehold</h2>
+<div class="card">
+<div class="set"><b>Oppsett</b>Innstillinger → Vedlikehold</div>
+<ul>
+<li><b>Navn på skjermen</b> er adressen på hjemmenettet, <code>http://navn.local/</code>. Har du flere skjermer, må hver ha sitt eget navn.</li>
+<li><b>Programvareoppdatering</b>: med <i>Installer ny programvare automatisk</i> ser skjermen etter ny versjon på denne siden til tiden under <i>Sjekk kl.</i>
+En ny versjon som ikke virker, rulles tilbake av seg selv.</li>
+<li><b>Sikkerhetskopi</b>: last ned innstillingene som en fil og legg dem inn igjen, for eksempel på en ny skjerm. Med <i>Ta med WiFi og BarentsWatch-hemmelighet</i> kommer også WiFi-passordet og BarentsWatch-hemmeligheten med.</li>
+<li><b>Navigasjonsside</b>: <i>Vis navigasjonssiden</i> og <i>Sveip opp fra bunnen for å velge skjerm</i>.</li>
+<li><b>Driftsstatus</b> viser versjon, minne og når hver tjeneste sist svarte.</li>
+</ul>
+<p>Under Innstillinger → Tilgang og passord kan du sette et <b>passord for oppsettsiden</b>, bytte WiFi-nett og legge inn e-postadressen som sendes til Yr.</p>
+</div>
+
+<h2 id="problemer">Når noe ikke virker</h2>
+<div class="card">
+<table>
+<tr><th>Du ser</th><th>Det betyr</th></tr>
+<tr><td>«Ingen WiFi» eller «Ingen internett» nede til venstre</td><td>Skjermen er uten nett, eller ingenting har kunnet hentes de siste to minuttene. Den prøver igjen av seg selv.</td></tr>
+<tr><td>Oransje tekst nederst på et skjermbilde</td><td>Siste henting feilet, så skjermbildet viser eldre data.</td></tr>
+<tr><td>«Klokken er ikke stilt»</td><td>Skjermen har ikke fått tiden fra nettet. Sjekk at den er på internett.</td></tr>
+<tr><td>Nettet <b>MultiDisplay-XXXX</b> dukker opp</td><td>Skjermen kommer ikke på WiFi og har åpnet oppsettnettet. Koble til det og gå til <b>http://192.168.4.1/</b> (se <a href="../montering/#oppsett">første oppstart</a>).</td></tr>
+</table>
+<p>Har du glemt passordet eller byttet WiFi? Hold inne <i>BOOT</i>-knappen bak på skjermen mens du kobler til strømmen, så åpnes oppsettnettet.</p>
+</div>
+
+<dialog id="zoom"><img alt=""><p></p></dialog>
+<script>
+const d = document.getElementById("zoom"), di = d.querySelector("img"), dp = d.querySelector("p");
+document.querySelectorAll("figure img").forEach(img => img.addEventListener("click", () => {
+  di.src = img.src; di.alt = img.alt;
+  dp.textContent = img.closest("figure").querySelector("figcaption").textContent;
+  d.showModal();
+}));
+d.addEventListener("click", () => d.close());
+</script>
+</html>
