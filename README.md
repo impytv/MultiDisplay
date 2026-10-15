@@ -47,6 +47,12 @@ again only after regenerating it:
 idf.py -p PORT coast-flash
 ```
 
+Flash through the board's native USB port, the one that shows up as
+Espressif `303a:1001`. The other port goes through a CH343 serial chip
+(`1a86:55d3`), which appears as a port but passes no data, so esptool stops
+with "No serial data received". If the native port doesn't show up, hold
+BOOT while plugging it in to start the board in download mode.
+
 ### Updating over WiFi
 
 After the first USB flash, new firmware can go over WiFi. Upload
