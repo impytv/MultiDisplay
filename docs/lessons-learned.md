@@ -281,3 +281,14 @@ board showed the stop's other lines and nothing said FB5 was missing.
 *Lesson:* size buffers for IDs from someone else's data with a margin (and a
 test using the longest real one), and when something configured doesn't
 show, try that exact configuration against the live API first.
+
+### A git checkout can empty the update site's guides
+
+The guides (`server/montering/`, `server/bruk/`) and calendar feeds are
+mounted into the container from the repo as folders. A Docker bind mount
+holds on to the folder itself, so when git removes and recreates it (a
+rebase over them did), the container keeps the old, now empty folder: the
+guides answered 403 until the container was restarted.
+*Lesson:* after a pull, rebase or checkout that touches `server/`, run
+`docker compose restart update-site` and check that `/montering/` and
+`/bruk/` answer 200.
