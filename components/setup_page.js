@@ -96,6 +96,8 @@ if(!num(sa.value)||Math.abs(+sa.value.replace(',','.'))>90)bad.push(X(sa,'Bredde
 if(!num(so.value)||Math.abs(+so.value.replace(',','.'))>180)bad.push(X(so,'Lengdegrad fra -180 til 180, eller tomt.'))});
 TM.forEach(k=>{let x=F.querySelector('[name='+k+']'),t=hm(x.value);if(t===null)bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30 eller 2230.'));else x.value=t});
 F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;if(v&&!/^(https?|webcal):\/\/\S+$/.test(v))bad.push(X(x,'Adressen må begynne med https://, http:// eller webcal://.'))});
+[['tempref',-40,60,1],['tempoff',-50,50,0]].forEach(([k,lo,hi,o])=>{let x=F.querySelector('[name='+k+']'),v=x?x.value.trim():'';if(!x||o&&!v)return;
+if(!num(v)||+v.replace(',','.')<lo||+v.replace(',','.')>hi)bad.push(X(x,'Et tall fra '+lo+' til '+hi+(o?', eller tomt.':'.')))});
 let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv inn WiFi-nettet.'));
 F.querySelectorAll('[name^=lat],[name^=lon],[name^=shiplat],[name^=shiplon]').forEach(x=>x.value=x.value.replace(',','.'));
 if(bad.length){e.preventDefault();let d=bad[0].closest('details');while(d){d.open=true;d=d.parentNode.closest('details')}

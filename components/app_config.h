@@ -37,6 +37,8 @@
 
 /* How much the satellite close-ups are blown up: 3 (about 2000 km across)
  * or 2 (about 3200 km, sharper). */
+/* The temperature offset, in tenths of a degree. */
+#define APP_CONFIG_TEMP_OFFSET_MAX 500
 #define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
@@ -227,6 +229,14 @@ typedef struct {
      * unticked. */
     uint8_t mon_moon;
     uint8_t mon_astro;
+    /* The clock screen (time, date and the temperature indoors): shown,
+     * and in the rotation. */
+    uint8_t clk_show;
+    uint8_t clk_rotate;
+    /* Added to the chip's temperature sensor (components/chip_temp.c) to
+     * get the room's, in tenths of a degree; measured against a
+     * thermometer on the setup page. Per display, so not in backups. */
+    int16_t temp_offset_dc;
 } app_config_t;
 
 /**

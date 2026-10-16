@@ -75,3 +75,36 @@ char *buf_append(char *p, char *end, const char *fmt, ...)
     }
     return (n < end - p) ? p + n : end - 1;
 }
+
+bool form_tenths(const char *s, int *tenths)
+{
+    while (*s == ' ') s++;
+    const bool neg = *s == '-';
+    if (*s == '-' || *s == '+') {
+        s++;
+    }
+    long whole = 0;
+    int digits = 0;
+    for (; *s >= '0' && *s <= '9'; s++, digits++) {
+        whole = whole * 10 + (*s - '0');
+        if (whole > 10000) {
+            return false;
+        }
+    }
+    long frac = 0; /* hundredths, for the rounding */
+    if (*s == ',' || *s == '.') {
+        s++;
+        for (int i = 0; *s >= '0' && *s <= '9'; s++, i++, digits++) {
+            if (i < 2) {
+                frac += (*s - '0') * (i == 0 ? 10 : 1);
+            }
+        }
+    }
+    while (*s == ' ') s++;
+    if (digits == 0 || *s != '\0') {
+        return false;
+    }
+    const long v = whole * 10 + (frac + 5) / 10;
+    *tenths = (int)(neg ? -v : v);
+    return true;
+}

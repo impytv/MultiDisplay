@@ -16,6 +16,7 @@ idf_component_register(
         "tide.c"
         "calendar.c"
         "month.c"
+        "clockscreen.c"
         "satellite.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
@@ -45,6 +46,7 @@ idf_component_register(
         "../components/http_util.c"
         "../components/ota_writer.c"
         "../components/restart.c"
+        "../components/chip_temp.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -75,6 +77,7 @@ idf_component_register(
         espcoredump
         espressif__mdns
         esp_driver_gpio
+        esp_driver_tsens
         lwip
         esp-tls
         mbedtls

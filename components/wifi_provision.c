@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -27,6 +28,7 @@
 #include "ota_writer.h"
 #include "form_util.h"
 #include "astro.h"
+#include "chip_temp.h"
 #include "holidays.h"
 #include "web_auth.h"
 #include "cJSON.h"
@@ -263,6 +265,47 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
 
 /* The calendar screen: one for the display. The addresses are secrets, so
  * never sent back: a blank field keeps the saved one (see save_form_into). */
+/* Tenths of a degree as the setup page writes them: "-1,8". */
+static void tenths_text(char *dst, size_t len, int dc)
+{
+    snprintf(dst, len, "%s%d,%d", dc < 0 ? "-" : "", abs(dc) / 10, abs(dc) % 10);
+}
+
+/* The clock screen, and the calibration of its temperature: the chip's
+ * sensor reads well above the room, so an offset is added - typed in, or
+ * worked out on saving from what a thermometer shows (tempref). */
+static char *build_clock(char *p, char *end, const app_config_t *cfg)
+{
+    char off[16], now[128] = "Ingen m&aring;ling enn&aring;.";
+    tenths_text(off, sizeof(off), cfg->temp_offset_dc);
+    float raw;
+    if (chip_temp_raw(&raw)) {
+        char r[16], shown[16];
+        tenths_text(r, sizeof(r), (int)lroundf(raw * 10.0f));
+        tenths_text(shown, sizeof(shown), (int)lroundf(raw * 10.0f) + cfg->temp_offset_dc);
+        snprintf(now, sizeof(now), "Brikken m&aring;ler n&aring; %s&nbsp;&deg;C, som vises som %s&nbsp;&deg;C.", r,
+                 shown);
+    }
+    return buf_append(p, end,
+                      "<details class=sec><summary>Klokke</summary>"
+                      "<div class=chk><label><input type=checkbox name=clkshow value=1%s>"
+                      "Vis klokken</label><label><input type=checkbox name=clkrot value=1%s>"
+                      "i automatisk bytte</label></div>"
+                      "<small>Klokkeslett, dato og temperaturen inne, som en egen skjerm etter "
+                      "m&aring;nedskalenderen.</small>"
+                      "<label>Riktig temperatur n&aring; (&deg;C)</label>"
+                      "<input name=tempref inputmode=decimal placeholder='f.eks. 21,5'>"
+                      "<small>%s Temperaturen kommer fra en sensor i selve brikken, som er varmere enn "
+                      "rommet. Skriv inn hva et termometer ved skjermen viser n&aring;, s&aring; regnes "
+                      "justeringen ut n&aring;r du lagrer. La skjermen st&aring; p&aring; en halvtime "
+                      "f&oslash;rst, s&aring; brikken har f&aring;tt sin vanlige temperatur.</small>"
+                      "<label>Justering (&deg;C)</label><input name=tempoff inputmode=decimal value='%s'>"
+                      "<small>Legges til brikkens temperatur. Brukes n&aring;r feltet over er tomt. "
+                      "Justeringen gjelder denne skjermen og er ikke med i sikkerhetskopier.</small>"
+                      "</details>",
+                      cfg->clk_show ? " checked" : "", cfg->clk_rotate ? " checked" : "", now, off);
+}
+
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
 {
     static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
@@ -346,6 +389,7 @@ static char *build_page(const app_config_t *cfg)
                   "Lagt inn til og med %d.</small></details>",
                   cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year(),
                   cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year());
+    p = build_clock(p, end, cfg);
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
@@ -1163,6 +1207,23 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->mon_rotate = form_field(body, "monrot", val, sizeof(val)) ? 1 : 0;
         cfg->mon_moon = form_field(body, "monmoon", val, sizeof(val)) ? 1 : 0;
         cfg->mon_astro = form_field(body, "monastro", val, sizeof(val)) ? 1 : 0;
+        cfg->clk_show = form_field(body, "clkshow", val, sizeof(val)) ? 1 : 0;
+        cfg->clk_rotate = form_field(body, "clkrot", val, sizeof(val)) ? 1 : 0;
+        /* The temperature offset: from a thermometer's reading now, if one
+         * was typed in, else as given. Out of range is ignored. */
+        char deg[16];
+        int dc;
+        float raw;
+        if (form_field(body, "tempref", deg, sizeof(deg)) && deg[0] && form_tenths(deg, &dc) &&
+            chip_temp_raw(&raw)) {
+            dc -= (int)lroundf(raw * 10.0f);
+            if (dc >= -APP_CONFIG_TEMP_OFFSET_MAX && dc <= APP_CONFIG_TEMP_OFFSET_MAX) {
+                cfg->temp_offset_dc = (int16_t)dc;
+            }
+        } else if (form_field(body, "tempoff", deg, sizeof(deg)) && form_tenths(deg, &dc) &&
+                   dc >= -APP_CONFIG_TEMP_OFFSET_MAX && dc <= APP_CONFIG_TEMP_OFFSET_MAX) {
+            cfg->temp_offset_dc = (int16_t)dc;
+        }
         if (form_field(body, "satzoom", val, sizeof(val)) && (val[0] == '2' || val[0] == '3') && val[1] == '\0') {
             cfg->sat_zoom = (uint8_t)(val[0] - '0');
         }

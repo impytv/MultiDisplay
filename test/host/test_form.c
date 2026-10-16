@@ -3,6 +3,18 @@
 
 void test_form(void)
 {
+    int t;
+    CHECK(form_tenths("21,5", &t) && t == 215);
+    CHECK(form_tenths(" -1.75 ", &t) && t == -18);
+    CHECK(form_tenths("+3", &t) && t == 30);
+    CHECK(form_tenths("0,04", &t) && t == 0);
+    CHECK(form_tenths("-,5", &t) && t == -5);
+    CHECK(!form_tenths("", &t));
+    CHECK(!form_tenths("-", &t));
+    CHECK(!form_tenths("21 C", &t));
+    CHECK(!form_tenths("1,2,3", &t));
+    CHECK(!form_tenths("99999999", &t));
+
     char v[16];
     CHECK(form_field("a=1&name=Oslo+S&b=2", "name", v, sizeof(v)));
     CHECK_STR(v, "Oslo S");

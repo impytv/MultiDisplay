@@ -18,4 +18,9 @@ bool form_field(const char *body, const char *key, char *dst, size_t dst_len);
  * around and write beyond the buffer. */
 char *buf_append(char *p, char *end, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
+/* A number typed into the form - "21", "21,5", "-1.75", " +3 " - in
+ * tenths, rounded (-1.75 gives -18). False for anything else, or beyond
+ * +-100000. */
+bool form_tenths(const char *s, int *tenths);
+
 #endif

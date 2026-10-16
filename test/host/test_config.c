@@ -55,6 +55,9 @@ void test_config(void)
     a.mon_show = 1;
     a.mon_moon = 1;
     a.mon_astro = 0;
+    a.clk_show = 1;
+    a.clk_rotate = 1;
+    a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
     CHECK(app_config_save(&a) == ESP_OK);
@@ -79,6 +82,7 @@ void test_config(void)
     c.location_count = 1;
     c.nav_page = 1;
     c.swipe_nav = 1;
+    c.temp_offset_dc = 25;
     char err[96];
     CHECK(app_config_from_json(json, &c, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "other");
@@ -100,6 +104,8 @@ void test_config(void)
     CHECK_INT(c.sat_zoom, 2);
     CHECK_INT(c.sat_visible, 1);
     CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro);
+    CHECK(c.clk_show && c.clk_rotate);
+    CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
     CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));

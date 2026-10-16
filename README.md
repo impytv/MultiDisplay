@@ -151,7 +151,8 @@ with a throwaway key, so displays won't accept it.
 - **Diagnostics without the cable** (opening the serial port resets the
   board). On the device's address, behind the setup password if one is set:
   - `/status`: version, uptime, why it last restarted, WiFi signal, memory,
-    and each service's last success and error. The setup page shows it under
+    the chip's temperature (`brikketemperatur`, and `innetemperatur` with
+    the clock screen's offset added), and each service's last success and error. The setup page shows it under
     **Vedlikehold → Driftsstatus**.
   - `/log`: the last 16 KB of the log.
   - `/coredump`: the crash dump from the last crash, if any. Decode it with
@@ -163,7 +164,7 @@ with a throwaway key, so displays won't accept it.
   - `/screen.png`: a screenshot of what's on the screen.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
-    one as a tap would (types: `oversikt`, `kalender`, `maned`, `vaer`, `uke`, `fly`,
+    one as a tap would (types: `oversikt`, `kalender`, `maned`, `klokke`, `vaer`, `uke`, `fly`,
     `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`;
     `sted` counts from 1),
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
@@ -250,8 +251,9 @@ Navigasjonsside**. The screens, in order:
    automatisk bytte** puts it in the rotation).
 2. **Kalender**, if shown (see [Calendar](#calendar)).
 3. **Månedskalender**, if shown (see [Month calendar](#month-calendar)).
-4. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
-5. For each location in order, whichever of its screens are enabled.
+4. **Klokke**, if shown (see [Clock](#clock)).
+5. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
+6. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -479,6 +481,25 @@ The holidays are built in, read from [norskkalender.no](https://www.norskkalende
 by `python3 scripts/build_holidays.py` into `components/holidays_data.h`.
 The site has them up to 2029; after that only Sundays are red until the
 script is run again and the firmware rebuilt.
+
+### Clock
+
+One screen for the whole display, after the month calendar: under **Andre
+skjermer → Klokke** on the setup page, tick **Vis klokken** (and **i
+automatisk bytte**). The time across the middle in large digits (the
+seconds smaller beside them), the date and ISO week number under it, and
+the temperature indoors ("Inne 21.4°").
+
+The temperature comes from the ESP32-S3's own sensor (`components/chip_temp.c`),
+read every 5 s and smoothed over about a minute. It measures the chip,
+which runs some 15 °C above the room, so an offset is added: type what a
+thermometer by the display shows into **Riktig temperatur nå (°C)** and the
+offset is worked out from the chip's reading when the page is saved, or
+type the offset itself into **Justering (°C)**. Calibrate after the display
+has been on for half an hour. The offset belongs to that board's sensor, so
+it is left out of settings backups. The chip's warmth follows how hard it
+works too (fetching, the rain radar), so expect the reading to wander by a
+degree or so.
 
 ### Satellite
 

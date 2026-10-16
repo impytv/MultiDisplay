@@ -141,6 +141,11 @@ static void sanitize_view_settings(app_config_t *c)
     c->mon_rotate = c->mon_rotate ? 1 : 0;
     c->mon_moon = c->mon_moon ? 1 : 0;
     c->mon_astro = c->mon_astro ? 1 : 0;
+    c->clk_show = c->clk_show ? 1 : 0;
+    c->clk_rotate = c->clk_rotate ? 1 : 0;
+    if (c->temp_offset_dc < -APP_CONFIG_TEMP_OFFSET_MAX || c->temp_offset_dc > APP_CONFIG_TEMP_OFFSET_MAX) {
+        c->temp_offset_dc = 0;
+    }
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         c->cal_url[i][APP_CONFIG_CAL_URL_MAX - 1] = '\0';
         if (!app_config_cal_url_valid(c->cal_url[i])) {
@@ -316,6 +321,9 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "monrot", &out->mon_rotate);
     nvs_get_u8(h, "monmoon", &out->mon_moon); /* both on if never saved */
     nvs_get_u8(h, "monastro", &out->mon_astro);
+    nvs_get_u8(h, "clkshow", &out->clk_show); /* no clock screen if never saved */
+    nvs_get_u8(h, "clkrot", &out->clk_rotate);
+    nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);
@@ -350,6 +358,8 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "month calendar: %s%s%s%s", out->mon_show ? "shown" : "not shown",
              out->mon_rotate ? ", in the rotation" : "", out->mon_moon ? ", moon phases" : "",
              out->mon_astro ? ", astronomy" : "");
+    ESP_LOGI(TAG, "clock: %s%s, temperature offset %+.1f", out->clk_show ? "shown" : "not shown",
+             out->clk_rotate ? ", in the rotation" : "", out->temp_offset_dc / 10.0);
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -435,6 +445,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "monrot", cfg->mon_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monmoon", cfg->mon_moon ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monastro", cfg->mon_astro ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "clkshow", cfg->clk_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "clkrot", cfg->clk_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);

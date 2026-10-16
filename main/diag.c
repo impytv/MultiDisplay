@@ -13,6 +13,7 @@
 
 #include "esp_attr.h"
 #include "sdkconfig.h"
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@
 #include "freertos/task.h"
 
 #include "app.h"
+#include "chip_temp.h"
 #include "clock.h"
 #include "diag.h"
 #include "watchdog.h"
@@ -365,6 +367,13 @@ static esp_err_t h_status(httpd_req_t *req)
         cJSON_AddNumberToObject(o, "wifi_dbm", ap.rssi);
     }
     cJSON_AddStringToObject(o, "ip", wifi_provision_get_ip());
+    float chip_c;
+    if (chip_temp_raw(&chip_c)) {
+        /* The chip's own sensor, and with the setup page's offset added. */
+        cJSON_AddNumberToObject(o, "brikketemperatur", roundf(chip_c * 10.0f) / 10.0);
+        cJSON_AddNumberToObject(o, "innetemperatur",
+                                roundf(chip_c * 10.0f + g_cfg->temp_offset_dc) / 10.0);
+    }
     const char *src;
     const time_t set_at = clock_set_at(&src);
     char clock[48] = "ikke stilt";

@@ -19,13 +19,14 @@
 typedef enum {
     STOP_OVERVIEW = 0, STOP_WEATHER = 1, STOP_RADAR = 2, STOP_SHIPS = 3, STOP_RAIN = 4, STOP_DEPARTURES = 5,
     STOP_AIR = 6, STOP_WEEK = 7, STOP_TIDE = 8, STOP_CALENDAR = 9, STOP_SAT_EUROPE = 10, STOP_SAT = 11,
-    STOP_MONTH = 12
+    STOP_MONTH = 12, STOP_CLOCK = 13
 } stop_kind_t;
 
 /* The screens that are one for the display, not per location. */
 static inline bool stop_is_global(int kind)
 {
-    return kind == STOP_OVERVIEW || kind == STOP_CALENDAR || kind == STOP_MONTH || kind == STOP_SAT_EUROPE;
+    return kind == STOP_OVERVIEW || kind == STOP_CALENDAR || kind == STOP_MONTH || kind == STOP_CLOCK ||
+           kind == STOP_SAT_EUROPE;
 }
 
 /* Runtime settings (WiFi + locations), from NVS via the setup page or the

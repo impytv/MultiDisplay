@@ -85,6 +85,11 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddBoolToObject(mon, "moon_phases", c->mon_moon);
     cJSON_AddBoolToObject(mon, "astronomy", c->mon_astro);
 
+    /* The temperature offset belongs to this board's sensor: not backed up. */
+    cJSON *clk = cJSON_AddObjectToObject(root, "clock");
+    cJSON_AddBoolToObject(clk, "show", c->clk_show);
+    cJSON_AddBoolToObject(clk, "rotate", c->clk_rotate);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -249,6 +254,9 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(mon, "rotate", &c->mon_rotate);
     get_bool(mon, "moon_phases", &c->mon_moon);
     get_bool(mon, "astronomy", &c->mon_astro);
+    const cJSON *clk = cJSON_GetObjectItemCaseSensitive(root, "clock");
+    get_bool(clk, "show", &c->clk_show);
+    get_bool(clk, "rotate", &c->clk_rotate);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }
