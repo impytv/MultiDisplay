@@ -488,7 +488,8 @@ One screen for the whole display, after the month calendar: under **Andre
 skjermer → Klokke** on the setup page, tick **Vis klokken** (and **i
 automatisk bytte**). The time across the middle in large digits (the
 seconds smaller beside them), the date and ISO week number under it, and
-the temperature indoors ("Inne 21.4°").
+the temperature indoors in whole degrees ("Inne 21°"; the setup page
+shows the tenths, for calibrating).
 
 The temperature comes from the ESP32-S3's own sensor (`components/chip_temp.c`),
 read every 5 s and smoothed over about a minute. It measures the chip,

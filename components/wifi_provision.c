@@ -276,14 +276,15 @@ static void tenths_text(char *dst, size_t len, int dc)
  * worked out on saving from what a thermometer shows (tempref). */
 static char *build_clock(char *p, char *end, const app_config_t *cfg)
 {
-    char off[16], now[128] = "Ingen m&aring;ling enn&aring;.";
+    char off[16], now[192] = "Ingen m&aring;ling enn&aring;.";
     tenths_text(off, sizeof(off), cfg->temp_offset_dc);
     float raw;
     if (chip_temp_raw(&raw)) {
         char r[16], shown[16];
         tenths_text(r, sizeof(r), (int)lroundf(raw * 10.0f));
         tenths_text(shown, sizeof(shown), (int)lroundf(raw * 10.0f) + cfg->temp_offset_dc);
-        snprintf(now, sizeof(now), "Brikken m&aring;ler n&aring; %s&nbsp;&deg;C, som vises som %s&nbsp;&deg;C.", r,
+        snprintf(now, sizeof(now), "Brikken m&aring;ler n&aring; %s&nbsp;&deg;C, som blir %s&nbsp;&deg;C med justeringen "
+                 "(klokken viser hele grader).", r,
                  shown);
     }
     return buf_append(p, end,

@@ -26,7 +26,7 @@
 
 static lv_obj_t *s_root, *s_time, *s_hhmm[CLK_HHMM], *s_sec, *s_date, *s_temp;
 static time_t s_shown = -1; /* the second on show */
-static int s_shown_dc = -10000; /* the temperature on show, in tenths; -10000 = redraw, -10001 = none */
+static int s_shown_dc = -10000; /* the temperature on show, whole degrees; -10000 = redraw, -10001 = none */
 
 static bool dark(void)
 {
@@ -85,11 +85,12 @@ static void show_temp(void)
         }
         return;
     }
+    /* Whole degrees; the setup page shows the tenths for calibrating. */
     const int dc = (int)lroundf(raw * 10.0f) + g_cfg->temp_offset_dc;
-    if (dc != s_shown_dc) {
-        s_shown_dc = dc;
-        lv_label_set_text_fmt(s_temp, "Inne  %s%d.%d\xC2\xB0", dc < 0 ? "-" : "", (dc < 0 ? -dc : dc) / 10,
-                              (dc < 0 ? -dc : dc) % 10);
+    const int deg = (int)lroundf(dc / 10.0f);
+    if (deg != s_shown_dc) {
+        s_shown_dc = deg;
+        lv_label_set_text_fmt(s_temp, "Inne  %d\xC2\xB0", deg);
     }
 }
 
