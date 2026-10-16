@@ -1007,7 +1007,7 @@ static void reboot_task(void *arg)
     esp_restart();
 }
 
-#define SAVE_BODY_MAX 12288
+#define SAVE_BODY_MAX 16384 /* five departure texts of 400 bytes, URL-encoded */
 
 static esp_err_t save_form(httpd_req_t *req, const char *body);
 

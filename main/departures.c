@@ -1,7 +1,8 @@
 
 /* Departure board: the next departures per line and direction from the
  * location's stops (entur_client), under a large clock; in two columns when
- * one won't hold them all. Painted from one
+ * one won't hold them all. Lines the user put under headings of their own
+ * ("Til jobb") come first, under those; the rest under their stop's name. Painted from one
  * draw handler like the radar, which keeps the row count free of widgets.
  * Polled every 30 s, and repainted between polls so the "N min" countdowns
  * stay current. */
@@ -222,6 +223,19 @@ static void dep_draw_row(lv_layer_t *layer, const dep_layout_t *lay, const entur
     }
 }
 
+/* A block of rows under one heading: the user's own (section > 0), or a
+ * stop's name for its lines under none. */
+typedef struct {
+    uint8_t section;
+    uint8_t stop;
+    const char *name;
+} dep_block_t;
+
+static bool dep_in_block(const entur_group_t *grp, const dep_block_t *b)
+{
+    return b->section ? grp->section == b->section : (grp->section == 0 && grp->stop == b->stop);
+}
+
 /* Lay out the stops and rows as `lay` says and, given a layer, draw them.
  * Returns how many rows with something still to come didn't fit. */
 static int dep_layout(lv_layer_t *layer, const dep_layout_t *lay, time_t now)
@@ -229,13 +243,29 @@ static int dep_layout(lv_layer_t *layer, const dep_layout_t *lay, time_t now)
     const int lh = lv_font_get_line_height(g_font_body);
     const int row_h = lay->row_h;
     const int col_w = (BOARD_LCD_H_RES - 2 * DEP_X - (lay->cols - 1) * DEP_COL_GAP) / lay->cols;
-    const int head_h = s_dep_data->stop_count > 1 ? lh + 6 : 0;
+    dep_block_t blocks[ENTUR_MAX_SECTIONS + ENTUR_MAX_STOPS];
+    int n_blocks = 0;
+    bool own = false;
+    for (int k = 0; k < s_dep_data->section_count; k++) {
+        if (s_dep_data->section[k][0]) {
+            blocks[n_blocks++] = (dep_block_t){ .section = (uint8_t)(k + 1), .name = s_dep_data->section[k] };
+            own = true;
+        }
+    }
+    for (int si = 0; si < s_dep_data->stop_count; si++) {
+        if (s_dep_data->stop_rest[si]) {
+            blocks[n_blocks++] = (dep_block_t){ .stop = (uint8_t)si, .name = s_dep_data->stop_name[si] };
+        }
+    }
+    /* Headings only to tell several apart - or the user's own, always. */
+    const int head_h = (n_blocks > 1 || own) ? lh + 6 : 0;
     int col = 0, x0 = DEP_X, y = DEP_BODY_Y, col0_end = 0, left = 0;
     bool full = false;
 
-    for (int si = 0; si < s_dep_data->stop_count; si++) {
-        /* The stop's name as a heading - only needed to tell several apart.
-         * It goes with at least one row, into the next column if need be. */
+    for (int bi = 0; bi < n_blocks; bi++) {
+        const dep_block_t *blk = &blocks[bi];
+        /* The heading goes with at least one row, into the next column if
+         * need be. */
         if (!full && y + head_h + row_h > lay->bottom) {
             if (col + 1 < lay->cols) {
                 col0_end = y;
@@ -248,14 +278,14 @@ static int dep_layout(lv_layer_t *layer, const dep_layout_t *lay, time_t now)
         }
         if (!full && head_h > 0) {
             if (layer != NULL) {
-                draw_text_fit(layer, s_dep_data->stop_name[si], x0, y + 4, col_w - DEP_TIME_W, dep_dim_color());
+                draw_text_fit(layer, blk->name, x0, y + 4, col_w - DEP_TIME_W, dep_dim_color());
             }
             y += head_h;
         }
         bool any = false;
         for (int g = 0; g < s_dep_data->group_count; g++) {
             const entur_group_t *grp = &s_dep_data->groups[g];
-            if (grp->stop != si) {
+            if (!dep_in_block(grp, blk)) {
                 continue;
             }
             /* Only the departures still to come; a row whose departures have all gone
@@ -277,14 +307,13 @@ static int dep_layout(lv_layer_t *layer, const dep_layout_t *lay, time_t now)
             const int this_h = row_h + (own_notice ? lh : 0);
             if (!full && y + this_h > lay->bottom) {
                 if (col + 1 < lay->cols) {
-                    /* On in the next column, under the stop's name again. */
+                    /* On in the next column, under the heading again. */
                     col0_end = y;
                     col++;
                     x0 += col_w + DEP_COL_GAP;
                     y = DEP_BODY_Y;
                     if (head_h > 0 && layer != NULL) {
-                        draw_text_fit(layer, s_dep_data->stop_name[si], x0, y + 4, col_w - DEP_TIME_W,
-                                      dep_dim_color());
+                        draw_text_fit(layer, blk->name, x0, y + 4, col_w - DEP_TIME_W, dep_dim_color());
                     }
                     y += head_h;
                 }

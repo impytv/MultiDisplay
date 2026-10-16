@@ -19,15 +19,25 @@
  *
  *     58366=RUT:Line:31/out,RUT:Line:25;6505;58858=VYG:Line:R31/v502
  *
+ * The board can also gather lines from any of the stops under headings of
+ * the user's own ("Til jobb"): an entry starting with '#' lists their names,
+ * separated by '|', and a line ID (with its direction) followed by "#<n>"
+ * goes under name n, counted from 1. The same line may then be listed once
+ * per direction, each under its own heading, e.g.
+ *
+ *     #Til jobb|Til byen;58366=RUT:Line:31/out#1,RUT:Line:31/in#2;6505
+ *
  * The setup page's departure picker (setup_departures.js) writes it. */
 
 #define ENTUR_MAX_STOPS      4
-#define ENTUR_MAX_LINES      8   /* per stop */
+#define ENTUR_MAX_LINES      16  /* entries per stop: 8 lines, each direction apart */
 #define ENTUR_ID_MAX         64  /* Flybussen's are "NBU:Line:<uuid>", 45 */
 #define ENTUR_MAX_GROUPS     24  /* line + direction rows over all stops */
 #define ENTUR_PER_GROUP      2   /* departures kept per row */
 
 #define ENTUR_MAX_VIA        3   /* stops naming a "/v" direction */
+#define ENTUR_MAX_SECTIONS   6   /* the user's own headings */
+#define ENTUR_SECTION_MAX    64  /* bytes per heading, with the '\0' */
 
 #define ENTUR_DIR_IN  0x01
 #define ENTUR_DIR_OUT 0x02
@@ -37,6 +47,7 @@ typedef struct {
     uint8_t dirs;      /* ENTUR_DIR_* mask; 0 = both */
     uint8_t via_count; /* > 0: only departures calling at one of via[] later */
     uint32_t via[ENTUR_MAX_VIA]; /* NSR:StopPlace numbers */
+    uint8_t section;   /* the heading it goes under, 1-based; 0 = its stop's */
 } entur_line_sel_t;
 
 typedef struct {
@@ -48,6 +59,8 @@ typedef struct {
 typedef struct {
     int stop_count;
     entur_stop_sel_t stops[ENTUR_MAX_STOPS];
+    int section_count;
+    char section[ENTUR_MAX_SECTIONS][ENTUR_SECTION_MAX];
 } entur_selection_t;
 
 typedef struct {
@@ -59,6 +72,7 @@ typedef struct {
 
 typedef struct {
     uint8_t stop;          /* index into entur_departures_t.stop_name */
+    uint8_t section;       /* under entur_departures_t.section[section - 1]; 0 = its stop */
     char code[8];          /* line publicCode, e.g. "31" */
     char mode[12];         /* transportMode, e.g. "bus" */
     char dest[40];         /* destinationDisplay.frontText of the first call */
@@ -76,7 +90,10 @@ typedef struct {
     bool valid;
     int stop_count;
     char stop_name[ENTUR_MAX_STOPS][48];
-    int group_count;       /* sorted by stop, line, then first departure */
+    bool stop_rest[ENTUR_MAX_STOPS]; /* has lines under no heading of the user's (or shows every line) */
+    int section_count;
+    char section[ENTUR_MAX_SECTIONS][ENTUR_SECTION_MAX]; /* "" = no line goes under it */
+    int group_count;       /* sorted by section (the stops' own last), stop, line, then first departure */
     entur_group_t groups[ENTUR_MAX_GROUPS];
 } entur_departures_t;
 

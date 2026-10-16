@@ -44,6 +44,7 @@ static const char REPLY[] =
 
 void test_entur(void)
 {
+    char *q;
     static entur_selection_t sel;
     CHECK(entur_parse_selection("58858=VYG:Line:R31/v502+999,RUT:Line:385/in", &sel));
     CHECK_INT(sel.stop_count, 1);
@@ -114,6 +115,63 @@ void test_entur(void)
 
     CHECK(!parse_response("not json", &all, &out));
 
+    /* The user's headings: R31 north under "Til jobb", 385 under "Hjem";
+     * the third name has no line, and "#9" no name. */
+    static entur_selection_t sec;
+    CHECK(entur_parse_selection(" #Til jobb | Hjem|Ubrukt ;58858=VYG:Line:R31/v502#1,RUT:Line:385/in#2,"
+                                "RUT:Line:390#9", &sec));
+    CHECK_INT(sec.stop_count, 1);
+    CHECK_INT(sec.section_count, 3);
+    CHECK_STR(sec.section[0], "Til jobb");
+    CHECK_STR(sec.section[1], "Hjem");
+    CHECK_INT(sec.stops[0].lines[0].section, 1);
+    CHECK_INT(sec.stops[0].lines[0].via_count, 1);
+    CHECK_INT(sec.stops[0].lines[1].section, 2);
+    CHECK_INT(sec.stops[0].lines[1].dirs, ENTUR_DIR_IN);
+    CHECK_INT(sec.stops[0].lines[2].section, 0);
+    memset(&out, 0, sizeof(out));
+    CHECK(parse_response(REPLY, &sec, &out));
+    CHECK_STR(out.section[0], "Til jobb");
+    CHECK_STR(out.section[2], ""); /* no line under it */
+    CHECK(out.stop_rest[0]);       /* 390 */
+    CHECK_INT(out.group_count, 3);
+    CHECK(strcmp(out.groups[0].code, "R31") == 0 && out.groups[0].section == 1);
+    CHECK(strcmp(out.groups[1].code, "385") == 0 && out.groups[1].section == 2);
+    CHECK(strcmp(out.groups[2].code, "390") == 0 && out.groups[2].section == 0);
+
+    /* One line in both directions, each under its own heading; R31's two
+     * via directions likewise. Asked for once each in the query. */
+    CHECK(entur_parse_selection("#Til jobb|Hjem;58858=RUT:Line:385/in#1,RUT:Line:385/out#2,"
+                                "VYG:Line:R31/v502#1,VYG:Line:R31/v530#2", &sec));
+    memset(&out, 0, sizeof(out));
+    CHECK(parse_response(REPLY, &sec, &out));
+    CHECK(!out.stop_rest[0]);
+    CHECK_INT(out.group_count, 5); /* and 390, left to the query to drop */
+    int under[3] = { 0 };
+    for (int g = 0; g < out.group_count; g++) {
+        under[out.groups[g].section]++;
+        if (out.groups[g].section == 0) {
+            CHECK_STR(out.groups[g].code, "390");
+        } else if (strcmp(out.groups[g].code, "385") == 0) {
+            CHECK_STR(out.groups[g].dest, out.groups[g].section == 1 ? "Oslo" : "Hakadal");
+        } else {
+            CHECK_STR(out.groups[g].dest, out.groups[g].section == 1 ? "Jaren" : "Oslo S");
+        }
+    }
+    CHECK(under[1] == 2 && under[2] == 2);
+    q = build_query(&sec);
+    CHECK(q != NULL && strstr(q, "[\"RUT:Line:385\",\"VYG:Line:R31\"]") != NULL);
+    free(q);
+
+    /* A long heading is cut at a whole character. */
+    char longsel[128] = "#";
+    for (int k = 0; k < 40; k++) {
+        strcat(longsel, "\xC3\xB8");
+    }
+    strcat(longsel, ";6505");
+    CHECK(entur_parse_selection(longsel, &sec));
+    CHECK_INT(strlen(sec.section[0]), 62);
+
     /* Disruption notices: the Norwegian text, summary and description. */
     static const char SIT[] =
         "{\"data\":{\"s0\":{\"name\":\"Oslo S\",\"estimatedCalls\":["
@@ -148,7 +206,7 @@ void test_entur(void)
 
     /* The query asks only for the listed lines, and for the via stops' ids
      * only when a line has a via direction. */
-    char *q = build_query(&s3);
+    q = build_query(&s3);
     CHECK(q != NULL);
     CHECK(strstr(q, "whiteListed:{lines:[") != NULL && strstr(q, "RUT:Line:385") != NULL);
     CHECK(strstr(q, "stopPlace{id}") != NULL);

@@ -637,3 +637,8 @@ cJSON-based ones.
   cheap or bounded: forecast and alerts (every poll, 5 min), departures
   (15 s), tide and rain (30 s while nothing is shown), missing past rain
   frames (each poll for up to an hour).*
+- [x] **79. A location's departures fitted in 199 characters.** Five lines
+  with Flybussen's 45-character ID filled it, and the setup picker refused
+  more. *Done (with the departure groups, 1.19.0): 399 characters; the
+  stored "deps" blob of 200-byte texts is converted when loaded (host test
+  in `test_config.c`, and a device kept its boards across the update).*

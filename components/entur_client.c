@@ -94,6 +94,30 @@ static void parse_direction(const char *s, const char *e, entur_line_sel_t *line
     }
 }
 
+/* The '#' entry's heading names, '|' between them, in [s, e). Each keeps
+ * its place (a line's "#n" counts them), cut short to fit at a whole UTF-8
+ * character. */
+static void parse_sections(const char *s, const char *e, entur_selection_t *out)
+{
+    while (s <= e && out->section_count < ENTUR_MAX_SECTIONS) {
+        const char *n_end = find_in(s, e, '|');
+        const char *a = s, *b = n_end;
+        while (a < b && isspace((unsigned char)*a)) a++;
+        while (b > a && isspace((unsigned char)b[-1])) b--;
+        size_t n = (size_t)(b - a);
+        if (n >= ENTUR_SECTION_MAX) {
+            n = ENTUR_SECTION_MAX - 1;
+            while (n > 0 && ((unsigned char)a[n] & 0xC0) == 0x80) {
+                n--; /* not in the middle of a character */
+            }
+        }
+        char *dst = out->section[out->section_count++];
+        memcpy(dst, a, n);
+        dst[n] = '\0';
+        s = n_end + 1;
+    }
+}
+
 bool entur_parse_selection(const char *text, entur_selection_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -105,6 +129,15 @@ bool entur_parse_selection(const char *text, entur_selection_t *out)
     while (p < end) {
         const char *stop_end = find_in(p, end, ';');
         const char *eq = find_in(p, stop_end, '=');
+        const char *first = p;
+        while (first < stop_end && isspace((unsigned char)*first)) first++;
+        if (first < stop_end && *first == '#') {
+            if (out->section_count == 0) {
+                parse_sections(first + 1, stop_end, out);
+            }
+            p = stop_end + 1;
+            continue;
+        }
         if (out->stop_count >= ENTUR_MAX_STOPS) {
             ESP_LOGW(TAG, "more than %d stops; the rest are ignored", ENTUR_MAX_STOPS);
             break;
@@ -124,11 +157,16 @@ bool entur_parse_selection(const char *text, entur_selection_t *out)
             const char *l = (eq < stop_end) ? eq + 1 : stop_end;
             while (l < stop_end) {
                 const char *l_end = find_in(l, stop_end, ',');
-                const char *slash = find_in(l, l_end, '/');
+                const char *hash = find_in(l, l_end, '#');
+                const char *slash = find_in(l, hash, '/');
                 entur_line_sel_t line = { 0 };
                 if (take_id(l, slash, line.id, sizeof(line.id))) {
-                    if (slash < l_end) {
-                        parse_direction(slash + 1, l_end, &line);
+                    if (slash < hash) {
+                        parse_direction(slash + 1, hash, &line);
+                    }
+                    if (hash < l_end) {
+                        const long sec = strtol(hash + 1, NULL, 10);
+                        line.section = (sec > 0 && sec <= ENTUR_MAX_SECTIONS) ? (uint8_t)sec : 0;
                     }
                     if (st->line_count < ENTUR_MAX_LINES) {
                         st->lines[st->line_count++] = line;
@@ -145,6 +183,15 @@ bool entur_parse_selection(const char *text, entur_selection_t *out)
             ESP_LOGW(TAG, "bad stop entry '%.*s'", (int)(stop_end - p), p);
         }
         p = stop_end + 1;
+    }
+    /* A "#n" without a name n goes under its stop. */
+    for (int i = 0; i < out->stop_count; i++) {
+        for (int l = 0; l < out->stops[i].line_count; l++) {
+            entur_line_sel_t *line = &out->stops[i].lines[l];
+            if (line->section > out->section_count || (line->section && out->section[line->section - 1][0] == '\0')) {
+                line->section = 0;
+            }
+        }
     }
     return out->stop_count > 0;
 }
@@ -230,7 +277,7 @@ static bool stop_has_via(const entur_stop_sel_t *st)
  * doesn't fit. */
 static char *build_query(const entur_selection_t *sel)
 {
-    const size_t cap = 4096;
+    const size_t cap = 8192;
     char *q = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
     if (q == NULL) {
         return NULL;
@@ -250,7 +297,13 @@ static char *build_query(const entur_selection_t *sel)
         if (st->line_count && n < cap) {
             n += snprintf(q + n, cap - n, ",whiteListed:{lines:[");
             for (int l = 0; l < st->line_count && n < cap; l++) {
-                n += snprintf(q + n, cap - n, "%s\"%s\"", l ? "," : "", st->lines[l].id);
+                bool again = false; /* listed once per direction */
+                for (int k = 0; k < l; k++) {
+                    again |= strcmp(st->lines[k].id, st->lines[l].id) == 0;
+                }
+                if (!again) {
+                    n += snprintf(q + n, cap - n, "%s\"%s\"", l ? "," : "", st->lines[l].id);
+                }
             }
             if (n < cap) {
                 n += snprintf(q + n, cap - n, "]}");
@@ -307,6 +360,10 @@ static int compare_codes(const char *a, const char *b)
 static int compare_groups(const void *pa, const void *pb)
 {
     const entur_group_t *a = pa, *b = pb;
+    if (a->section != b->section) {
+        /* The user's headings in their order, then the stops' own. */
+        return (a->section ? a->section : 255) < (b->section ? b->section : 255) ? -1 : 1;
+    }
     if (a->stop != b->stop) {
         return a->stop < b->stop ? -1 : 1;
     }
@@ -348,24 +405,30 @@ static bool goes_via(const entur_line_sel_t *line, const cJSON *sj, const char *
     return false;
 }
 
-/* Keep the call unless its line is listed with other directions only. */
+/* Keep the call unless its line is listed with other directions only.
+ * `*entry` is the listing it goes with: the first that wants it (a line
+ * may be listed once per direction), or NULL if the line isn't listed. */
 static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, const char *dir_type,
-                             const cJSON *sj, const char *quay_id)
+                             const cJSON *sj, const char *quay_id, const entur_line_sel_t **entry)
 {
+    const uint8_t d = (dir_type && strcmp(dir_type, "inbound") == 0) ? ENTUR_DIR_IN
+                    : (dir_type && strcmp(dir_type, "outbound") == 0) ? ENTUR_DIR_OUT : 0;
+    bool listed = false;
+    *entry = NULL;
     for (int i = 0; i < st->line_count; i++) {
-        if (strcmp(st->lines[i].id, line_id) == 0) {
-            if (st->lines[i].via_count > 0) {
-                return goes_via(&st->lines[i], sj, quay_id);
-            }
-            if (st->lines[i].dirs == 0) {
-                return true;
-            }
-            uint8_t d = (dir_type && strcmp(dir_type, "inbound") == 0) ? ENTUR_DIR_IN
-                      : (dir_type && strcmp(dir_type, "outbound") == 0) ? ENTUR_DIR_OUT : 0;
-            return d == 0 || (st->lines[i].dirs & d) != 0;
+        const entur_line_sel_t *l = &st->lines[i];
+        if (strcmp(l->id, line_id) != 0) {
+            continue;
+        }
+        listed = true;
+        const bool wanted = l->via_count > 0 ? goes_via(l, sj, quay_id)
+                                             : (l->dirs == 0 || d == 0 || (l->dirs & d) != 0);
+        if (wanted) {
+            *entry = l;
+            return true;
         }
     }
-    return true;
+    return !listed;
 }
 
 /* The Norwegian text of a situation's summary/description list (or the
@@ -421,17 +484,18 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
         }
         const char *dir_type = str_at(sj, "directionType");
         const char *quay_id = str_at(cJSON_GetObjectItemCaseSensitive(call, "quay"), "id");
-        if (!direction_wanted(st, line_id, dir_type, sj, quay_id)) {
+        const entur_line_sel_t *entry;
+        if (!direction_wanted(st, line_id, dir_type, sj, quay_id, &entry)) {
             continue;
         }
         const char *front = str_at(cJSON_GetObjectItemCaseSensitive(call, "destinationDisplay"), "frontText");
         /* One row per direction; without one, per destination - except
          * when a "/v" direction was picked, which is one way already. */
-        bool via = false;
-        for (int l = 0; l < st->line_count; l++) {
-            via |= (st->lines[l].via_count > 0 && strcmp(st->lines[l].id, line_id) == 0);
+        char via[16] = "";
+        if (entry != NULL && entry->via_count > 0) {
+            snprintf(via, sizeof(via), "via%d", (int)(entry - st->lines));
         }
-        const char *dir = via ? "via"
+        const char *dir = via[0] ? via
                         : (dir_type && strcmp(dir_type, "unknown") != 0) ? dir_type : (front ? front : "");
 
         int g;
@@ -451,6 +515,7 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
             snprintf(keys[g].line_id, sizeof(keys[g].line_id), "%s", line_id);
             snprintf(keys[g].dir, sizeof(keys[g].dir), "%s", dir);
             ng->stop = (uint8_t)si;
+            ng->section = entry ? entry->section : 0;
             const char *code = str_at(line, "publicCode");
             const char *mode = str_at(line, "transportMode");
             snprintf(ng->code, sizeof(ng->code), "%s", code ? code : "?");
@@ -500,6 +565,21 @@ static bool parse_response(const char *json, const entur_selection_t *sel, entur
     }
 
     out->stop_count = sel->stop_count;
+    /* The headings that some line goes under; and the stops with lines
+     * that go under none, which keep a heading of their own. */
+    out->section_count = sel->section_count;
+    for (int i = 0; i < sel->stop_count; i++) {
+        const entur_stop_sel_t *st = &sel->stops[i];
+        out->stop_rest[i] = st->line_count == 0;
+        for (int l = 0; l < st->line_count; l++) {
+            const int sec = st->lines[l].section;
+            if (sec == 0) {
+                out->stop_rest[i] = true;
+            } else {
+                memcpy(out->section[sec - 1], sel->section[sec - 1], ENTUR_SECTION_MAX);
+            }
+        }
+    }
     for (int i = 0; i < sel->stop_count; i++) {
         char alias[16];
         snprintf(alias, sizeof(alias), "s%d", i);

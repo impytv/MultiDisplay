@@ -572,10 +572,24 @@ departures that call at that stop place later on (`/v502`, Hakadal, keeps
 the northbound trains at Nittedal; `+` joins more than one). At most 4 stops
 and 8 lines per stop.
 
+Lines can also be gathered under headings of your own, across stops, such
+as "Til jobb": an entry starting with `#` names them (`|` between names, at
+most 6), and a line (with its direction) ending in `#<n>` goes under name
+`n`. A line can be listed once per direction, each under its own heading:
+
+```
+#Til jobb|Hjem;4740=RUT:Line:385/in#1,RUT:Line:385/out#2,RUT:Line:390/in;58858=VYG:Line:R31/v530#1
+```
+
+The headings come first on the board, in their order, and the lines in
+none stay under their stop's name. The text holds up to 399 characters
+(199 before 1.19.0; saved settings are converted).
+
 You rarely need to write it by hand: below the field the setup page has a
 departure picker (`components/setup_departures.js`, served as `/dep.js`). Search for a stop (nearest the location's coordinates
 first), tick lines (none = all) and, for a line, a direction (none = both);
-the field fills in as you go. For trains the picker works out the directions
+the field fills in as you go. Under **Grupper** you name the headings, and
+each ticked line or direction then gets a choice of heading. For trains the picker works out the directions
 from the order of the stops and names them by where the trains go. The picker calls Entur from the browser, so it
 needs internet and doesn't work on the device's own setup WiFi.
 
