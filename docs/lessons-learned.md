@@ -271,3 +271,13 @@ mounted read-only, so Docker couldn't create `/usr/share/nginx/html/montering`
 and the container didn't start until `/srv/multidisplay/montering` existed.
 *Lesson:* create the empty folder in `/srv/multidisplay` first, then run
 `docker compose up -d update-site`, and check that `/` answers afterwards.
+
+### Entur IDs aren't short
+
+Flybussen's line at Einars vei is `NBU:Line:a7c15243-8873-4aee-a8b4-8d22e8ad31dc`
+(45 characters), but the departure selection held IDs of up to 39: the line
+was dropped as a "bad line entry" with only a warning in the log, so the
+board showed the stop's other lines and nothing said FB5 was missing.
+*Lesson:* size buffers for IDs from someone else's data with a margin (and a
+test using the longest real one), and when something configured doesn't
+show, try that exact configuration against the live API first.

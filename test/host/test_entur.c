@@ -61,6 +61,11 @@ void test_entur(void)
     CHECK_STR(s2.stops[0].stop_id, "NSR:StopPlace:6505");
     CHECK_INT(s2.stops[0].line_count, 0);
     CHECK_INT(s2.stops[1].lines[0].dirs, ENTUR_DIR_OUT);
+    /* Flybussen's line IDs end in a UUID. */
+    CHECK(entur_parse_selection("6038=RUT:Line:21/out,NBU:Line:a7c15243-8873-4aee-a8b4-8d22e8ad31dc/v58211", &s2));
+    CHECK_INT(s2.stops[0].line_count, 2);
+    CHECK_STR(s2.stops[0].lines[1].id, "NBU:Line:a7c15243-8873-4aee-a8b4-8d22e8ad31dc");
+    CHECK_INT(s2.stops[0].lines[1].via_count, 1);
     CHECK(!entur_parse_selection("", &s2));
     CHECK(!entur_parse_selection(";;", &s2));
 

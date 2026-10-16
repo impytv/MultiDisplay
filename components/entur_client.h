@@ -23,7 +23,7 @@
 
 #define ENTUR_MAX_STOPS      4
 #define ENTUR_MAX_LINES      8   /* per stop */
-#define ENTUR_ID_MAX         40
+#define ENTUR_ID_MAX         64  /* Flybussen's are "NBU:Line:<uuid>", 45 */
 #define ENTUR_MAX_GROUPS     24  /* line + direction rows over all stops */
 #define ENTUR_PER_GROUP      2   /* departures kept per row */
 
