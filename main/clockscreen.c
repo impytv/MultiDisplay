@@ -1,7 +1,7 @@
 /* The clock screen: the time across the middle of the screen (hours and
  * minutes in large digits, the seconds smaller beside them), the date and
- * week number under it, and two temperatures: indoors from the chip's own
- * sensor (components/chip_temp.c) plus the offset measured against a
+ * week number under it, and two temperatures: indoors (unless unticked,
+ * g_cfg->clk_in) from the chip's own sensor (components/chip_temp.c) plus the offset measured against a
  * thermometer on the setup page, and outdoors at the location chosen there
  * (g_cfg->clk_out; none, and the line shows indoors only) from MET's
  * nowcast (its temperature now, which MET corrects with the observations
@@ -204,8 +204,12 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
     lv_obj_set_style_pad_column(temps, 64, 0);
     s_temp = label(temps, sec_font, fg);
     s_out = label(temps, sec_font, fg);
+    /* The settings are read once: saving restarts. */
+    if (!g_cfg->clk_in) {
+        lv_obj_add_flag(s_temp, LV_OBJ_FLAG_HIDDEN);
+    }
     if (g_cfg->clk_out == 0) {
-        lv_obj_add_flag(s_out, LV_OBJ_FLAG_HIDDEN); /* the settings are read once: saving restarts */
+        lv_obj_add_flag(s_out, LV_OBJ_FLAG_HIDDEN);
     }
 
     s_nowcast = heap_caps_calloc(1, sizeof(*s_nowcast), MALLOC_CAP_SPIRAM);

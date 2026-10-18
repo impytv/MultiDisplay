@@ -295,10 +295,13 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                    "i automatisk bytte</label></div>"
                    "<small>Klokkeslett, dato og temperaturen inne og ute, som en egen skjerm etter "
                    "m&aring;nedskalenderen.</small>"
+                   "<div class=chk><label><input type=checkbox name=clkin value=1%s>"
+                   "Vis temperaturen inne</label></div>"
+                   "<small>M&aring;les i selve brikken og kan bomme mye, selv med justeringen nedenfor.</small>"
                    "<label>Temperatur ute for</label><select name=clkout id=clkout>"
                    "<option value=''%s>Ingen</option>",
                    cfg->clk_show ? " checked" : "", cfg->clk_rotate ? " checked" : "",
-                   cfg->clk_out == 0 ? " selected" : "");
+                   cfg->clk_in ? " checked" : "", cfg->clk_out == 0 ? " selected" : "");
     /* The locations by their place in the form; the page's script keeps the
      * list in step as locations are renamed, moved, added or removed. */
     for (int i = 0; i < cfg->location_count; i++) {
@@ -1236,6 +1239,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->mon_cal = form_field(body, "moncal", val, sizeof(val)) ? 1 : 0;
         cfg->clk_show = form_field(body, "clkshow", val, sizeof(val)) ? 1 : 0;
         cfg->clk_rotate = form_field(body, "clkrot", val, sizeof(val)) ? 1 : 0;
+        cfg->clk_in = form_field(body, "clkin", val, sizeof(val)) ? 1 : 0;
         /* The temperature offset: from a thermometer's reading now, if one
          * was typed in, else as given. Out of range is ignored. */
         char deg[16];

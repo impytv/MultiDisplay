@@ -19,6 +19,7 @@ void test_config(void)
     CHECK_INT(a.screen_ctl, 0); /* off unless ticked */
     CHECK_INT(a.nav_page, 1);   /* on unless unticked */
     CHECK_INT(a.swipe_nav, 1);  /* on unless unticked */
+    CHECK_INT(a.clk_in, 1);     /* indoors shown unless unticked */
     CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
     CHECK_INT(a.mon_cal, 0);    /* off unless ticked */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
@@ -62,6 +63,7 @@ void test_config(void)
     a.clk_show = 1;
     a.clk_rotate = 1;
     a.clk_out = 2;
+    a.clk_in = 0;
     a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
@@ -88,6 +90,7 @@ void test_config(void)
     c.nav_page = 1;
     c.swipe_nav = 1;
     c.temp_offset_dc = 25;
+    c.clk_in = 1;
     char err[96];
     CHECK(app_config_from_json(json, &c, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "other");
@@ -111,6 +114,7 @@ void test_config(void)
     CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro && c.mon_cal);
     CHECK(c.clk_show && c.clk_rotate);
     CHECK_INT(c.clk_out, 2);
+    CHECK_INT(c.clk_in, 0);
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));

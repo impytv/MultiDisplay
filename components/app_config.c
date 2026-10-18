@@ -143,6 +143,7 @@ static void sanitize_view_settings(app_config_t *c)
     c->mon_astro = c->mon_astro ? 1 : 0;
     c->mon_cal = c->mon_cal ? 1 : 0;
     c->clk_show = c->clk_show ? 1 : 0;
+    c->clk_in = c->clk_in ? 1 : 0;
     c->clk_rotate = c->clk_rotate ? 1 : 0;
     if (c->clk_out > c->location_count) {
         c->clk_out = 1; /* a location since removed: the first */
@@ -178,6 +179,7 @@ static void seed_defaults(app_config_t *out)
     out->swipe_nav = 1;
     out->mon_moon = 1;
     out->mon_astro = 1;
+    out->clk_in = 1;
     out->clk_out = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
@@ -339,6 +341,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "moncal", &out->mon_cal); /* off if never saved */
     nvs_get_u8(h, "clkshow", &out->clk_show); /* no clock screen if never saved */
     nvs_get_u8(h, "clkrot", &out->clk_rotate);
+    nvs_get_u8(h, "clkin", &out->clk_in);   /* shown if never saved */
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -375,8 +378,9 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "month calendar: %s%s%s%s%s", out->mon_show ? "shown" : "not shown",
              out->mon_rotate ? ", in the rotation" : "", out->mon_moon ? ", moon phases" : "",
              out->mon_astro ? ", astronomy" : "", out->mon_cal ? ", calendar events" : "");
-    ESP_LOGI(TAG, "clock: %s%s, temperature offset %+.1f, outdoors at %s", out->clk_show ? "shown" : "not shown",
-             out->clk_rotate ? ", in the rotation" : "", out->temp_offset_dc / 10.0,
+    ESP_LOGI(TAG, "clock: %s%s, indoors %s, temperature offset %+.1f, outdoors at %s",
+             out->clk_show ? "shown" : "not shown", out->clk_rotate ? ", in the rotation" : "",
+             out->clk_in ? "shown" : "not shown", out->temp_offset_dc / 10.0,
              out->clk_out ? out->locations[out->clk_out - 1].name : "none");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
@@ -466,6 +470,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "moncal", cfg->mon_cal ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkshow", cfg->clk_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkrot", cfg->clk_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "clkin", cfg->clk_in ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {

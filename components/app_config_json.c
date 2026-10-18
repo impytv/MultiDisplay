@@ -90,6 +90,7 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON *clk = cJSON_AddObjectToObject(root, "clock");
     cJSON_AddBoolToObject(clk, "show", c->clk_show);
     cJSON_AddBoolToObject(clk, "rotate", c->clk_rotate);
+    cJSON_AddBoolToObject(clk, "indoor", c->clk_in);
     cJSON_AddNumberToObject(clk, "outdoor_location", c->clk_out); /* 1 = the first, 0 = none */
 
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
@@ -260,6 +261,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     const cJSON *clk = cJSON_GetObjectItemCaseSensitive(root, "clock");
     get_bool(clk, "show", &c->clk_show);
     get_bool(clk, "rotate", &c->clk_rotate);
+    get_bool(clk, "indoor", &c->clk_in);
     get_u8(clk, "outdoor_location", &c->clk_out);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");

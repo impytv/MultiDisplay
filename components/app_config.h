@@ -238,6 +238,9 @@ typedef struct {
      * outdoors): shown, and in the rotation. */
     uint8_t clk_show;
     uint8_t clk_rotate;
+    /* Whether it shows the temperature indoors (from the chip's sensor,
+     * which can be far off); shown unless unticked. */
+    uint8_t clk_in;
     /* Whose outdoor temperature it shows: location clk_out - 1, or none
      * with 0. The first location if never saved. */
     uint8_t clk_out;
