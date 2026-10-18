@@ -59,25 +59,25 @@ void test_ical(void)
 {
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
-    static cal_list_t l;
+    cal_list_t *l = cal_list_new(CAL_EVENTS_MAX);
     const int64_t from = mk(2026, 10, 5, 0, 0), to = mk(2026, 11, 2, 0, 0);
 
     /* Fed in small, odd pieces, as it streams in. */
-    ical_parser_t *p = ical_begin(&l, 1, from, to);
+    ical_parser_t *p = ical_begin(l, 1, from, to);
     for (size_t i = 0; i < sizeof(CAL) - 1; i += 7) {
         ical_feed(p, CAL + i, sizeof(CAL) - 1 - i < 7 ? sizeof(CAL) - 1 - i : 7);
     }
     CHECK_INT(ical_end(p), 14);
-    cal_sort(&l);
+    cal_sort(l);
 
-    const cal_event_t *e = find(&l, mk(2026, 10, 6, 9, 30));
+    const cal_event_t *e = find(l, mk(2026, 10, 6, 9, 30));
     CHECK(e != NULL);
     if (e) {
         CHECK_STR(e->title, "Tannlege, kontroll");
         CHECK_INT(e->end, mk(2026, 10, 6, 10, 30));
         CHECK(!e->all_day && e->feed == 1);
     }
-    e = find(&l, mk(2026, 10, 10, 0, 0));
+    e = find(l, mk(2026, 10, 10, 0, 0));
     CHECK(e != NULL && e->all_day && e->end == mk(2026, 10, 12, 0, 0));
     CHECK(e != NULL && strcmp(e->title, "Hytta \xC3\xA6\xC3\xB8\xC3\xA5") == 0);
 
@@ -85,44 +85,44 @@ void test_ical(void)
      * not the dropped 7th; the 12th moved to the 13th at 20:00. */
     static const int c_days[] = { 5, 14, 19, 21, 26, 28 };
     for (size_t i = 0; i < sizeof(c_days) / sizeof(c_days[0]); i++) {
-        e = find(&l, mk(2026, 10, c_days[i], 18, 0));
+        e = find(l, mk(2026, 10, c_days[i], 18, 0));
         CHECK(e != NULL && strcmp(e->title, "Trening") == 0 && e->end == mk(2026, 10, c_days[i], 19, 0));
     }
-    CHECK(find(&l, mk(2026, 10, 7, 18, 0)) == NULL);
-    CHECK(find(&l, mk(2026, 10, 12, 18, 0)) == NULL);
-    e = find(&l, mk(2026, 10, 13, 20, 0));
+    CHECK(find(l, mk(2026, 10, 7, 18, 0)) == NULL);
+    CHECK(find(l, mk(2026, 10, 12, 18, 0)) == NULL);
+    e = find(l, mk(2026, 10, 13, 20, 0));
     CHECK(e != NULL && e->moved && strcmp(e->title, "Trening (flyttet)") == 0);
 
-    e = find(&l, mk(2026, 10, 30, 15, 0));
+    e = find(l, mk(2026, 10, 30, 15, 0));
     CHECK(e != NULL && e->end == mk(2026, 10, 30, 17, 0));
-    e = find(&l, mk(2026, 10, 20, 0, 0));
+    e = find(l, mk(2026, 10, 20, 0, 0));
     CHECK(e != NULL && e->all_day && strcmp(e->title, "Bursdag") == 0);
     /* F: the 3rd to the 7th at 07:00 UTC (09:00 here); three in the window. */
     for (int d = 5; d <= 7; d++) {
-        CHECK(find(&l, mk(2026, 10, d, 9, 0)) != NULL);
+        CHECK(find(l, mk(2026, 10, d, 9, 0)) != NULL);
     }
-    CHECK(find(&l, mk(2026, 10, 8, 9, 0)) == NULL);
-    for (int i = 0; i < l.count; i++) {
-        CHECK(strcmp(l.ev[i].title, "Avlyst") != 0 && strcmp(l.ev[i].title, "Senere") != 0 &&
-              strcmp(l.ev[i].title, "Slutt") != 0);
-        CHECK(i == 0 || l.ev[i - 1].start <= l.ev[i].start);
+    CHECK(find(l, mk(2026, 10, 8, 9, 0)) == NULL);
+    for (int i = 0; i < l->count; i++) {
+        CHECK(strcmp(l->ev[i].title, "Avlyst") != 0 && strcmp(l->ev[i].title, "Senere") != 0 &&
+              strcmp(l->ev[i].title, "Slutt") != 0);
+        CHECK(i == 0 || l->ev[i - 1].start <= l->ev[i].start);
     }
 
     /* A second calendar adds to the same list; an event going on when the
      * window opens is kept. Not a calendar: -1. */
-    p = ical_begin(&l, 2, from, to);
+    p = ical_begin(l, 2, from, to);
     static const char CAL2[] = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART;VALUE=DATE:20261001\n"
                                "DTEND;VALUE=DATE:20261008\nSUMMARY:Ferie\nUID:x\nEND:VEVENT\nEND:VCALENDAR\n";
     ical_feed(p, CAL2, sizeof(CAL2) - 1);
     CHECK_INT(ical_end(p), 1);
-    CHECK_INT(l.count, 15);
-    p = ical_begin(&l, 0, from, to);
+    CHECK_INT(l->count, 15);
+    p = ical_begin(l, 0, from, to);
     ical_feed(p, "<html>Not found</html>", 22);
     CHECK_INT(ical_end(p), -1);
 
     /* A full list keeps the earliest events. */
-    memset(&l, 0, sizeof(l));
-    p = ical_begin(&l, 0, from, mk(2027, 2, 1, 0, 0));
+    l->count = 0;
+    p = ical_begin(l, 0, from, mk(2027, 2, 1, 0, 0));
     static const char DAILY[] = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:20261005T120000Z\nRRULE:FREQ=DAILY;INTERVAL=1\n"
                                 "SUMMARY:Hver dag\nUID:y\nEND:VEVENT\nBEGIN:VEVENT\nDTSTART:20261004T230000Z\n"
                                 "RRULE:FREQ=HOURLY\nSUMMARY:Hver time\nUID:z\nEND:VEVENT\nEND:VCALENDAR\n";
@@ -130,8 +130,8 @@ void test_ical(void)
     /* 119 days and the unsupported hourly rule as its first instance only
      * (01:00 the 5th): the 96 earliest are kept. */
     CHECK_INT(ical_end(p), CAL_EVENTS_MAX);
-    cal_sort(&l);
-    CHECK_INT(l.ev[0].start, mk(2026, 10, 5, 1, 0));
+    cal_sort(l);
+    CHECK_INT(l->ev[0].start, mk(2026, 10, 5, 1, 0));
 
     /* A long title is cut at a whole character. */
     char t[CAL_TITLE_MAX];
@@ -142,4 +142,15 @@ void test_ical(void)
     CHECK_INT(strlen(t), CAL_TITLE_MAX - 2);
     CHECK_INT(parse_duration("P1DT2H30M"), 86400 + 2 * 3600 + 30 * 60);
     CHECK_INT(parse_duration("P2W"), 14 * 86400);
+
+    /* A bigger list (the month calendar's) holds more, and a copy into a
+     * smaller one keeps what fits. */
+    cal_list_t *big = cal_list_new(256);
+    ical_parser_t *bp = ical_begin(big, 0, from, mk(2027, 2, 1, 0, 0));
+    ical_feed(bp, DAILY, sizeof(DAILY) - 1);
+    CHECK_INT(ical_end(bp), 120); /* the 119 days and the hourly rule's first */
+    cal_list_copy(l, big);
+    CHECK_INT(l->count, CAL_EVENTS_MAX);
+    free(big);
+    free(l);
 }

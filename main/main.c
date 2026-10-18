@@ -103,7 +103,11 @@ typedef struct {
     uint8_t kind; /* stop_kind_t */
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
-static view_stop_t s_stops[4 + 9 * APP_CONFIG_MAX_LOCATIONS]; /* overview, calendar, month, Europe, up to nine per location */
+/* The screens one for the display (overview, calendar, month, clock,
+ * Europe), and the most a location can have (build_stops' order[]). */
+#define STOPS_GLOBAL  5
+#define STOPS_PER_LOC 9
+static view_stop_t s_stops[STOPS_GLOBAL + STOPS_PER_LOC * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
 static bool s_any_radar;      /* some location shows aircraft, ships or rain (they share the radar screen) */
 static bool s_any_departures; /* some location shows a departure board */
@@ -314,6 +318,7 @@ static void build_stops(void)
         { APP_SHOW_RAIN, STOP_RAIN }, { APP_SHOW_DEPARTURES, STOP_DEPARTURES }, { APP_SHOW_AIR, STOP_AIR },
         { APP_SHOW_TIDE, STOP_TIDE }, { APP_SHOW_SAT, STOP_SAT },
     };
+    _Static_assert(sizeof(order) / sizeof(order[0]) == STOPS_PER_LOC, "s_stops sized for every screen");
     for (int i = 0; i < g_cfg->location_count; i++) {
         for (size_t k = 0; k < sizeof(order) / sizeof(order[0]); k++) {
             if (g_cfg->show[i] & order[k].show) {
@@ -339,6 +344,7 @@ static void build_stops(void)
             s_any_sat = true;
         }
     }
+    assert(s_stop_count <= (int)(sizeof(s_stops) / sizeof(s_stops[0])));
     /* Every location shows at least one screen; just in case, never none. */
     if (s_stop_count == 0) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_OVERVIEW, 0 };

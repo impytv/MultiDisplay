@@ -23,7 +23,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CAL_EVENTS_MAX 96
+#define CAL_EVENTS_MAX 96 /* the calendar screen's two weeks */
 #define CAL_TITLE_MAX  80
 
 typedef struct {
@@ -35,12 +35,23 @@ typedef struct {
     char title[CAL_TITLE_MAX];
 } cal_event_t;
 
-/* Events from one or more calendars; the earliest are kept when there are
- * more than fit. */
+/* Events from one or more calendars, room for `max` of them; the earliest
+ * are kept when there are more than fit. Allocated CAL_LIST_SIZE(max)
+ * bytes, with `max` set. */
 typedef struct {
     int count;
-    cal_event_t ev[CAL_EVENTS_MAX];
+    int max;
+    cal_event_t ev[];
 } cal_list_t;
+
+#define CAL_LIST_SIZE(n) (sizeof(cal_list_t) + (size_t)(n) * sizeof(cal_event_t))
+
+/* A list with room for `max` events, in PSRAM where there is any; NULL if
+ * out of memory. Freed with free(). */
+cal_list_t *cal_list_new(int max);
+
+/* Copy src's events into dst, as many as dst has room for. */
+void cal_list_copy(cal_list_t *dst, const cal_list_t *src);
 
 typedef struct ical_parser ical_parser_t;
 

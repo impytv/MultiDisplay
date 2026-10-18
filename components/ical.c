@@ -206,6 +206,21 @@ static int cmp_event(const void *a, const void *b)
     return (int)y->all_day - (int)x->all_day;
 }
 
+cal_list_t *cal_list_new(int max)
+{
+    cal_list_t *l = calloc(1, CAL_LIST_SIZE(max));
+    if (l != NULL) {
+        l->max = max;
+    }
+    return l;
+}
+
+void cal_list_copy(cal_list_t *dst, const cal_list_t *src)
+{
+    dst->count = src->count < dst->max ? src->count : dst->max;
+    memcpy(dst->ev, src->ev, (size_t)dst->count * sizeof(dst->ev[0]));
+}
+
 void cal_sort(cal_list_t *list)
 {
     qsort(list->ev, (size_t)list->count, sizeof(list->ev[0]), cmp_event);
@@ -221,7 +236,7 @@ static void emit(ical_parser_t *p, int64_t start, int64_t end, bool all_day, boo
     }
     cal_list_t *l = p->out;
     int slot = l->count;
-    if (l->count == CAL_EVENTS_MAX) {
+    if (l->count >= l->max) {
         slot = 0;
         for (int i = 1; i < l->count; i++) {
             if (l->ev[i].start > l->ev[slot].start) {

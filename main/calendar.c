@@ -257,8 +257,8 @@ static void calendar_show(void)
 lv_obj_t *calendar_build(lv_obj_t *screen)
 {
     s_root = screen_root_create(screen);
-    s_list = heap_caps_calloc(1, sizeof(*s_list), MALLOC_CAP_SPIRAM);
-    s_scratch = heap_caps_malloc(sizeof(*s_scratch), MALLOC_CAP_SPIRAM);
+    s_list = cal_list_new(CAL_EVENTS_MAX);
+    s_scratch = cal_list_new(CAL_EVENTS_MAX);
     assert(s_list != NULL && s_scratch != NULL);
 
     s_canvas = lv_obj_create(s_root);
@@ -312,7 +312,7 @@ uint32_t calendar_poll(int for_view)
                 if (!(feed_failed & (1u << i))) {
                     stamp_now(&s_feed_at[i]);
                 } else if (stamp_fresh(&s_feed_at[i], CAL_KEEP_MS)) {
-                    for (int k = 0; k < s_list->count && s_scratch->count < CAL_EVENTS_MAX; k++) {
+                    for (int k = 0; k < s_list->count && s_scratch->count < s_scratch->max; k++) {
                         if (s_list->ev[k].feed == i) {
                             s_scratch->ev[s_scratch->count++] = s_list->ev[k];
                         }
@@ -327,7 +327,7 @@ uint32_t calendar_poll(int for_view)
                 diag_ok(DIAG_CALENDAR);
             }
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
-                *s_list = *s_scratch;
+                cal_list_copy(s_list, s_scratch);
                 s_feed_failed = feed_failed;
                 stamp_now(&s_at);
                 esp_lv_adapter_unlock();

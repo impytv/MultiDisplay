@@ -642,3 +642,41 @@ cJSON-based ones.
   more. *Done (with the departure groups, 1.19.0): 399 characters; the
   stored "deps" blob of 200-byte texts is converted when loaded (host test
   in `test_config.c`, and a device kept its boards across the update).*
+
+## Ninth review: what changed since 1.9.4 (October 2026, 1.22.0)
+
+The code added or changed since the eighth review (the month calendar
+and its astronomy, holidays and calendar events, the clock screen and the
+chip's temperature, departure groups, police/rescue/ambulance aircraft,
+alert bars and aurora bars on the weather screen, the setup page's new
+fields), read in full, and the rest searched for unsafe string handling,
+unchecked lengths from the network and HTML built from data. The setup
+server's login, Host and Origin checks, the updater's manifest and image
+checks, and the escaping on the setup and navigation pages hold.
+
+- [x] **80. The list of screens can overflow.** `s_stops` in `main/main.c`
+  has room for 4 + 9 per location = 49 screens, but the clock (1.18.0)
+  made it five shared screens: overview, calendar, month, clock and
+  Europe. With all five ticked and all nine screens at five locations,
+  `build_stops` writes a 50th entry past the array, into whatever static
+  follows it. Size it 5 + 9 per location, ideally from the counts
+  themselves so the next screen can't repeat it. *Done (1.22.1):
+  `STOPS_GLOBAL` + `STOPS_PER_LOC` per location, with a static assert that
+  the per-location list matches, and an assert on the count.*
+- [x] **81. Busy calendars lose the month calendar's later weeks
+  silently.** The month fetches its 35 days into the same list as the
+  calendar screen's 14, which keeps the earliest 96 events
+  (`CAL_EVENTS_MAX`). A daily event in each of three calendars is 105 in
+  five weeks, so the last days come out empty, with no sign that anything
+  is missing. A list of its own with room for more (256 events is 26 KB
+  of PSRAM, twice), or a note when it is full. With a bigger list the
+  month could also fetch a wider window once, so the arrow buttons don't
+  download every calendar again at each step. *Done (1.22.1): a list now
+  has a capacity of its own (`cal_list_new`); the calendar screen keeps 96,
+  the month 256 (host test). The wider window is left for now.*
+- [x] **82. The month calendar's events go missing at the start of a
+  week.** Its window starts on the Monday of this week; at Monday
+  midnight the grid moves on, but the events held are for the old window
+  and aren't shown until the next poll, up to 5 minutes later. Wake the poll
+  (`app_wake_poll`) when the first day shown changes, as the buttons do.
+  *Done (1.22.1).*

@@ -64,6 +64,9 @@ static const char *TAG = "month";
 #define MON_CAL_KEEP_MS  (12 * 3600 * 1000) /* older than this isn't shown */
 #define MON_CAL_RETRY_MS 60000
 #define MON_DAYS         (MON_WEEKS * 7)
+/* Events held for the five weeks: a daily event in each of the three
+ * calendars is 105 (26 KB of PSRAM per list). */
+#define MON_CAL_EVENTS   256
 
 static lv_obj_t *s_root, *s_canvas, *s_title;
 static big_clock_t s_clock;
@@ -588,7 +591,11 @@ static void month_clock_timer_cb(lv_timer_t *t)
             app_wake_poll();
         }
     } else if (day_key(now, &lt) != s_shown_day) {
+        const int64_t first = s_day0[0];
         month_show();
+        if (g_cfg->mon_cal && s_day0[0] != first) {
+            app_wake_poll(); /* a new week: the calendars for it */
+        }
     }
 }
 
@@ -636,8 +643,8 @@ lv_obj_t *month_build(lv_obj_t *screen)
     lv_obj_set_size(s_title, x - MON_X, lv_font_get_line_height(g_font_large));
     lv_timer_create(month_clock_timer_cb, 1000, NULL);
     if (g_cfg->mon_cal) {
-        s_cal = heap_caps_calloc(1, sizeof(*s_cal), MALLOC_CAP_SPIRAM);
-        s_cal_scratch = heap_caps_malloc(sizeof(*s_cal_scratch), MALLOC_CAP_SPIRAM);
+        s_cal = cal_list_new(MON_CAL_EVENTS);
+        s_cal_scratch = cal_list_new(MON_CAL_EVENTS);
         assert(s_cal != NULL && s_cal_scratch != NULL);
     }
     return s_root;
@@ -671,7 +678,7 @@ static void fetch_events(int64_t from, int64_t to)
     }
     /* A calendar that failed keeps the events it had for these days. */
     if (failed && !other_days && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) {
-        for (int k = 0; k < s_cal->count && s_cal_scratch->count < CAL_EVENTS_MAX; k++) {
+        for (int k = 0; k < s_cal->count && s_cal_scratch->count < s_cal_scratch->max; k++) {
             if (failed & (1u << s_cal->ev[k].feed)) {
                 s_cal_scratch->ev[s_cal_scratch->count++] = s_cal->ev[k];
             }
@@ -686,7 +693,7 @@ static void fetch_events(int64_t from, int64_t to)
         backoff_ok(&s_cal_fail);
     }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        *s_cal = *s_cal_scratch;
+        cal_list_copy(s_cal, s_cal_scratch);
         s_cal_from = from;
         stamp_now(&s_cal_at);
         esp_lv_adapter_unlock();
