@@ -44,6 +44,11 @@ void test_yr(void)
         CHECK(fabsf(fc.days[0].temp_max_c - 16.0f) < 0.05f && fabsf(fc.days[0].temp_min_c - 5.4f) < 0.05f);
         CHECK(fabsf(fc.days[3].precip_mm - 3.6f) < 0.05f);
         CHECK(fabsf(fc.days[3].temp_min_c - 10.1f) < 0.05f);
+        /* The high end of the range, and gusts while MET gives them. */
+        CHECK(fabsf(fc.days[3].precip_max_mm - 9.5f) < 0.05f);
+        CHECK(fabsf(fc.days[1].precip_max_mm - 0.7f) < 0.05f && fc.days[1].precip_mm < 0.05f);
+        CHECK(fabsf(fc.days[1].gust_max_ms - 7.0f) < 0.05f);
+        CHECK(fc.days[3].gust_max_ms == 0.0f);
         CHECK(fabsf(fc.days[8].temp_max_c - 12.5f) < 0.05f);
         CHECK_STR(fc.days[0].symbol_code, "partlycloudy_day");
         CHECK_STR(fc.days[1].symbol_code, "cloudy");

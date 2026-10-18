@@ -1,8 +1,10 @@
 /* The week screen: the big clock top right, and seven day cards from the location's forecast (the days
  * yr_client sums up): the weekday, MET's symbol for the day, the day's
  * temperature range as a bar on a scale shared by the whole week, with the
- * high above and the low below it, the precipitation total and the
- * strongest wind. Uses the weather screen's forecast cache (weather.c). */
+ * high above and the low below it (orange above zero, blue below), the
+ * precipitation total with MET's high end ("0,4-2,1 mm") and the strongest
+ * wind with the strongest gust ("5 (12) m/s"; MET gives gusts for the
+ * first two days or so). Uses the weather screen's forecast cache (weather.c). */
 
 #include <math.h>
 #include <stdio.h>
@@ -64,6 +66,27 @@ static void deg(char *out, size_t n, float t)
     snprintf(out, n, "%d\xC2\xB0", (int)lroundf(t));
 }
 
+/* An amount of precipitation: "2,1", or "12" from 10 mm, or whole with
+ * `whole`. */
+static void mm(char *out, size_t n, float v, bool whole)
+{
+    if (whole || v >= 9.95f) {
+        snprintf(out, n, "%d", (int)lroundf(v));
+    } else {
+        snprintf(out, n, "%.1f", (double)v);
+        char *dot = strchr(out, '.');
+        if (dot) {
+            *dot = ',';
+        }
+    }
+}
+
+/* Whether two amounts show differently at a tenth of a millimetre. */
+static bool mm_differ(float a, float b)
+{
+    return lroundf(a * 10) != lroundf(b * 10);
+}
+
 static void week_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -108,7 +131,7 @@ static void week_draw_cb(lv_event_t *e)
         const bool is_today = lt.tm_yday == today_lt.tm_yday && lt.tm_year == today_lt.tm_year;
         draw_rect(layer, x, WEEK_TOP, x + w - 1, r.bottom, 8, is_today ? c_today : c_card);
 
-        char buf[24];
+        char buf[40];
         draw_text(layer, is_today ? "I dag" : WDAY[lt.tm_wday], x, r.day, w, LV_TEXT_ALIGN_CENTER, c_txt);
         snprintf(buf, sizeof(buf), "%d.%d.", lt.tm_mday, lt.tm_mon + 1);
         draw_text(layer, buf, x, r.date, w, LV_TEXT_ALIGN_CENTER, c_dim);
@@ -121,24 +144,45 @@ static void week_draw_cb(lv_event_t *e)
             y2 = y1 + 6;
         }
         const int cx = x + w / 2;
-        draw_rect(layer, cx - WEEK_BAR_W / 2, y1, cx + WEEK_BAR_W / 2 - 1, y2, WEEK_BAR_W / 2,
-                  dy->temp_max_c > 0 ? c_warm : c_cold);
+        const int bx1 = cx - WEEK_BAR_W / 2, bx2 = cx + WEEK_BAR_W / 2 - 1, br = WEEK_BAR_W / 2;
+        draw_rect(layer, bx1, y1, bx2, y2, br, dy->temp_max_c > 0 ? c_warm : c_cold);
+        if (dy->temp_max_c > 0 && dy->temp_min_c < 0) {
+            /* Blue from zero down, square at the top. */
+            const int y0 = r.bar_top + (int)(hi / (hi - lo) * span);
+            if (y0 < y2) {
+                draw_rect(layer, bx1, y0, bx2, y2, br, c_cold);
+                draw_rect(layer, bx1, y0, bx2, y0 + br < y2 ? y0 + br : y2, 0, c_cold);
+            }
+        }
         deg(buf, sizeof(buf), dy->temp_max_c);
         draw_text(layer, buf, x, y1 - lh - 2, w, LV_TEXT_ALIGN_CENTER, dy->temp_max_c > 0 ? c_warm : c_cold);
         deg(buf, sizeof(buf), dy->temp_min_c);
-        draw_text(layer, buf, x, y2 + 2, w, LV_TEXT_ALIGN_CENTER, c_cold);
+        draw_text(layer, buf, x, y2 + 2, w, LV_TEXT_ALIGN_CENTER, dy->temp_min_c > 0 ? c_warm : c_cold);
 
-        if (dy->precip_mm >= 0.1f) {
-            snprintf(buf, sizeof(buf), "%.1f mm", (double)dy->precip_mm);
-            char *dot = strchr(buf, '.');
-            if (dot) {
-                *dot = ',';
+        /* "1,2 mm", or "0,4-2,1 mm" when MET's high end is more; whole
+         * numbers if that is too wide. */
+        char a[12], b[12];
+        const bool range = mm_differ(dy->precip_mm, dy->precip_max_mm);
+        for (int whole = 0; whole < 2; whole++) {
+            mm(a, sizeof(a), dy->precip_mm, whole);
+            mm(b, sizeof(b), dy->precip_max_mm, whole);
+            if (range && strcmp(a, b) != 0) {
+                snprintf(buf, sizeof(buf), "%s\xE2\x80\x93%s mm", strcmp(a, "0,0") == 0 ? "0" : a, b);
+            } else {
+                snprintf(buf, sizeof(buf), "%s mm", strcmp(a, "0,0") == 0 ? "0" : a);
             }
-            draw_text(layer, buf, x, r.precip, w, LV_TEXT_ALIGN_CENTER, c_rain);
-        } else {
-            draw_text(layer, "0 mm", x, r.precip, w, LV_TEXT_ALIGN_CENTER, c_dim);
+            if (draw_text_w(buf) <= w - 8) {
+                break;
+            }
         }
-        snprintf(buf, sizeof(buf), "%d m/s", (int)lroundf(dy->wind_max_ms));
+        draw_text(layer, buf, x, r.precip, w, LV_TEXT_ALIGN_CENTER,
+                  dy->precip_max_mm >= 0.05f ? c_rain : c_dim);
+        const int wind = (int)lroundf(dy->wind_max_ms), gust = (int)lroundf(dy->gust_max_ms);
+        if (gust > wind) {
+            snprintf(buf, sizeof(buf), "%d (%d) m/s", wind, gust);
+        } else {
+            snprintf(buf, sizeof(buf), "%d m/s", wind);
+        }
         draw_text(layer, buf, x, r.wind, w, LV_TEXT_ALIGN_CENTER, c_dim);
     }
 }

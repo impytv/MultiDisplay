@@ -673,7 +673,9 @@ checks, and the escaping on the setup and navigation pages hold.
   month could also fetch a wider window once, so the arrow buttons don't
   download every calendar again at each step. *Done (1.22.1): a list now
   has a capacity of its own (`cal_list_new`); the calendar screen keeps 96,
-  the month 256 (host test). The wider window is left for now.*
+  the month 256 (host test). The wider window followed in 1.23.0: four
+  weeks before and eight after those shown, 640 events, and the days after
+  a full list's last one left without.*
 - [x] **82. The month calendar's events go missing at the start of a
   week.** Its window starts on the Monday of this week; at Monday
   midnight the grid moves on, but the events held are for the old window

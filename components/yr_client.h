@@ -38,7 +38,9 @@ typedef struct {
     int64_t start;              /* epoch seconds of the day's local midnight */
     float temp_max_c, temp_min_c;
     float precip_mm;            /* the day's total */
+    float precip_max_mm;        /* the high end of MET's range for it; at least precip_mm */
     float wind_max_ms;
+    float gust_max_ms;          /* 0 where MET gives no gusts (after the first two days or so) */
     char symbol_code[48];       /* the 6-hour symbol nearest midday */
 } yr_day_t;
 

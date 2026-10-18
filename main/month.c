@@ -20,8 +20,9 @@
  *
  * One screen for the display. Redrawn when the date changes (checked with
  * the clock, every second). The calendars, if shown, are fetched every 15
- * minutes for the weeks on show, and at once when the buttons move to
- * other weeks. */
+ * minutes for the weeks on show and a step of the buttons either way
+ * beyond them (MON_CAL_BACK, MON_CAL_AHEAD), so a step needs no fetch;
+ * at once when the buttons move past that. */
 
 #include <assert.h>
 #include <stdio.h>
@@ -64,9 +65,12 @@ static const char *TAG = "month";
 #define MON_CAL_KEEP_MS  (12 * 3600 * 1000) /* older than this isn't shown */
 #define MON_CAL_RETRY_MS 60000
 #define MON_DAYS         (MON_WEEKS * 7)
-/* Events held for the five weeks: a daily event in each of the three
- * calendars is 105 (26 KB of PSRAM per list). */
-#define MON_CAL_EVENTS   256
+#define MON_CAL_BACK     MON_STEP     /* weeks fetched before those shown */
+#define MON_CAL_AHEAD    (2 * MON_STEP) /* and after */
+/* Events held for the 17 weeks fetched: a daily event in each of the
+ * three calendars is 357 (66 KB of PSRAM per list). If there are more, the
+ * earliest are kept, and the days after the last one show none. */
+#define MON_CAL_EVENTS   640
 
 static lv_obj_t *s_root, *s_canvas, *s_title;
 static big_clock_t s_clock;
@@ -89,10 +93,11 @@ static EXT_RAM_BSS_ATTR struct {
  * for the window to fetch, under the adapter lock. */
 static int64_t s_day0[MON_DAYS + 1];
 
-/* The calendars' events for the window from s_cal_from, if shown (in
- * PSRAM; the scratch is the weather task's). */
+/* The calendars' events, if shown, for [s_cal_from, s_cal_to) - to the
+ * last event's day if the list is full (in PSRAM; the scratch is the
+ * weather task's). s_cal_asked is the first day shown it was fetched for. */
 static cal_list_t *s_cal, *s_cal_scratch;
-static int64_t s_cal_from;
+static int64_t s_cal_from, s_cal_to, s_cal_asked;
 static fetch_stamp_t s_cal_at;
 static backoff_t s_cal_fail;
 
@@ -293,14 +298,12 @@ static bool any_calendar(void)
     return false;
 }
 
-/* The calendars' events, if they are to be shown and are for the days on
- * show and recent; else NULL. */
+/* The calendars' events, if they are to be shown and recent; else NULL.
+ * Only the days from s_cal_from to s_cal_to have them. */
 static const cal_list_t *events(void)
 {
-    return (g_cfg->mon_cal && s_cal != NULL && s_day0[0] != 0 && s_cal_from == s_day0[0] &&
-            stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS))
-               ? s_cal
-               : NULL;
+    return (g_cfg->mon_cal && s_cal != NULL && s_cal_to != 0 && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) ? s_cal
+                                                                                                         : NULL;
 }
 
 /* Whether event e is on day [ds, de): an all-day one on each day it
@@ -316,10 +319,10 @@ static bool on_day(const cal_event_t *e, int64_t ds, int64_t de)
 static int draw_events(lv_layer_t *layer, int idx, int nx, int ny, int nw, int bottom, lv_color_t card, bool past)
 {
     const cal_list_t *l = events();
-    if (l == NULL) {
+    const int64_t ds = s_day0[idx], de = s_day0[idx + 1];
+    if (l == NULL || ds < s_cal_from || de > s_cal_to) {
         return ny;
     }
-    const int64_t ds = s_day0[idx], de = s_day0[idx + 1];
     const int note_lh = lv_font_get_line_height(s_note_font);
     int total = 0;
     for (int i = 0; i < l->count; i++) {
@@ -657,30 +660,47 @@ void month_enter(void)
     month_show();
 }
 
-/* Fetch the calendars for the days from `from` to `to` if due. */
+/* Local midnight `weeks` weeks from midnight t. */
+static int64_t weeks_from(int64_t t, int weeks)
+{
+    const time_t tt = (time_t)t;
+    struct tm lt;
+    localtime_r(&tt, &lt);
+    lt.tm_mday += weeks * 7;
+    lt.tm_hour = 0;
+    lt.tm_isdst = -1;
+    return (int64_t)mktime(&lt);
+}
+
+/* Fetch the calendars, if due, for the days from `from` to `to` (those
+ * shown) and MON_CAL_BACK and MON_CAL_AHEAD weeks beyond them. */
 static void fetch_events(int64_t from, int64_t to)
 {
-    const bool other_days = from != s_cal_from;
+    /* Days shown that the list doesn't cover, and not already fetched for. */
+    const bool other_days = (from < s_cal_from || to > s_cal_to) && from != s_cal_asked;
     if (!other_days && (stamp_fresh(&s_cal_at, MON_CAL_FETCH_MS) || backoff_waiting(&s_cal_fail, MON_CAL_RETRY_MS))) {
         return;
     }
+    const int64_t f_from = weeks_from(from, -MON_CAL_BACK), f_to = weeks_from(to, MON_CAL_AHEAD);
     const char *urls[APP_CONFIG_CAL_FEEDS];
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         urls[i] = g_cfg->cal_url[i];
     }
     uint8_t failed = 0;
-    esp_err_t err = cal_fetch(urls, APP_CONFIG_CAL_FEEDS, from, to, s_cal_scratch, &failed);
+    esp_err_t err = cal_fetch(urls, APP_CONFIG_CAL_FEEDS, f_from, f_to, s_cal_scratch, &failed);
     if (err != ESP_OK) {
         diag_fail(DIAG_CALENDAR, err);
         backoff_fail(&s_cal_fail);
         ESP_LOGW(TAG, "Calendars not read: %s", esp_err_to_name(err));
         return;
     }
-    /* A calendar that failed keeps the events it had for these days. */
-    if (failed && !other_days && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) {
+    /* A calendar that failed keeps the events it had, where the windows
+     * meet. */
+    if (failed && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) {
         for (int k = 0; k < s_cal->count && s_cal_scratch->count < s_cal_scratch->max; k++) {
-            if (failed & (1u << s_cal->ev[k].feed)) {
-                s_cal_scratch->ev[s_cal_scratch->count++] = s_cal->ev[k];
+            const cal_event_t *e = &s_cal->ev[k];
+            if ((failed & (1u << e->feed)) && e->start < f_to && e->end > f_from) {
+                s_cal_scratch->ev[s_cal_scratch->count++] = *e;
             }
         }
         cal_sort(s_cal_scratch);
@@ -692,13 +712,33 @@ static void fetch_events(int64_t from, int64_t to)
         diag_ok(DIAG_CALENDAR);
         backoff_ok(&s_cal_fail);
     }
+    /* A full list may lack events after its last one's day. */
+    int64_t cover_to = f_to;
+    if (s_cal_scratch->count >= s_cal_scratch->max) {
+        int64_t last = 0;
+        for (int k = 0; k < s_cal_scratch->count; k++) {
+            if (s_cal_scratch->ev[k].start > last) {
+                last = s_cal_scratch->ev[k].start;
+            }
+        }
+        const time_t lt_t = (time_t)last;
+        struct tm lt;
+        localtime_r(&lt_t, &lt);
+        lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
+        lt.tm_isdst = -1;
+        cover_to = (int64_t)mktime(&lt);
+        ESP_LOGW(TAG, "Calendar list full: events up to %lld only", (long long)cover_to);
+    }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         cal_list_copy(s_cal, s_cal_scratch);
-        s_cal_from = from;
+        s_cal_from = f_from;
+        s_cal_to = cover_to;
+        s_cal_asked = from;
         stamp_now(&s_cal_at);
         esp_lv_adapter_unlock();
     }
-    ESP_LOGI(TAG, "%d calendar event(s) in the %d days shown", s_cal_scratch->count, MON_DAYS);
+    ESP_LOGI(TAG, "%d calendar event(s) in the %d weeks fetched", s_cal_scratch->count,
+             MON_CAL_BACK + MON_WEEKS + MON_CAL_AHEAD);
 }
 
 uint32_t month_poll(int for_view)

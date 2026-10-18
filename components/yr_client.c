@@ -167,14 +167,18 @@ static void parse_days(const cJSON *timeseries, yr_forecast_t *out)
             dy->temp_min_c = fminf(dy->temp_min_c, temp);
         }
         dy->wind_max_ms = fmaxf(dy->wind_max_ms, num_at(inst, "wind_speed", 0.0f));
+        dy->gust_max_ms = fmaxf(dy->gust_max_ms, num_at(inst, "wind_speed_of_gust", 0.0f));
 
         const cJSON *h1 = cJSON_GetObjectItemCaseSensitive(data, "next_1_hours");
         const cJSON *h6 = cJSON_GetObjectItemCaseSensitive(data, "next_6_hours");
         const cJSON *h6d = cJSON_GetObjectItemCaseSensitive(h6, "details");
-        if (h1 != NULL) {
-            dy->precip_mm += num_at(cJSON_GetObjectItemCaseSensitive(h1, "details"), "precipitation_amount", 0.0f);
-        } else if (h6 != NULL) {
-            dy->precip_mm += num_at(h6d, "precipitation_amount", 0.0f);
+        const cJSON *pd = h1 != NULL ? cJSON_GetObjectItemCaseSensitive(h1, "details") : h6d;
+        if (h1 != NULL || h6 != NULL) {
+            const float mm = num_at(pd, "precipitation_amount", 0.0f);
+            dy->precip_mm += mm;
+            dy->precip_max_mm += fmaxf(mm, num_at(pd, "precipitation_amount_max", mm));
+        }
+        if (h1 == NULL && h6 != NULL) {
             /* The 6-hour extremes cover hours the samples don't. */
             const float mx = num_at(h6d, "air_temperature_max", NAN), mn = num_at(h6d, "air_temperature_min", NAN);
             if (!isnan(mx)) {

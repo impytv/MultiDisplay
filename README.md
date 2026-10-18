@@ -394,7 +394,10 @@ Screens the rotation shows aren't remembered across a restart
 Tick **Uke** for a location to get seven day cards from its forecast: the
 weekday, MET's symbol for the middle of the day, the day's temperature
 range as a bar on a scale shared by the week (the high above it, the low
-below), the day's precipitation and its strongest wind.
+below; orange above zero, blue below), the day's precipitation with the
+high end of MET's range when that is more ("0,4–2,1 mm"), and its
+strongest wind with the strongest gust in brackets ("5 (12) m/s"; MET
+forecasts gusts for the first two days or so).
 
 ### Air quality and pollen
 
@@ -476,8 +479,9 @@ And one off unless ticked:
   with a bar in the calendar's colour, the title cut with ".." to fit, an
   all-day event on each day it covers and others on the day they start.
   When there is no room for all, the last line says how many more ("+5");
-  the events come before the sky's. They are fetched for the five weeks on
-  show every 15 minutes, and at once when the buttons step to other weeks.
+  the events come before the sky's. They are fetched every 15 minutes for
+  the five weeks on show, the four before and the eight after, so a step
+  of the buttons shows them at once; a step further fetches at once.
 
 The events are built in for 2026-2035 by `scripts/build_astro.py`, which
 computes them with [Skyfield](https://rhodesmill.org/skyfield/) and JPL's
