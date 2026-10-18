@@ -287,13 +287,27 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                  "(klokken viser hele grader).", r,
                  shown);
     }
+    p = buf_append(p, end,
+                   "<details class=sec><summary>Klokke</summary>"
+                   "<div class=chk><label><input type=checkbox name=clkshow value=1%s>"
+                   "Vis klokken</label><label><input type=checkbox name=clkrot value=1%s>"
+                   "i automatisk bytte</label></div>"
+                   "<small>Klokkeslett, dato og temperaturen inne og ute, som en egen skjerm etter "
+                   "m&aring;nedskalenderen.</small>"
+                   "<label>Temperatur ute for</label><select name=clkout id=clkout>"
+                   "<option value=''%s>Ingen</option>",
+                   cfg->clk_show ? " checked" : "", cfg->clk_rotate ? " checked" : "",
+                   cfg->clk_out == 0 ? " selected" : "");
+    /* The locations by their place in the form; the page's script keeps the
+     * list in step as locations are renamed, moved, added or removed. */
+    for (int i = 0; i < cfg->location_count; i++) {
+        p = buf_append(p, end, "<option value=%d%s>", i, cfg->clk_out == i + 1 ? " selected" : "");
+        p = html_escape_append(p, end, cfg->locations[i].name);
+        p = buf_append(p, end, "</option>");
+    }
     return buf_append(p, end,
-                      "<details class=sec><summary>Klokke</summary>"
-                      "<div class=chk><label><input type=checkbox name=clkshow value=1%s>"
-                      "Vis klokken</label><label><input type=checkbox name=clkrot value=1%s>"
-                      "i automatisk bytte</label></div>"
-                      "<small>Klokkeslett, dato og temperaturen inne, som en egen skjerm etter "
-                      "m&aring;nedskalenderen.</small>"
+                      "</select><small>Temperaturen n&aring; fra Meteorologisk institutt, hentet hvert "
+                      "tiende minutt.</small>"
                       "<label>Riktig temperatur n&aring; (&deg;C)</label>"
                       "<input name=tempref inputmode=decimal placeholder='f.eks. 21,5'>"
                       "<small>%s Temperaturen kommer fra en sensor i selve brikken, som er varmere enn "
@@ -304,7 +318,7 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                       "<small>Legges til brikkens temperatur. Brukes n&aring;r feltet over er tomt. "
                       "Justeringen gjelder denne skjermen og er ikke med i sikkerhetskopier.</small>"
                       "</details>",
-                      cfg->clk_show ? " checked" : "", cfg->clk_rotate ? " checked" : "", now, off);
+                      now, off);
 }
 
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
@@ -1332,6 +1346,12 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         free(ship_at);
         return httpd_resp_send_500(req);
     }
+    /* The clock's outdoor temperature: a location by its place in the form
+     * (-1 none), followed through the compacting below. */
+    char clkout[8];
+    const bool clkout_sent = form_field(body, "clkout", clkout, sizeof(clkout));
+    const int clkout_form = (clkout_sent && clkout[0]) ? atoi(clkout) : -1;
+    uint8_t clk_out = 0;
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -1360,6 +1380,9 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         if (name[0] == '\0') {
             snprintf(name, sizeof(name), "Sted %d", n + 1);
+        }
+        if (i == clkout_form) {
+            clk_out = (uint8_t)(n + 1);
         }
         snprintf(locs[n].name, sizeof(locs[n].name), "%s", name);
         snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
@@ -1449,6 +1472,11 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
 
     memcpy(cfg->locations, locs, sizeof(cfg->locations));
     cfg->location_count = (uint8_t)n;
+    if (clkout_sent) {
+        cfg->clk_out = clk_out;
+    } else if (cfg->clk_out > n) {
+        cfg->clk_out = 1; /* a form without the clock (the setup portal) */
+    }
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cfg->show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;
         cfg->auto_show[i] = auto_show[i];

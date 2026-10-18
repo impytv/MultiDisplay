@@ -2,9 +2,10 @@
  * minutes in large digits, the seconds smaller beside them), the date and
  * week number under it, and two temperatures: indoors from the chip's own
  * sensor (components/chip_temp.c) plus the offset measured against a
- * thermometer on the setup page, and outdoors at the first location from
- * MET's nowcast (its temperature now, which MET corrects with the
- * observations around, Netatmo stations among them).
+ * thermometer on the setup page, and outdoors at the location chosen there
+ * (g_cfg->clk_out; none, and the line shows indoors only) from MET's
+ * nowcast (its temperature now, which MET corrects with the observations
+ * around, Netatmo stations among them).
  *
  * One screen for the display. A timer redraws whatever changed, several
  * times a second so no second is skipped; the nowcast is fetched every 10
@@ -203,6 +204,9 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
     lv_obj_set_style_pad_column(temps, 64, 0);
     s_temp = label(temps, sec_font, fg);
     s_out = label(temps, sec_font, fg);
+    if (g_cfg->clk_out == 0) {
+        lv_obj_add_flag(s_out, LV_OBJ_FLAG_HIDDEN); /* the settings are read once: saving restarts */
+    }
 
     s_nowcast = heap_caps_calloc(1, sizeof(*s_nowcast), MALLOC_CAP_SPIRAM);
     assert(s_nowcast != NULL);
@@ -226,6 +230,9 @@ void clockscreen_enter(void)
 
 uint32_t clockscreen_poll(int for_view)
 {
+    if (g_cfg->clk_out == 0 || g_cfg->clk_out > g_cfg->location_count) {
+        return CLK_POLL_MS; /* no outdoor temperature asked for */
+    }
     /* Woken early (a tap, the screen coming back): nothing due yet. */
     if (backoff_waiting(&s_out_fail, CLK_RETRY_MS)) {
         return CLK_RETRY_MS;
@@ -233,7 +240,7 @@ uint32_t clockscreen_poll(int for_view)
     if (stamp_fresh(&s_out_at, CLK_POLL_MS)) {
         return CLK_POLL_MS;
     }
-    const app_location_t *loc = &g_cfg->locations[0];
+    const app_location_t *loc = &g_cfg->locations[g_cfg->clk_out - 1];
     if (!s_out_at.valid) {
         memset(&s_nc_http, 0, sizeof(s_nc_http)); /* nothing held to compare with */
     }

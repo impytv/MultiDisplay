@@ -19,6 +19,7 @@ void test_config(void)
     CHECK_INT(a.screen_ctl, 0); /* off unless ticked */
     CHECK_INT(a.nav_page, 1);   /* on unless unticked */
     CHECK_INT(a.swipe_nav, 1);  /* on unless unticked */
+    CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
 
     /* Save and load again: everything comes back. */
@@ -58,6 +59,7 @@ void test_config(void)
     a.mon_astro = 0;
     a.clk_show = 1;
     a.clk_rotate = 1;
+    a.clk_out = 2;
     a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
@@ -106,6 +108,7 @@ void test_config(void)
     CHECK_INT(c.sat_visible, 1);
     CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro);
     CHECK(c.clk_show && c.clk_rotate);
+    CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
@@ -121,6 +124,14 @@ void test_config(void)
     CHECK_INT(c.screen_ctl, 0);                     /* this display's own setting stays */
     CHECK_INT(c.nav_page, 1);                       /* off in the backup's, on here */
     CHECK_INT(c.swipe_nav, 0);                      /* in the backup */
+
+    /* An outdoor temperature for a location the list no longer has: the first's. */
+    c.clk_out = 3;
+    app_config_sanitize(&c);
+    CHECK_INT(c.clk_out, 1);
+    c.clk_out = 0;                                  /* none */
+    app_config_sanitize(&c);
+    CHECK_INT(c.clk_out, 0);
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");

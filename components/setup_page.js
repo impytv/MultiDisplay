@@ -39,9 +39,15 @@ function T(f){let i=f.dataset.loc,n=N(f,'name').value.trim(),
 v=[...f.querySelectorAll('.vis')].filter(x=>x.checked).map(x=>x.parentNode.textContent.trim().toLowerCase());
 f.parentNode.querySelector('.lt').innerHTML='Sted '+(+i+1)+': '+(n?E(n)+' <span class=ls>'+E(v.join(', '))+'</span>':'<span class=ls>uten navn</span>');
 f.querySelectorAll('.sr').forEach(r=>{r.querySelector('.rot').style.visibility=r.querySelector('.vis').checked?'':'hidden'});
-f.querySelectorAll('[data-need]').forEach(d=>{d.hidden=!N(f,d.dataset.need).checked})}
+f.querySelectorAll('[data-need]').forEach(d=>{d.hidden=!N(f,d.dataset.need).checked});O()}
+/* The clock's outdoor temperature: a choice among the locations in use,
+by their place in the form, kept as they are renamed, added or removed. */
+const CO=document.getElementById('clkout');
+function O(){if(!CO)return;let s=CO.value,o='<option value="">Ingen</option>';
+L.forEach(f=>{if(!f.parentNode.hidden)o+='<option value='+f.dataset.loc+'>'+E(N(f,'name').value.trim()||'Sted '+(+f.dataset.loc+1))+'</option>'});
+CO.innerHTML=o;CO.value=[...CO.options].some(x=>x.value==s)?s:''}
 /* ▲▼ only between the locations in use. */
-function M(){let u=L.filter(f=>!f.parentNode.hidden);L.forEach(f=>f.parentNode.querySelectorAll('.mv').forEach(b=>{
+function M(){O();let u=L.filter(f=>!f.parentNode.hidden);L.forEach(f=>f.parentNode.querySelectorAll('.mv').forEach(b=>{
 let k=u.indexOf(f)+ +b.dataset.d;b.disabled=k<0||k>=u.length}));addloc.hidden=u.length==L.length}
 L.forEach(f=>{T(f);f.addEventListener('input',()=>T(f));f.addEventListener('change',()=>T(f))});M();
 document.querySelectorAll('.mv').forEach(b=>b.onclick=e=>{e.preventDefault();let a=b.closest('details').querySelector('fieldset'),
@@ -49,6 +55,7 @@ j=+a.dataset.loc+ +b.dataset.d,o=L[j];if(!o||o.parentNode.hidden)return;
 a.querySelectorAll('input[name]').forEach(x=>{let y=o.querySelector('[name='+x.name.replace(/\d+$/,j)+']');
 if(!y)return;if(x.type=='checkbox'){let c=x.checked;x.checked=y.checked;y.checked=c}else{let v=x.value;x.value=y.value;y.value=v}});
 [a,o].forEach(f=>f.querySelectorAll('input[name^=dep]').forEach(x=>x.dispatchEvent(new Event('change'))));
+if(CO){let c=CO.value;if(c==a.dataset.loc)CO.value=j;else if(c==j)CO.value=a.dataset.loc}
 T(a);T(o);S();if(o.parentNode.scrollIntoView)o.parentNode.scrollIntoView({block:'nearest',behavior:'smooth'})});
 /* Add: the first unused block; remove: empty it (it isn't saved). */
 addloc.onclick=()=>{let d=L.map(f=>f.parentNode).find(d=>d.hidden);if(!d)return;d.hidden=false;d.open=true;M();S();d.querySelector('.plq').focus()};

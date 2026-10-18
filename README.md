@@ -491,11 +491,16 @@ seconds smaller beside them), the date and ISO week number under it, and
 the temperature indoors and outdoors in whole degrees ("Inne 21°   Ute 7°";
 the setup page shows the indoor tenths, for calibrating).
 
-The outdoor temperature is MET's nowcast for the first location: its
-temperature now, which MET corrects with the observations around it
-(Netatmo's private stations among them, quality-controlled against each
-other and the model), so it is better than averaging nearby stations
-ourselves - tried, and in sunshine many private sensors read 2-5 °C warm.
+The outdoor temperature is MET's nowcast for the location chosen under
+**Temperatur ute for** (the first unless changed; **Ingen** shows indoors
+only, and nothing is fetched). The choice follows its location as the
+locations are moved, and falls back to **Ingen** if it is removed. It is
+in backups as `clock.outdoor_location` (1 = the first, 0 = none). The
+nowcast gives the temperature now, which MET corrects with the
+observations around it (Netatmo's private stations among them,
+quality-controlled against each other and the model), so it is better
+than averaging nearby stations ourselves - tried, and in sunshine many
+private sensors read 2-5 °C warm.
 Fetched every 10 minutes while the clock is shown; "Ute –" after half an
 hour without an answer. With the rain radar down ("temporarily
 unavailable") the nowcast still has the temperature.

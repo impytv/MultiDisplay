@@ -231,10 +231,13 @@ typedef struct {
      * unticked. */
     uint8_t mon_moon;
     uint8_t mon_astro;
-    /* The clock screen (time, date and the temperature indoors): shown,
-     * and in the rotation. */
+    /* The clock screen (time, date and the temperatures indoors and
+     * outdoors): shown, and in the rotation. */
     uint8_t clk_show;
     uint8_t clk_rotate;
+    /* Whose outdoor temperature it shows: location clk_out - 1, or none
+     * with 0. The first location if never saved. */
+    uint8_t clk_out;
     /* Added to the chip's temperature sensor (components/chip_temp.c) to
      * get the room's, in tenths of a degree; measured against a
      * thermometer on the setup page. Per display, so not in backups. */
