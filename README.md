@@ -488,8 +488,17 @@ One screen for the whole display, after the month calendar: under **Andre
 skjermer → Klokke** on the setup page, tick **Vis klokken** (and **i
 automatisk bytte**). The time across the middle in large digits (the
 seconds smaller beside them), the date and ISO week number under it, and
-the temperature indoors in whole degrees ("Inne 21°"; the setup page
-shows the tenths, for calibrating).
+the temperature indoors and outdoors in whole degrees ("Inne 21°   Ute 7°";
+the setup page shows the indoor tenths, for calibrating).
+
+The outdoor temperature is MET's nowcast for the first location: its
+temperature now, which MET corrects with the observations around it
+(Netatmo's private stations among them, quality-controlled against each
+other and the model), so it is better than averaging nearby stations
+ourselves - tried, and in sunshine many private sensors read 2-5 °C warm.
+Fetched every 10 minutes while the clock is shown; "Ute –" after half an
+hour without an answer. With the rain radar down ("temporarily
+unavailable") the nowcast still has the temperature.
 
 The temperature comes from the ESP32-S3's own sensor (`components/chip_temp.c`),
 read every 5 s and smoothed over about a minute. It measures the chip,

@@ -1,32 +1,56 @@
 /* The clock screen: the time across the middle of the screen (hours and
  * minutes in large digits, the seconds smaller beside them), the date and
- * week number under it, and the temperature indoors from the chip's own
+ * week number under it, and two temperatures: indoors from the chip's own
  * sensor (components/chip_temp.c) plus the offset measured against a
- * thermometer on the setup page.
+ * thermometer on the setup page, and outdoors at the first location from
+ * MET's nowcast (its temperature now, which MET corrects with the
+ * observations around, Netatmo stations among them).
  *
- * One screen for the display. Nothing to fetch: a timer redraws whatever
- * changed, several times a second so no second is skipped. */
+ * One screen for the display. A timer redraws whatever changed, several
+ * times a second so no second is skipped; the nowcast is fetched every 10
+ * minutes while the screen is on show. */
 
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 
 #include "app.h"
 #include "chip_temp.h"
 #include "clockscreen.h"
+#include "diag.h"
 #include "holidays.h"
+#include "yr_client.h"
+
+static const char *TAG = "clock";
 
 #define CLK_TIME_PX 180 /* hours and minutes */
 #define CLK_SEC_PX  72  /* seconds, and the temperature */
 #define CLK_DATE_PX 40
-#define CLK_POLL_MS (10 * 60 * 1000)
+#define CLK_POLL_MS (10 * 60 * 1000) /* the outdoor temperature */
+#define CLK_RETRY_MS 30000
+#define CLK_OUT_KEEP_MS (30 * 60 * 1000) /* older than this isn't shown */
 #define CLK_TICK_MS 200
 #define CLK_HHMM    5   /* "HH:MM" */
+#define CLK_NONE    -10001 /* no temperature to show */
+#define CLK_REDRAW  -10000
 
-static lv_obj_t *s_root, *s_time, *s_hhmm[CLK_HHMM], *s_sec, *s_date, *s_temp;
+static lv_obj_t *s_root, *s_time, *s_hhmm[CLK_HHMM], *s_sec, *s_date, *s_temp, *s_out;
 static time_t s_shown = -1; /* the second on show */
-static int s_shown_dc = -10000; /* the temperature on show, whole degrees; -10000 = redraw, -10001 = none */
+static int s_shown_dc = CLK_REDRAW; /* the temperatures on show, whole degrees, or CLK_NONE / CLK_REDRAW */
+static int s_shown_out = CLK_REDRAW;
+
+/* The outdoor temperature: set by the weather task under the adapter lock. */
+static yr_nowcast_t *s_nowcast;
+static http_cache_t s_nc_http;
+static float s_out_c;
+static fetch_stamp_t s_out_at;
+static backoff_t s_out_fail;
 
 static bool dark(void)
 {
@@ -79,8 +103,8 @@ static void show_temp(void)
 {
     float raw;
     if (!chip_temp_raw(&raw)) {
-        if (s_shown_dc != -10001) {
-            s_shown_dc = -10001;
+        if (s_shown_dc != CLK_NONE) {
+            s_shown_dc = CLK_NONE;
             lv_label_set_text(s_temp, "Inne  \xE2\x80\x93");
         }
         return;
@@ -91,6 +115,20 @@ static void show_temp(void)
     if (deg != s_shown_dc) {
         s_shown_dc = deg;
         lv_label_set_text_fmt(s_temp, "Inne  %d\xC2\xB0", deg);
+    }
+}
+
+static void show_out(void)
+{
+    const int deg = stamp_fresh(&s_out_at, CLK_OUT_KEEP_MS) ? (int)lroundf(s_out_c) : CLK_NONE;
+    if (deg == s_shown_out) {
+        return;
+    }
+    s_shown_out = deg;
+    if (deg == CLK_NONE) {
+        lv_label_set_text(s_out, "Ute  \xE2\x80\x93");
+    } else {
+        lv_label_set_text_fmt(s_out, "Ute  %d\xC2\xB0", deg);
     }
 }
 
@@ -105,6 +143,7 @@ static void tick_cb(lv_timer_t *t)
         s_shown = now;
         show_time(now);
         show_temp();
+        show_out();
     }
 }
 
@@ -154,9 +193,22 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
 
     s_date = label(s_root, date_font, muted);
     lv_obj_set_style_margin_bottom(s_date, 24, 0);
-    s_temp = label(s_root, sec_font, fg);
+
+    /* Inside and outside side by side. */
+    lv_obj_t *temps = lv_obj_create(s_root);
+    lv_obj_remove_style_all(temps);
+    lv_obj_clear_flag(temps, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(temps, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(temps, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(temps, 64, 0);
+    s_temp = label(temps, sec_font, fg);
+    s_out = label(temps, sec_font, fg);
+
+    s_nowcast = heap_caps_calloc(1, sizeof(*s_nowcast), MALLOC_CAP_SPIRAM);
+    assert(s_nowcast != NULL);
     show_time(time(NULL));
     show_temp();
+    show_out();
 
     lv_timer_create(tick_cb, CLK_TICK_MS, NULL);
     return s_root;
@@ -165,13 +217,61 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
 void clockscreen_enter(void)
 {
     s_shown = -1;
-    s_shown_dc = -10000;
+    s_shown_dc = CLK_REDRAW;
+    s_shown_out = CLK_REDRAW;
     show_time(time(NULL));
     show_temp();
+    show_out();
 }
 
 uint32_t clockscreen_poll(int for_view)
 {
-    (void)for_view;
-    return CLK_POLL_MS;
+    /* Woken early (a tap, the screen coming back): nothing due yet. */
+    if (backoff_waiting(&s_out_fail, CLK_RETRY_MS)) {
+        return CLK_RETRY_MS;
+    }
+    if (stamp_fresh(&s_out_at, CLK_POLL_MS)) {
+        return CLK_POLL_MS;
+    }
+    const app_location_t *loc = &g_cfg->locations[0];
+    if (!s_out_at.valid) {
+        memset(&s_nc_http, 0, sizeof(s_nc_http)); /* nothing held to compare with */
+    }
+    esp_err_t err = yr_client_fetch_nowcast(atof(loc->lat), atof(loc->lon), s_nowcast, &s_nc_http, false);
+    /* One request every 10 minutes: not worth a kept-alive TLS connection. */
+    http_met_close();
+    float c = 0;
+    bool got = false;
+    if (err == ESP_OK) {
+        for (int i = 0; i < s_nowcast->point_count && !got; i++) {
+            if (s_nowcast->points[i].has_instant_details) {
+                c = s_nowcast->points[i].air_temperature_c;
+                got = true;
+            }
+        }
+    }
+    if (got || err == HTTP_NOT_MODIFIED) {
+        diag_ok(DIAG_NOWCAST);
+        backoff_ok(&s_out_fail);
+    } else {
+        diag_fail(DIAG_NOWCAST, err == ESP_OK ? ESP_ERR_NOT_FOUND : err);
+        backoff_fail(&s_out_fail);
+        memset(&s_nc_http, 0, sizeof(s_nc_http)); /* nothing usable held */
+        ESP_LOGW(TAG, "No outdoor temperature for %s: %s", loc->name,
+                 err == ESP_OK ? "none in the nowcast" : esp_err_to_name(err));
+    }
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        if (got) {
+            s_out_c = c;
+        }
+        if (got || err == HTTP_NOT_MODIFIED) {
+            stamp_now(&s_out_at);
+        }
+        esp_lv_adapter_unlock();
+    }
+    if (lock_for_view(for_view)) {
+        show_out();
+        esp_lv_adapter_unlock();
+    }
+    return got || err == HTTP_NOT_MODIFIED ? CLK_POLL_MS : backoff_ms(&s_out_fail, CLK_RETRY_MS);
 }

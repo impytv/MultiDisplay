@@ -386,13 +386,16 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
         cJSON *idetails = cJSON_GetObjectItemCaseSensitive(instant, "details");
 
         cJSON *rate = cJSON_GetObjectItemCaseSensitive(idetails, "precipitation_rate");
-        if (!cJSON_IsNumber(rate)) {
-            /* Every real step carries at least this; skip anything that doesn't. */
+        cJSON *temp = cJSON_GetObjectItemCaseSensitive(idetails, "air_temperature");
+        /* With the radar up, every real step carries a rate; skip anything
+         * that doesn't. With it down ("temporarily unavailable"), there is
+         * one step with no rate but still the temperature now (the clock
+         * screen's); the rates aren't read then (radar_ok false). */
+        if (!cJSON_IsNumber(rate) && (out->radar_ok || !cJSON_IsNumber(temp))) {
             continue;
         }
-        point->precipitation_rate = (float)rate->valuedouble;
+        point->precipitation_rate = cJSON_IsNumber(rate) ? (float)rate->valuedouble : 0.0f;
 
-        cJSON *temp = cJSON_GetObjectItemCaseSensitive(idetails, "air_temperature");
         if (cJSON_IsNumber(temp)) {
             point->air_temperature_c = (float)temp->valuedouble;
             point->has_instant_details = true;

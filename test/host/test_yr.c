@@ -80,4 +80,35 @@ void test_yr(void)
         nc.points[i].precipitation_rate = 0.05f;
     }
     CHECK(yr_rain_change(&nc, 1000100, &at) == YR_RAIN_NONE);
+
+    /* The radar down (as for southern Norway on 2026-10-18): one step, no
+     * rate, but the temperature now - which the clock screen shows. */
+    static const char *const no_radar =
+        "{\"properties\":{\"meta\":{\"updated_at\":\"2026-10-18T11:27:00Z\","
+        "\"radar_coverage\":\"temporarily unavailable\"},\"timeseries\":[{\"time\":\"2026-10-18T11:25:00Z\","
+        "\"data\":{\"instant\":{\"details\":{\"air_temperature\":5.4,\"relative_humidity\":62.1,"
+        "\"wind_from_direction\":86.2,\"wind_speed\":0.6,\"wind_speed_of_gust\":2.6}},"
+        "\"next_1_hours\":{\"summary\":{\"symbol_code\":\"partlycloudy_day\"}}}}]}}";
+    memset(&nc, 0, sizeof(nc));
+    CHECK(parse_nowcast(no_radar, &nc));
+    CHECK(!nc.radar_ok);
+    CHECK_INT(nc.point_count, 1);
+    CHECK(nc.points[0].has_instant_details && fabsf(nc.points[0].air_temperature_c - 5.4f) < 0.05f);
+    CHECK(yr_rain_change(&nc, 1792322700, &at) == YR_RAIN_NONE);
+
+    /* With the radar up, a step without a rate is still skipped, and a
+     * response with nothing usable is refused. */
+    static const char *const radar_ok =
+        "{\"properties\":{\"meta\":{\"radar_coverage\":\"ok\"},\"timeseries\":["
+        "{\"time\":\"2026-10-18T11:25:00Z\",\"data\":{\"instant\":{\"details\":{\"air_temperature\":5.6}}}},"
+        "{\"time\":\"2026-10-18T11:30:00Z\",\"data\":{\"instant\":{\"details\":{\"precipitation_rate\":0.3}}}}]}}";
+    memset(&nc, 0, sizeof(nc));
+    CHECK(parse_nowcast(radar_ok, &nc));
+    CHECK_INT(nc.point_count, 1);
+    CHECK(!nc.points[0].has_instant_details && fabsf(nc.points[0].precipitation_rate - 0.3f) < 0.01f);
+    static const char *const nothing =
+        "{\"properties\":{\"meta\":{\"radar_coverage\":\"temporarily unavailable\"},\"timeseries\":["
+        "{\"time\":\"2026-10-18T11:25:00Z\",\"data\":{\"instant\":{\"details\":{\"wind_speed\":1}}}}]}}";
+    memset(&nc, 0, sizeof(nc));
+    CHECK(!parse_nowcast(nothing, &nc));
 }
