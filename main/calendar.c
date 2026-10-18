@@ -47,6 +47,11 @@ static fetch_stamp_t s_feed_at[APP_CONFIG_CAL_FEEDS]; /* when each was last read
 static bool s_retried;        /* the quick retry after a failed calendar was made */
 static bool s_failed;         /* the last poll failed while older data is shown */
 
+uint32_t calendar_feed_colour(int feed)
+{
+    return FEED_COLOUR[(unsigned)feed % APP_CONFIG_CAL_FEEDS];
+}
+
 static lv_color_t text_colour(void)
 {
     return lv_color_hex(g_cfg->theme == APP_THEME_DARK ? 0xDDE6EE : 0x1B2631);
@@ -193,7 +198,7 @@ static void calendar_draw_cb(lv_event_t *e)
                 localtime_r(&st, &lt);
                 snprintf(when, sizeof(when), ev->start < ds ? "til %02d:%02d" : "%02d:%02d", lt.tm_hour, lt.tm_min);
             }
-            draw_rect(layer, x, y + 2, x + 4, y + lh - 1, 2, lv_color_hex(FEED_COLOUR[ev->feed % APP_CONFIG_CAL_FEEDS]));
+            draw_rect(layer, x, y + 2, x + 4, y + lh - 1, 2, lv_color_hex(calendar_feed_colour(ev->feed)));
             draw_text(layer, when, x + 12, y, tw, LV_TEXT_ALIGN_LEFT, c_dim);
             draw_text_fit(layer, ev->title, x + 12 + tw, y, col_w - 12 - tw, c_txt);
             y += rh;

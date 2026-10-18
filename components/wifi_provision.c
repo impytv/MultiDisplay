@@ -63,6 +63,7 @@ static volatile bool s_sta_up; /* has an IP right now */
  * power-on, which opens the page without it - the way back in when the
  * password is forgotten. Set by wifi_provision_connect. */
 static char s_web_pass[APP_CONFIG_PASS_MAX];
+static char s_guide_url[APP_CONFIG_OTA_URL_MAX + 8]; /* the usage guide on the update site, or "" */
 static char s_hostname[APP_CONFIG_DEVNAME_MAX] = APP_CONFIG_DEVNAME_DEFAULT; /* <name>.local */
 static esp_netif_t *s_sta_netif;
 static bool s_auth_bypass;
@@ -401,9 +402,14 @@ static char *build_page(const app_config_t *cfg)
                   "hendelser er jevnd&oslash;gn, solverv, superm&aring;ner, toppen av de store "
                   "stjerneskuddsvermene og sol- og m&aring;neform&oslash;rkelser som kan ses fra det "
                   "f&oslash;rste stedet (for solform&oslash;rkelser hvor mye av sola som dekkes). "
-                  "Lagt inn til og med %d.</small></details>",
+                  "Lagt inn til og med %d.</small>"
+                  "<div class=chk><label><input type=checkbox name=moncal value=1%s>Avtaler fra kalenderne"
+                  "</label></div>"
+                  "<small>Avtalene fra kalenderne under <i>Kalender</i>, i kalenderens farge, under "
+                  "datoen. Hentes hvert kvarter, og n&aring;r du blar til andre uker.</small></details>",
                   cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year(),
-                  cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year());
+                  cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year(),
+                  cfg->mon_cal ? " checked" : "");
     p = build_clock(p, end, cfg);
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
@@ -853,9 +859,14 @@ static esp_err_t send_nav_page(httpd_req_t *req)
     p = html_escape_append(p, end, display_title());
     p = buf_append(p, end, " - MultiDisplay</title><h1>");
     p = html_escape_append(p, end, display_title());
-    snprintf(p, end - p,
-             "</h1><div id=nav><small>Henter skjermene...</small></div>"
-             "<p class=navf><a href=/oppsett>Oppsett</a>%s</p><script src=/nav.js></script>",
+    p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div>"
+                           "<p class=navf><a href=/oppsett>Oppsett</a>");
+    if (s_guide_url[0]) {
+        p = buf_append(p, end, "<a href=\"");
+        p = html_escape_append(p, end, s_guide_url);
+        p = buf_append(p, end, "\">Brukerveiledning</a>");
+    }
+    snprintf(p, end - p, "%s</p><script src=/nav.js></script>",
              s_web_pass[0] && !s_auth_bypass
                  ? "<form method=post action=/logout><button type=submit>Logg ut</button></form>"
                  : "");
@@ -1222,6 +1233,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->mon_rotate = form_field(body, "monrot", val, sizeof(val)) ? 1 : 0;
         cfg->mon_moon = form_field(body, "monmoon", val, sizeof(val)) ? 1 : 0;
         cfg->mon_astro = form_field(body, "monastro", val, sizeof(val)) ? 1 : 0;
+        cfg->mon_cal = form_field(body, "moncal", val, sizeof(val)) ? 1 : 0;
         cfg->clk_show = form_field(body, "clkshow", val, sizeof(val)) ? 1 : 0;
         cfg->clk_rotate = form_field(body, "clkrot", val, sizeof(val)) ? 1 : 0;
         /* The temperature offset: from a thermometer's reading now, if one
@@ -1983,6 +1995,7 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
     bool force_portal = boot_button_held();
     snprintf(s_web_pass, sizeof(s_web_pass), "%s", cfg->web_pass);
     snprintf(s_hostname, sizeof(s_hostname), "%s", cfg->device_name);
+    app_config_guide_url(cfg->ota_url, s_guide_url, sizeof(s_guide_url));
     s_auth_bypass = force_portal;
     if (force_portal) {
         ESP_LOGW(TAG, "BOOT held - forcing setup portal");

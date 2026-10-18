@@ -141,6 +141,7 @@ static void sanitize_view_settings(app_config_t *c)
     c->mon_rotate = c->mon_rotate ? 1 : 0;
     c->mon_moon = c->mon_moon ? 1 : 0;
     c->mon_astro = c->mon_astro ? 1 : 0;
+    c->mon_cal = c->mon_cal ? 1 : 0;
     c->clk_show = c->clk_show ? 1 : 0;
     c->clk_rotate = c->clk_rotate ? 1 : 0;
     if (c->clk_out > c->location_count) {
@@ -335,6 +336,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "monrot", &out->mon_rotate);
     nvs_get_u8(h, "monmoon", &out->mon_moon); /* both on if never saved */
     nvs_get_u8(h, "monastro", &out->mon_astro);
+    nvs_get_u8(h, "moncal", &out->mon_cal); /* off if never saved */
     nvs_get_u8(h, "clkshow", &out->clk_show); /* no clock screen if never saved */
     nvs_get_u8(h, "clkrot", &out->clk_rotate);
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
@@ -370,9 +372,9 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "satellite image of Europe: %s%s; close-ups x%u; %s", out->sat_show ? "shown" : "not shown",
              out->sat_rotate ? ", in the rotation" : "", out->sat_zoom,
              out->sat_visible ? "visible light by day" : "infrared always");
-    ESP_LOGI(TAG, "month calendar: %s%s%s%s", out->mon_show ? "shown" : "not shown",
+    ESP_LOGI(TAG, "month calendar: %s%s%s%s%s", out->mon_show ? "shown" : "not shown",
              out->mon_rotate ? ", in the rotation" : "", out->mon_moon ? ", moon phases" : "",
-             out->mon_astro ? ", astronomy" : "");
+             out->mon_astro ? ", astronomy" : "", out->mon_cal ? ", calendar events" : "");
     ESP_LOGI(TAG, "clock: %s%s, temperature offset %+.1f, outdoors at %s", out->clk_show ? "shown" : "not shown",
              out->clk_rotate ? ", in the rotation" : "", out->temp_offset_dc / 10.0,
              out->clk_out ? out->locations[out->clk_out - 1].name : "none");
@@ -461,6 +463,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "monrot", cfg->mon_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monmoon", cfg->mon_moon ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "monastro", cfg->mon_astro ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "moncal", cfg->mon_cal ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkshow", cfg->clk_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkrot", cfg->clk_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
@@ -566,6 +569,33 @@ void app_config_hostname(const char *in, char *out, size_t out_len)
         n--;
     }
     out[n] = '\0';
+}
+
+void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
+{
+    out[0] = '\0';
+    const char *host = NULL;
+    if (strncmp(ota_url, "http://", 7) == 0) {
+        host = ota_url + 7;
+    } else if (strncmp(ota_url, "https://", 8) == 0) {
+        host = ota_url + 8;
+    }
+    if (host == NULL || *host == '\0' || *host == '/') {
+        return;
+    }
+    /* Up to the last '/' of the path (the manifest's folder), leaving out
+     * any query; just the host if there is no path. */
+    size_t len = strcspn(ota_url, "?#");
+    size_t dir = (size_t)(host - ota_url) + strcspn(host, "/?#");
+    for (size_t i = dir; i < len; i++) {
+        if (ota_url[i] == '/') {
+            dir = i;
+        }
+    }
+    if (dir + sizeof("/bruk/") > out_len) {
+        return;
+    }
+    snprintf(out, out_len, "%.*s/bruk/", (int)dir, ota_url);
 }
 
 void app_config_sanitize(app_config_t *cfg)

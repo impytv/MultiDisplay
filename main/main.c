@@ -433,6 +433,13 @@ static void view_enter(int idx)
     }
 }
 
+void app_wake_poll(void)
+{
+    if (s_yr_task != NULL) {
+        xTaskNotifyGive(s_yr_task);
+    }
+}
+
 /* Switch to stop `next` and wake the weather task to fetch for it. LVGL
  * context (adapter lock held). */
 static void view_switch(int next, bool automatic)

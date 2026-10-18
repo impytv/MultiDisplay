@@ -231,6 +231,9 @@ typedef struct {
      * unticked. */
     uint8_t mon_moon;
     uint8_t mon_astro;
+    /* On it too: the events from the calendar screen's calendars (cal_url);
+     * off unless ticked. */
+    uint8_t mon_cal;
     /* The clock screen (time, date and the temperatures indoors and
      * outdoors): shown, and in the rotation. */
     uint8_t clk_show;
@@ -277,6 +280,11 @@ esp_err_t app_config_erase(void);
  * end, at most out_len - 1 characters. "" if nothing usable is left.
  */
 void app_config_hostname(const char *in, char *out, size_t out_len);
+
+/* The usage guide's address: the folder "bruk/" on the update site that
+ * `ota_url` (an http:// or https:// manifest address) is on, next to the
+ * manifest. "" for anything else. */
+void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
 
 /**
  * Bring every setting into its allowed range (as app_config_load does).

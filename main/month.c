@@ -8,29 +8,42 @@
  * the setup page, the moon's phases are drawn beside the date, and other
  * events in the sky (components/astro.c: equinoxes, solstices, supermoons,
  * meteor showers, and eclipses seen from the first location) named under
- * it after any holiday.
+ * it after any holiday. Also if ticked, the events from the calendar
+ * screen's calendars (components/cal_client.c) come after the holiday, a
+ * line each with a bar in the calendar's colour, and "+2" for those there
+ * is no room for.
  *
  * Buttons by the clock step four weeks back or ahead (the last week shown
  * becomes the first), and "I dag" goes back to this week; so does leaving
  * the screen, or MON_BACK_MS without a touch. The tap layer over every
  * screen takes the touches, so main.c hands them here (month_tap) first.
  *
- * One screen for the display. Nothing to fetch: redrawn when the date
- * changes (checked with the clock, every second). */
+ * One screen for the display. Redrawn when the date changes (checked with
+ * the clock, every second). The calendars, if shown, are fetched every 15
+ * minutes for the weeks on show, and at once when the buttons move to
+ * other weeks. */
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 
 #include "app.h"
 #include "astro.h"
+#include "cal_client.h"
+#include "calendar.h"
+#include "diag.h"
 #include "draw.h"
 #include "holidays.h"
 #include "month.h"
 #include "waveshare_rgb_lcd_port.h"
+
+static const char *TAG = "month";
 
 #define MON_X       12
 #define MON_TOP     60 /* below the big clock */
@@ -46,6 +59,11 @@
 #define MON_BTN_W   60
 #define MON_MOON_R  8  /* the moon's phase beside the date */
 #define MON_ASTRO   4  /* events a day can have */
+#define MON_CAL_POLL_MS  (5 * 60 * 1000)   /* with the calendars shown */
+#define MON_CAL_FETCH_MS (15 * 60 * 1000)
+#define MON_CAL_KEEP_MS  (12 * 3600 * 1000) /* older than this isn't shown */
+#define MON_CAL_RETRY_MS 60000
+#define MON_DAYS         (MON_WEEKS * 7)
 
 static lv_obj_t *s_root, *s_canvas, *s_title;
 static big_clock_t s_clock;
@@ -62,6 +80,18 @@ static EXT_RAM_BSS_ATTR struct {
     astro_item_t it[MON_ASTRO];
     int n;
 } s_astro[MON_WEEKS * 7];
+
+/* Local midnight of each day shown and the one after, worked out when the
+ * days change; [0] = 0 before the clock is set. Read by the weather task
+ * for the window to fetch, under the adapter lock. */
+static int64_t s_day0[MON_DAYS + 1];
+
+/* The calendars' events for the window from s_cal_from, if shown (in
+ * PSRAM; the scratch is the weather task's). */
+static cal_list_t *s_cal, *s_cal_scratch;
+static int64_t s_cal_from;
+static fetch_stamp_t s_cal_at;
+static backoff_t s_cal_fail;
 
 static const char *const MONTH[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli",
                                      "august", "september", "oktober", "november", "desember" };
@@ -250,6 +280,84 @@ static int text_h(const lv_font_t *font, const char *txt, int w)
     return sz.y;
 }
 
+static bool any_calendar(void)
+{
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        if (g_cfg->cal_url[i][0] != '\0') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The calendars' events, if they are to be shown and are for the days on
+ * show and recent; else NULL. */
+static const cal_list_t *events(void)
+{
+    return (g_cfg->mon_cal && s_cal != NULL && s_day0[0] != 0 && s_cal_from == s_day0[0] &&
+            stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS))
+               ? s_cal
+               : NULL;
+}
+
+/* Whether event e is on day [ds, de): an all-day one on each day it
+ * covers, others on the day they start. */
+static bool on_day(const cal_event_t *e, int64_t ds, int64_t de)
+{
+    return e->all_day ? (e->start < de && e->end > ds) : (e->start >= ds && e->start < de);
+}
+
+/* Day `idx`'s events at nx, ny in the box nw wide down to `bottom`, a line
+ * each, and "+2" on the last line for those there is no room for; the y
+ * under them. */
+static int draw_events(lv_layer_t *layer, int idx, int nx, int ny, int nw, int bottom, lv_color_t card, bool past)
+{
+    const cal_list_t *l = events();
+    if (l == NULL) {
+        return ny;
+    }
+    const int64_t ds = s_day0[idx], de = s_day0[idx + 1];
+    const int note_lh = lv_font_get_line_height(s_note_font);
+    int total = 0;
+    for (int i = 0; i < l->count; i++) {
+        total += on_day(&l->ev[i], ds, de);
+    }
+    const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
+    const lv_color_t c_dim = lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
+    int drawn = 0;
+    for (int i = 0; i < l->count && drawn < total; i++) {
+        const cal_event_t *ev = &l->ev[i];
+        if (!on_day(ev, ds, de)) {
+            continue;
+        }
+        const bool fits = ny + note_lh <= bottom;
+        const bool last_line = ny + 2 * note_lh > bottom;
+        if (!fits) {
+            break;
+        }
+        if (last_line && drawn + 1 < total) {
+            char more[12];
+            snprintf(more, sizeof(more), "+%d", total - drawn);
+            text(layer, s_note_font, more, nx, ny, nw, note_lh, LV_TEXT_ALIGN_LEFT,
+                 past ? lv_color_mix(c_dim, card, LV_OPA_50) : c_dim);
+            return ny + note_lh;
+        }
+        lv_color_t bar = lv_color_hex(calendar_feed_colour(ev->feed));
+        lv_color_t c = c_txt;
+        if (past) {
+            bar = lv_color_mix(bar, card, LV_OPA_50);
+            c = lv_color_mix(c, card, LV_OPA_50);
+        }
+        draw_rect(layer, nx, ny + 3, nx + 2, ny + note_lh - 3, 1, bar);
+        char t[CAL_TITLE_MAX + 4];
+        draw_text_shorten(s_note_font, ev->title, nw - 6, t, sizeof(t));
+        text(layer, s_note_font, t, nx + 6, ny, nw - 6, note_lh, LV_TEXT_ALIGN_LEFT, c);
+        ny += note_lh;
+        drawn++;
+    }
+    return ny;
+}
+
 static void month_draw_cb(lv_event_t *e)
 {
     lv_layer_t *layer = lv_event_get_layer(e);
@@ -334,6 +442,7 @@ static void month_draw_cb(lv_event_t *e)
                 ny += text_h(s_note_font, name, nw);
             }
             const int idx = w * 7 + d;
+            ny = draw_events(layer, idx, nx, ny, nw, bottom, card, past);
             lv_color_t c_ev = past ? lv_color_mix(c_sky, card, LV_OPA_50) : c_sky;
             for (int k = 0; k < s_astro[idx].n; k++) {
                 const astro_item_t *it = &s_astro[idx].it[k];
@@ -367,6 +476,7 @@ static void month_show(void)
     struct tm today;
     s_shown_day = day_key(time(NULL), &today);
     if (s_shown_day == 0) {
+        s_day0[0] = 0;
         lv_label_set_text(s_title, "M\xC3\xA5ned");
         lv_label_set_text(g_status_label, "Venter p\xC3\xA5 klokken...");
     } else {
@@ -395,6 +505,13 @@ static void month_show(void)
         }
         lv_label_set_text(s_title, title);
         lv_label_set_text(g_status_label, "");
+
+        for (int i = 0; i <= MON_DAYS; i++) {
+            struct tm d0 = add_days(&a, i);
+            d0.tm_hour = 0;
+            d0.tm_isdst = -1;
+            s_day0[i] = (int64_t)mktime(&d0);
+        }
 
         /* The sky, seen from the first location. */
         const double lat = atof(g_cfg->locations[0].lat), lon = atof(g_cfg->locations[0].lon);
@@ -440,9 +557,12 @@ bool month_tap(int x, int y)
             continue;
         }
         const int off = i == BTN_TODAY ? 0 : s_offset + STEP[i];
-        if (off >= -MON_MAX_OFF && off <= MON_MAX_OFF) {
+        if (off >= -MON_MAX_OFF && off <= MON_MAX_OFF && off != s_offset) {
             s_offset = off;
             month_show();
+            if (g_cfg->mon_cal) {
+                app_wake_poll(); /* the calendars for these weeks */
+            }
         }
         s_touch_ms = lv_tick_get();
         return true;
@@ -464,6 +584,9 @@ static void month_clock_timer_cb(lv_timer_t *t)
     if (s_offset != 0 && lv_tick_get() - s_touch_ms >= MON_BACK_MS) {
         s_offset = 0;
         month_show();
+        if (g_cfg->mon_cal) {
+            app_wake_poll();
+        }
     } else if (day_key(now, &lt) != s_shown_day) {
         month_show();
     }
@@ -512,6 +635,11 @@ lv_obj_t *month_build(lv_obj_t *screen)
     }
     lv_obj_set_size(s_title, x - MON_X, lv_font_get_line_height(g_font_large));
     lv_timer_create(month_clock_timer_cb, 1000, NULL);
+    if (g_cfg->mon_cal) {
+        s_cal = heap_caps_calloc(1, sizeof(*s_cal), MALLOC_CAP_SPIRAM);
+        s_cal_scratch = heap_caps_malloc(sizeof(*s_cal_scratch), MALLOC_CAP_SPIRAM);
+        assert(s_cal != NULL && s_cal_scratch != NULL);
+    }
     return s_root;
 }
 
@@ -522,11 +650,69 @@ void month_enter(void)
     month_show();
 }
 
-uint32_t month_poll(int for_view)
+/* Fetch the calendars for the days from `from` to `to` if due. */
+static void fetch_events(int64_t from, int64_t to)
 {
-    if (lock_for_view(for_view)) {
-        month_show();
+    const bool other_days = from != s_cal_from;
+    if (!other_days && (stamp_fresh(&s_cal_at, MON_CAL_FETCH_MS) || backoff_waiting(&s_cal_fail, MON_CAL_RETRY_MS))) {
+        return;
+    }
+    const char *urls[APP_CONFIG_CAL_FEEDS];
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        urls[i] = g_cfg->cal_url[i];
+    }
+    uint8_t failed = 0;
+    esp_err_t err = cal_fetch(urls, APP_CONFIG_CAL_FEEDS, from, to, s_cal_scratch, &failed);
+    if (err != ESP_OK) {
+        diag_fail(DIAG_CALENDAR, err);
+        backoff_fail(&s_cal_fail);
+        ESP_LOGW(TAG, "Calendars not read: %s", esp_err_to_name(err));
+        return;
+    }
+    /* A calendar that failed keeps the events it had for these days. */
+    if (failed && !other_days && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) {
+        for (int k = 0; k < s_cal->count && s_cal_scratch->count < CAL_EVENTS_MAX; k++) {
+            if (failed & (1u << s_cal->ev[k].feed)) {
+                s_cal_scratch->ev[s_cal_scratch->count++] = s_cal->ev[k];
+            }
+        }
+        cal_sort(s_cal_scratch);
+    }
+    if (failed) {
+        diag_fail(DIAG_CALENDAR, ESP_FAIL);
+        backoff_fail(&s_cal_fail);
+    } else {
+        diag_ok(DIAG_CALENDAR);
+        backoff_ok(&s_cal_fail);
+    }
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        *s_cal = *s_cal_scratch;
+        s_cal_from = from;
+        stamp_now(&s_cal_at);
         esp_lv_adapter_unlock();
     }
-    return MON_POLL_MS;
+    ESP_LOGI(TAG, "%d calendar event(s) in the %d days shown", s_cal_scratch->count, MON_DAYS);
+}
+
+uint32_t month_poll(int for_view)
+{
+    int64_t from = 0, to = 0;
+    if (lock_for_view(for_view)) {
+        month_show();
+        from = s_day0[0];
+        to = s_day0[MON_DAYS];
+        esp_lv_adapter_unlock();
+    }
+    if (!g_cfg->mon_cal || !any_calendar() || s_cal == NULL) {
+        return MON_POLL_MS;
+    }
+    if (from == 0) {
+        return MON_CAL_RETRY_MS; /* the clock isn't set, or the screen moved on */
+    }
+    fetch_events(from, to);
+    if (lock_for_view(for_view)) {
+        lv_obj_invalidate(s_canvas);
+        esp_lv_adapter_unlock();
+    }
+    return s_cal_fail.count > 0 ? backoff_ms(&s_cal_fail, MON_CAL_RETRY_MS) : MON_CAL_POLL_MS;
 }

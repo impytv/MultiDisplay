@@ -109,6 +109,10 @@ static inline bool backoff_waiting(const backoff_t *b, uint32_t first_ms)
     return b->count > 0 && stamp_fresh(&b->at, backoff_ms(b, first_ms));
 }
 
+/* Wake the weather task to poll the screen on show now, e.g. for data a
+ * button on it asked for. Any task. */
+void app_wake_poll(void);
+
 /* A full-screen, transparent container for one screen, hidden until shown. */
 lv_obj_t *screen_root_create(lv_obj_t *screen);
 

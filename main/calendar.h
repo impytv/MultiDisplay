@@ -9,6 +9,10 @@ lv_obj_t *calendar_build(lv_obj_t *screen);
 /* Show it, with its last data if recent (adapter lock held). */
 void calendar_enter(void);
 
+/* Calendar `feed`'s colour (0xRRGGBB), as the dots on the setup page; the
+ * month calendar uses it too. */
+uint32_t calendar_feed_colour(int feed);
+
 /* Fetch if due and show it if the screen is still `for_view`; the wait in
  * ms before the next poll. Weather task. */
 uint32_t calendar_poll(int for_view);

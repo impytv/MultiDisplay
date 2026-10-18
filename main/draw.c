@@ -112,17 +112,12 @@ void draw_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv
     lv_draw_rect(layer, &d, &a);
 }
 
-/* Draw `txt` left-aligned in w px, shortened with ".." if it doesn't fit. */
-void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color)
+void draw_text_shorten(const lv_font_t *font, const char *txt, int w, char *buf, size_t buf_len)
 {
-    if (!draw_visible(layer, x, y, x + w - 1, y + lv_font_get_line_height(g_font_body) - 1)) {
-        return;
-    }
-    char buf[128]; /* longer than anything drawn: a disruption notice */
     const size_t full = strlen(txt);
     size_t len = full;
-    if (len > sizeof(buf) - 3) {
-        len = sizeof(buf) - 3;
+    if (len > buf_len - 3) {
+        len = buf_len - 3;
     }
     /* Never cut inside a UTF-8 character (æ, ø, å are two bytes). */
     while (len > 0 && ((unsigned char)txt[len] & 0xC0) == 0x80) {
@@ -139,11 +134,21 @@ void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_c
             buf[n] = '\0';
         }
         lv_point_t sz;
-        lv_text_get_size(&sz, buf, g_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        lv_text_get_size(&sz, buf, font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         if (sz.x <= w || n <= 1) {
             break;
         }
     }
+}
+
+/* Draw `txt` left-aligned in w px, shortened with ".." if it doesn't fit. */
+void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color)
+{
+    if (!draw_visible(layer, x, y, x + w - 1, y + lv_font_get_line_height(g_font_body) - 1)) {
+        return;
+    }
+    char buf[128]; /* longer than anything drawn: a disruption notice */
+    draw_text_shorten(g_font_body, txt, w, buf, sizeof(buf));
     draw_text(layer, buf, x, y, w, LV_TEXT_ALIGN_LEFT, color);
 }
 

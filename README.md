@@ -469,6 +469,16 @@ Two options under it, both on unless unticked:
   eclipse with how much of the sun is covered there ("83 % sol-formørkelse").
   When a day has more than fits, eclipses come first.
 
+And one off unless ticked:
+
+- **Avtaler fra kalenderne** lists, under the date and any holiday, the
+  events from the calendar screen's calendars (**Kalender**): a line each
+  with a bar in the calendar's colour, the title cut with ".." to fit, an
+  all-day event on each day it covers and others on the day they start.
+  When there is no room for all, the last line says how many more ("+5");
+  the events come before the sky's. They are fetched for the five weeks on
+  show every 15 minutes, and at once when the buttons step to other weeks.
+
 The events are built in for 2026-2035 by `scripts/build_astro.py`, which
 computes them with [Skyfield](https://rhodesmill.org/skyfield/) and JPL's
 DE440s ephemeris (download `de440s.bsp` and pass its path). A solar eclipse
@@ -616,7 +626,10 @@ steps through them, with the one on show marked (checked every 5 s, so taps
 on the display show too). A press switches the display as a tap on it would:
 the automatic rotation waits until the display has been left alone for its
 idle time. Touching the display works as before. The setup page is a link
-away, at **`/oppsett`**. **Vis navigasjonssiden** under **Vedlikehold →
+away, at **`/oppsett`**, and so is the usage guide (**Brukerveiledning**):
+`bruk/` on the update site, next to the manifest of the display's update
+address (`http://192.168.0.119:8070/bruk/` for the default), so a display
+updating through the tunnel links to the guide there. **Vis navigasjonssiden** under **Vedlikehold →
 Navigasjonsside** turns it off, and / is then the setup page (per display,
 so not in settings backups).
 

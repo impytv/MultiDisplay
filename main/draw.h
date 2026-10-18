@@ -11,6 +11,9 @@ bool draw_visible(const lv_layer_t *layer, int x1, int y1, int x2, int y2);
 void draw_text(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_text_align_t align, lv_color_t color);
 /* The same, left-aligned and cut short with ".." to fit `w`. */
 void draw_text_fit(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t color);
+/* `txt` in `font` into buf, cut short with ".." (never inside a UTF-8
+ * character) to fit `w` px on one line. buf_len at least 4. */
+void draw_text_shorten(const lv_font_t *font, const char *txt, int w, char *buf, size_t buf_len);
 /* Lines `txt` takes wrapped to `w` px (1..max_lines). */
 int draw_text_lines(const char *txt, int w, int max_lines);
 /* `txt` wrapped to `w` px over at most `lines` lines. */

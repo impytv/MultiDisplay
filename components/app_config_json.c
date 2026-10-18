@@ -84,6 +84,7 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddBoolToObject(mon, "rotate", c->mon_rotate);
     cJSON_AddBoolToObject(mon, "moon_phases", c->mon_moon);
     cJSON_AddBoolToObject(mon, "astronomy", c->mon_astro);
+    cJSON_AddBoolToObject(mon, "calendar_events", c->mon_cal);
 
     /* The temperature offset belongs to this board's sensor: not backed up. */
     cJSON *clk = cJSON_AddObjectToObject(root, "clock");
@@ -255,6 +256,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(mon, "rotate", &c->mon_rotate);
     get_bool(mon, "moon_phases", &c->mon_moon);
     get_bool(mon, "astronomy", &c->mon_astro);
+    get_bool(mon, "calendar_events", &c->mon_cal);
     const cJSON *clk = cJSON_GetObjectItemCaseSensitive(root, "clock");
     get_bool(clk, "show", &c->clk_show);
     get_bool(clk, "rotate", &c->clk_rotate);

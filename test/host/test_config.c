@@ -20,6 +20,7 @@ void test_config(void)
     CHECK_INT(a.nav_page, 1);   /* on unless unticked */
     CHECK_INT(a.swipe_nav, 1);  /* on unless unticked */
     CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
+    CHECK_INT(a.mon_cal, 0);    /* off unless ticked */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
 
     /* Save and load again: everything comes back. */
@@ -57,6 +58,7 @@ void test_config(void)
     a.mon_show = 1;
     a.mon_moon = 1;
     a.mon_astro = 0;
+    a.mon_cal = 1;
     a.clk_show = 1;
     a.clk_rotate = 1;
     a.clk_out = 2;
@@ -106,7 +108,7 @@ void test_config(void)
     CHECK(c.sat_show && !c.sat_rotate);
     CHECK_INT(c.sat_zoom, 2);
     CHECK_INT(c.sat_visible, 1);
-    CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro);
+    CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro && c.mon_cal);
     CHECK(c.clk_show && c.clk_rotate);
     CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
@@ -176,6 +178,28 @@ void test_config(void)
 
     /* Display names become host names. */
     char host[APP_CONFIG_DEVNAME_MAX];
+    /* The usage guide, next to the manifest on the update site. */
+    char guide[APP_CONFIG_OTA_URL_MAX + 8];
+    app_config_guide_url("http://192.168.0.119:8070/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "http://192.168.0.119:8070/bruk/");
+    app_config_guide_url("https://oppdatering.example.no/manifest-test.json", guide, sizeof(guide));
+    CHECK_STR(guide, "https://oppdatering.example.no/bruk/");
+    app_config_guide_url("https://example.no/md/manifest.json?x=/y", guide, sizeof(guide));
+    CHECK_STR(guide, "https://example.no/md/bruk/");
+    app_config_guide_url("http://example.no", guide, sizeof(guide));
+    CHECK_STR(guide, "http://example.no/bruk/");
+    app_config_guide_url("http://example.no?a/b", guide, sizeof(guide));
+    CHECK_STR(guide, "http://example.no/bruk/");
+    app_config_guide_url("ftp://example.no/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "");
+    app_config_guide_url("http:///manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "");
+    app_config_guide_url("", guide, sizeof(guide));
+    CHECK_STR(guide, "");
+    char tiny[16];
+    app_config_guide_url("http://example.no/manifest.json", tiny, sizeof(tiny));
+    CHECK_STR(tiny, "");                            /* doesn't fit: none rather than cut */
+
     app_config_hostname("Kj\xC3\xB8kken", host, sizeof(host));
     CHECK_STR(host, "kjokken");
     app_config_hostname("  Stua 2. etg ", host, sizeof(host));
