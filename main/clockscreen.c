@@ -43,8 +43,8 @@ static const char *TAG = "clock";
 
 static lv_obj_t *s_root, *s_time, *s_hhmm[CLK_HHMM], *s_sec, *s_date, *s_temp, *s_out;
 static time_t s_shown = -1; /* the second on show */
-static int s_shown_dc = CLK_REDRAW; /* the temperatures on show, whole degrees, or CLK_NONE / CLK_REDRAW */
-static int s_shown_out = CLK_REDRAW;
+static int s_shown_dc = CLK_REDRAW;  /* indoors on show, whole degrees, or CLK_NONE / CLK_REDRAW */
+static int s_shown_out = CLK_REDRAW; /* outdoors, in half degrees */
 
 /* The outdoor temperature: set by the weather task under the adapter lock. */
 static yr_nowcast_t *s_nowcast;
@@ -121,15 +121,17 @@ static void show_temp(void)
 
 static void show_out(void)
 {
-    const int deg = stamp_fresh(&s_out_at, CLK_OUT_KEEP_MS) ? (int)lroundf(s_out_c) : CLK_NONE;
-    if (deg == s_shown_out) {
+    /* To the nearest half degree: "6,5°", "-0,5°", "7°". */
+    const int halves = stamp_fresh(&s_out_at, CLK_OUT_KEEP_MS) ? (int)lroundf(s_out_c * 2.0f) : CLK_NONE;
+    if (halves == s_shown_out) {
         return;
     }
-    s_shown_out = deg;
-    if (deg == CLK_NONE) {
+    s_shown_out = halves;
+    if (halves == CLK_NONE) {
         lv_label_set_text(s_out, "Ute  \xE2\x80\x93");
     } else {
-        lv_label_set_text_fmt(s_out, "Ute  %d\xC2\xB0", deg);
+        const int a = abs(halves);
+        lv_label_set_text_fmt(s_out, "Ute  %s%d%s\xC2\xB0", halves < 0 ? "-" : "", a / 2, a % 2 ? ",5" : "");
     }
 }
 

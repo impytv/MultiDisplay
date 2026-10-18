@@ -502,7 +502,8 @@ One screen for the whole display, after the month calendar: under **Andre
 skjermer → Klokke** on the setup page, tick **Vis klokken** (and **i
 automatisk bytte**). The time across the middle in large digits (the
 seconds smaller beside them), the date and ISO week number under it, and
-the temperature indoors and outdoors in whole degrees ("Inne 21°   Ute 7°";
+the temperature indoors in whole degrees and outdoors to the nearest half
+degree ("Inne 21°   Ute 6,5°";
 the setup page shows the indoor tenths, for calibrating). The indoor
 temperature comes from the chip's own sensor and can be well off even
 calibrated; untick **Vis temperaturen inne** to leave it out (in backups
