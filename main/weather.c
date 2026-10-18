@@ -2024,9 +2024,9 @@ const yr_forecast_t *weather_forecast(int loc, time_t *fetched)
     return (s_fc_cache[loc] != NULL && s_fc_valid[loc]) ? s_fc_cache[loc] : NULL;
 }
 
-void weather_refresh(int loc, int for_view)
+void weather_refresh(int loc, bool others, int for_view)
 {
-    refresh_caches(false, loc, false, for_view, 0, APP_CONFIG_MAX_LOCATIONS);
+    refresh_caches(false, loc, false, for_view, others ? 1 : 0, others ? APP_CONFIG_MAX_LOCATIONS : 1);
 }
 
 /* The aurora forecasts, after the screen is up so they don't hold it back:

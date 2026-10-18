@@ -263,13 +263,17 @@ void week_enter(int loc)
 
 uint32_t week_poll(int loc, int for_view)
 {
-    weather_refresh(loc, for_view);
+    /* Its own location's forecast and on screen, then the others'. */
+    weather_refresh(loc, false, for_view);
     time_t fetched;
     bool shown = false;
     if (lock_for_view(for_view)) {
         week_show();
         shown = weather_forecast(loc, &fetched) != NULL;
         esp_lv_adapter_unlock();
+    }
+    if (shown) {
+        weather_refresh(loc, true, for_view);
     }
     return shown ? WEEK_POLL_MS : WEEK_RETRY_MS;
 }

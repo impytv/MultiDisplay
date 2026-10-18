@@ -31,8 +31,9 @@ uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view);
  * held. */
 const yr_forecast_t *weather_forecast(int loc, time_t *fetched);
 
-/* Refresh the stale forecasts and alerts, `loc`'s first (for the week
- * screen). Weather task. */
-void weather_refresh(int loc, int for_view);
+/* Refresh `loc`'s forecast and alerts if stale, or with `others` the other
+ * locations' (for the week screen: its own first, drawn before the rest).
+ * Weather task. */
+void weather_refresh(int loc, bool others, int for_view);
 
 #endif
