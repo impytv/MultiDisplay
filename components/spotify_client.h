@@ -56,6 +56,25 @@ typedef struct {
 /* GET /v1/me/player's body into out; false if it isn't one. */
 bool spotify_parse_player(const char *json, spotify_player_t *out);
 
+/* What was played lately, as something to start again: the playlist or
+ * album each track was played from (from anything else, the track's album),
+ * newest first, each once. `name` is "" for a playlist (see
+ * spotify_get_playlist); the image is the track's album's. */
+#define SPOTIFY_RECENT_MAX 12
+typedef struct {
+    char uri[64]; /* "spotify:playlist:ID" or "spotify:album:ID" */
+    char name[SPOTIFY_TEXT_MAX];
+    char image_url[160];
+} spotify_recent_t;
+
+/* GET /v1/me/player/recently-played's body into out, at most `max`; -1 if
+ * it isn't one. */
+int spotify_parse_recent(const char *json, spotify_recent_t *out, int max);
+
+/* GET /v1/playlists/ID?fields=name,images's body: the name, and the
+ * picture nearest SPOTIFY_COVER_PX ("" if none). False without a name. */
+bool spotify_parse_playlist(const char *json, char *name, size_t name_len, char *image_url, size_t image_len);
+
 /* GET /v1/me/player/devices' body: the devices, at most `max`; -1 if it
  * isn't one. */
 int spotify_parse_devices(const char *json, spotify_device_t *out, int max);
@@ -81,6 +100,7 @@ void spotify_base64url(const uint8_t *in, size_t len, char *out);
 #define SPOTIFY_ERR_NO_DEVICE 0x7f22 /* nothing to send the command to */
 #define SPOTIFY_ERR_RATE      0x7f23 /* asked too often: wait spotify_retry_after_s() */
 #define SPOTIFY_ERR_RESTRICTED 0x7f24 /* the device takes no commands from the Web API */
+#define SPOTIFY_ERR_SCOPE     0x7f25 /* the login is older than a permission this needs: log in again */
 
 typedef enum {
     SPOTIFY_NOT_CONNECTED,
@@ -130,6 +150,14 @@ typedef enum {
 } spotify_cmd_t;
 
 esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id);
+
+/* What was played lately (see spotify_recent_t), at most max. */
+esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count);
+
+/* The name and picture of the playlist "spotify:playlist:ID". Spotify
+ * doesn't give its own playlists (mixes, editorial ones) to apps like this
+ * one: ESP_ERR_NOT_FOUND. */
+esp_err_t spotify_get_playlist(const char *uri, char *name, size_t name_len, char *image_url, size_t image_len);
 
 /* The image at `url` (a cover), in PSRAM for the caller to free(). */
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len);

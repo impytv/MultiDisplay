@@ -1,7 +1,7 @@
 // The navigation page (served as /nav.js; wifi_provision.c): the display's
 // screens as buttons, grouped as a tap steps through them, the one on show
 // marked. A press switches the display as a tap on it would.
-const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',europa:'Europa',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
+const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',sonos:'Sonos',europa:'Europa',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
 nedbor:'Nedbør',avganger:'Avganger',luft:'Luft',tidevann:'Tidevann',satellitt:'Satellitt'};
 const nav=document.getElementById('nav'),st=document.createElement('small');
 function show(d){nav.textContent='';st.textContent='';let grp=null,key=null;

@@ -25,6 +25,28 @@ static const char DEVICES[] =
     "\"volume_percent\":100,\"supports_volume\":true},{\"id\":null,\"name\":\"Uten id\",\"type\":\"TV\"},"
     "{\"id\":\"d3\",\"is_restricted\":true,\"name\":\"Bil\",\"type\":\"Automobile\"}]}";
 
+/* Recently played, newest first: twice from a playlist, from an album,
+ * from an artist (its album then), the same album again, from Liked Songs
+ * and an old-style playlist URI. */
+static const char RECENT[] =
+    "{\"items\":["
+    "{\"track\":{\"uri\":\"spotify:track:t1\",\"name\":\"T1\",\"album\":{\"uri\":\"spotify:album:a1\",\"name\":\"A1\","
+    "\"images\":[{\"url\":\"https://i.scdn.co/a1\",\"width\":300}]}},"
+    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:playlist:p1\"}},"
+    "{\"track\":{\"uri\":\"spotify:track:t2\",\"album\":{\"uri\":\"spotify:album:a2\",\"name\":\"A2\",\"images\":[]}},"
+    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:playlist:p1\"}},"
+    "{\"track\":{\"uri\":\"spotify:track:t3\",\"album\":{\"uri\":\"spotify:album:a3\",\"name\":\"A3\",\"images\":[]}},"
+    "\"context\":{\"type\":\"album\",\"uri\":\"spotify:album:a3\"}},"
+    "{\"track\":{\"uri\":\"spotify:track:t4\",\"album\":{\"uri\":\"spotify:album:a4\",\"name\":\"A4\",\"images\":[]}},"
+    "\"context\":{\"type\":\"artist\",\"uri\":\"spotify:artist:r4\"}},"
+    "{\"track\":{\"uri\":\"spotify:track:t5\",\"album\":{\"uri\":\"spotify:album:a3\",\"name\":\"A3\",\"images\":[]}},"
+    "\"context\":null},"
+    "{\"track\":{\"uri\":\"spotify:track:t6\",\"album\":{\"uri\":\"spotify:album:a6\",\"name\":\"A6\",\"images\":[]}},"
+    "\"context\":{\"type\":\"collection\",\"uri\":\"spotify:user:u:collection\"}},"
+    "{\"track\":{\"uri\":\"spotify:local:x\",\"album\":{\"name\":\"Local\"}},\"context\":null},"
+    "{\"track\":{\"uri\":\"spotify:track:t7\",\"album\":{\"uri\":\"spotify:album:a7\",\"name\":\"A7\"}},"
+    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:user:u:playlist:p7\"}}]}";
+
 void test_spotify(void)
 {
     spotify_player_t p;
@@ -81,4 +103,24 @@ void test_spotify(void)
     CHECK_STR(b64, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
     spotify_base64url((const uint8_t *)"ab", 2, b64);
     CHECK_STR(b64, "YWI");
+
+    spotify_recent_t rec[SPOTIFY_RECENT_MAX];
+    CHECK_INT(spotify_parse_recent(RECENT, rec, SPOTIFY_RECENT_MAX), 5);
+    CHECK_STR(rec[0].uri, "spotify:playlist:p1");
+    CHECK_STR(rec[0].name, ""); /* named by spotify_get_playlist */
+    CHECK_STR(rec[0].image_url, "https://i.scdn.co/a1");
+    CHECK_STR(rec[1].uri, "spotify:album:a3");
+    CHECK_STR(rec[1].name, "A3");
+    CHECK_STR(rec[2].uri, "spotify:album:a4");
+    CHECK_STR(rec[2].name, "A4");
+    CHECK_STR(rec[3].uri, "spotify:album:a6");
+    CHECK_STR(rec[4].uri, "spotify:playlist:p7");
+    CHECK_INT(spotify_parse_recent(RECENT, rec, 2), 2);
+    CHECK_INT(spotify_parse_recent("{}", rec, 2), -1);
+    char pn[64], pi[160];
+    CHECK(spotify_parse_playlist("{\"name\":\"Kos\",\"images\":[{\"url\":\"https://mosaic\",\"width\":null}]}", pn,
+                                 sizeof(pn), pi, sizeof(pi)));
+    CHECK_STR(pn, "Kos");
+    CHECK_STR(pi, "https://mosaic");
+    CHECK(!spotify_parse_playlist("{\"error\":{}}", pn, sizeof(pn), pi, sizeof(pi)));
 }

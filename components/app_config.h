@@ -41,6 +41,8 @@
 #define APP_CONFIG_TEMP_OFFSET_MAX 500
 /* A Spotify client ID: 32 hex digits, and the NUL. */
 #define APP_CONFIG_SPOTIFY_ID_MAX 33
+/* A Sonos room's name, and the NUL. */
+#define APP_CONFIG_SONOS_ROOM_MAX 48
 #define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
@@ -261,6 +263,14 @@ typedef struct {
     uint8_t sp_start;
     uint8_t sp_dark;
     char sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX];
+    /* The Sonos screen (main/sonos.c): shown, in the rotation, the rotation
+     * may start from it, dark whatever the theme - as for Spotify - and the
+     * room it shows first ("" = the first that plays). */
+    uint8_t so_show;
+    uint8_t so_rotate;
+    uint8_t so_start;
+    uint8_t so_dark;
+    char so_room[APP_CONFIG_SONOS_ROOM_MAX];
 } app_config_t;
 
 /**

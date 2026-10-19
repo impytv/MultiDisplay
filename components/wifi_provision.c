@@ -30,6 +30,7 @@
 #include "astro.h"
 #include "chip_temp.h"
 #include "holidays.h"
+#include "sonos_client.h"
 #include "spotify_client.h"
 #include "web_auth.h"
 #include "cJSON.h"
@@ -382,6 +383,44 @@ static char *build_spotify(char *p, char *end, const app_config_t *cfg)
     return buf_append(p, end, "</details>");
 }
 
+/* The Sonos screen (main/sonos.c), and the room it shows first: one of
+ * those found when the screen last looked, or any name. */
+static char *build_sonos(char *p, char *end, const app_config_t *cfg)
+{
+    p = buf_append(p, end,
+                   "<details class=sec id=sonos><summary>Sonos</summary>"
+                   "<div class=chk><label><input type=checkbox name=soshow value=1%s>"
+                   "Vis Sonos</label><label><input type=checkbox name=sorot value=1%s>"
+                   "i automatisk bytte</label></div>"
+                   "<div class=chk><label><input type=checkbox name=sostart value=1%s>"
+                   "Automatisk bytte kan starte herfra</label><label><input type=checkbox name=sodark "
+                   "value=1%s>Alltid m&oslash;rkt</label></div>"
+                   "<small>Hva som spilles p&aring; Sonos-h&oslash;yttalerne i huset, rom for rom, med knapper "
+                   "for forrige, spill/pause, neste og volum. <i>Velg musikk</i> viser favorittene fra "
+                   "Sonos-appen og det Spotify-kontoen til skjermen har spilt nylig, og starter det du trykker "
+                   "p&aring; i rommet. H&oslash;yttalerne m&aring; v&aelig;re p&aring; samme nettverk som "
+                   "skjermen; ingen innlogging trengs.</small>"
+                   "<small><i>Nylig spilt</i> krever at skjermen er koblet til Spotify (over), og at Spotify er "
+                   "lagt til i Sonos-appen. Favoritter fra Sonos Radio kan bare "
+                   "startes fra Sonos-appen og vises ikke.</small>"
+                   "<label>Rom som vises f&oslash;rst</label><input name=soroom list=sorooms maxlength=47 "
+                   "autocomplete=off value='",
+                   cfg->so_show ? " checked" : "", cfg->so_rotate ? " checked" : "",
+                   cfg->so_start ? " checked" : "", cfg->so_dark ? " checked" : "");
+    p = html_escape_append(p, end, cfg->so_room);
+    p = buf_append(p, end, "'><datalist id=sorooms>");
+    char rooms[SONOS_ROOMS_MAX][48];
+    const int n = sonos_known_rooms(rooms, SONOS_ROOMS_MAX);
+    for (int i = 0; i < n; i++) {
+        p = buf_append(p, end, "<option value='");
+        p = html_escape_append(p, end, rooms[i]);
+        p = buf_append(p, end, "'>");
+    }
+    return buf_append(p, end,
+                      "</datalist><small>Tomt: det f&oslash;rste rommet som spiller. Rommene foresl&aring;s "
+                      "n&aring;r Sonos-skjermen har vist seg &eacute;n gang.</small></details>");
+}
+
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
 {
     static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
@@ -472,6 +511,7 @@ static char *build_page(const app_config_t *cfg)
                   cfg->mon_cal ? " checked" : "");
     p = build_clock(p, end, cfg);
     p = build_spotify(p, end, cfg);
+    p = build_sonos(p, end, cfg);
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
@@ -1302,6 +1342,19 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->sp_rotate = form_field(body, "sprot", val, sizeof(val)) ? 1 : 0;
         cfg->sp_start = form_field(body, "spstart", val, sizeof(val)) ? 1 : 0;
         cfg->sp_dark = form_field(body, "spdark", val, sizeof(val)) ? 1 : 0;
+        cfg->so_show = form_field(body, "soshow", val, sizeof(val)) ? 1 : 0;
+        cfg->so_rotate = form_field(body, "sorot", val, sizeof(val)) ? 1 : 0;
+        cfg->so_start = form_field(body, "sostart", val, sizeof(val)) ? 1 : 0;
+        cfg->so_dark = form_field(body, "sodark", val, sizeof(val)) ? 1 : 0;
+        if (form_field(body, "soroom", cfg->so_room, sizeof(cfg->so_room))) {
+            /* Without the spaces around it, as the rooms are named. */
+            char *r = cfg->so_room;
+            const size_t lead = strspn(r, " ");
+            memmove(r, r + lead, strlen(r + lead) + 1);
+            for (size_t n = strlen(r); n > 0 && r[n - 1] == ' '; n--) {
+                r[n - 1] = '\0';
+            }
+        }
         char spid[48];
         if (form_field(body, "spid", spid, sizeof(spid))) {
             /* Pasted with spaces around it, perhaps; one that isn't a client

@@ -584,7 +584,62 @@ for the account's name, shown on the setup page. The refresh token is kept
 in NVS (namespace `spotify`) for this display only - not in backups, and
 dropped if the client ID changes; **Koble fra Spotify** forgets it. The
 client ID and the two ticks are in backups as `spotify.client_id`,
-`spotify.show` and `spotify.rotate`.
+`spotify.show` and `spotify.rotate`. The login also asks for
+`user-read-recently-played` and `playlist-read-private` (since 1.27.0) for
+the Sonos screen's "recently played"; a login from before is asked to log
+in again there.
+
+### Sonos
+
+One screen for the whole display, after Spotify: what plays in a room of
+Sonos speakers on the local network, with the cover, the title, the
+artist and the album, a progress bar, buttons for the previous track,
+play/pause (stop for a radio, which can't pause) and the next track, and
+the volume (- and +, in steps of 3 %). A row of buttons at the top has a
+button per room (a stereo pair or a sub isn't a room of its own); the rooms
+playing together, as grouped in the Sonos app, are lit. While something
+plays, a tap on an idle room adds it to the group, in sync (`x-rincon:` to
+the group's coordinator), and a tap on a lit room takes it out and stops
+it there (`BecomeCoordinatorOfStandaloneGroup`; if it led, the others play
+on). A room playing something of its own has a dot, and a tap only shows
+it, so nobody's music is taken over; so does any tap while nothing plays,
+or in the grid. Playback and the volume go to the group. **Velg musikk** swaps the
+player for a grid of up to 12 tiles: the household's Sonos favourites,
+then what the display's Spotify account played lately, as the playlist or
+album each track was played from (from an artist, Liked Songs or a search,
+the track's album), each with a green dot. A tap starts it in the room,
+replacing the room's queue. A room with nothing to play opens the grid by
+itself.
+
+No login and no cloud: the speakers are found with an SSDP search, and
+asked through the UPnP control they answer on port 1400 - as Home
+Assistant uses them (`components/sonos_client.c`): the rooms from
+`ZoneGroupTopology`, what plays from `AVTransport`, the volume from
+`GroupRenderingControl`, the favourites from `ContentDirectory` (`FV:2`).
+Spotify items are queued the way the Sonos app shares them: Spotify's URI
+in an `x-rincon-cpcontainer:` address with Spotify's Sonos service in the
+metadata (2311 in most places, 3079 in some; the one Sonos takes is kept).
+This needs Spotify added in the Sonos app, and works for playlists -
+Spotify's own mixes too - albums and tracks, not for artists. Sonos
+Radio's favourites have no address of their own and can only be started
+from the Sonos app (Sonos's own API leaves them out too), so they aren't
+shown. "Recently played" needs the Spotify screen's login, though not the
+screen itself; playlists are named by asking Spotify, which doesn't name
+its own playlists for apps in development mode ("Spilleliste" then).
+Asked every 3 s while playing (6 s otherwise), at once after a button
+(taps are queued, each for the group it was meant for); the rooms and
+groups every 30 s, and at once after a room joined or left, or when the
+room stops answering. The
+covers are held only while the screen is on show (as the Spotify screen's
+since 1.27.0), and decoded scaled down: a speaker's covers are 640 px.
+
+Under **Andre skjermer → Sonos** on the setup page: **Vis Sonos** (and
+**i automatisk bytte**), **Automatisk bytte kan starte herfra** and
+**Alltid mørkt** as for Spotify, and **Rom som vises først** (empty: the
+first room that plays, else the first by name; the rooms found are offered
+once the screen has looked). The display must be on the same network as the
+speakers. In backups as `sonos.show`, `sonos.rotate`,
+`sonos.start_rotation`, `sonos.dark` and `sonos.room`.
 
 ### Satellite
 

@@ -22,6 +22,9 @@ void test_config(void)
     CHECK_INT(a.clk_in, 1);     /* indoors shown unless unticked */
     CHECK_INT(a.sp_start, 1);   /* the rotation may start from Spotify unless unticked */
     CHECK_INT(a.sp_dark, 0);    /* the theme's unless ticked */
+    CHECK_INT(a.so_start, 1);   /* likewise for Sonos */
+    CHECK_INT(a.so_show, 0);
+    CHECK_STR(a.so_room, "");
     CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
     CHECK_INT(a.mon_cal, 0);    /* off unless ticked */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
@@ -69,6 +72,9 @@ void test_config(void)
     a.sp_show = 1;
     a.sp_start = 0;
     a.sp_dark = 1;
+    a.so_show = 1;
+    a.so_start = 0;
+    snprintf(a.so_room, sizeof(a.so_room), "Stua + Kj\xC3\xB8kken");
     snprintf(a.sp_client_id, sizeof(a.sp_client_id), "0123456789abcdef0123456789abcdef");
     a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
@@ -99,6 +105,7 @@ void test_config(void)
     c.clk_in = 1;
     c.sp_start = 1;
     c.sp_dark = 0;
+    c.so_start = 1;
     char err[96];
     CHECK(app_config_from_json(json, &c, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "other");
@@ -125,6 +132,8 @@ void test_config(void)
     CHECK_INT(c.clk_in, 0);
     CHECK(c.sp_show && !c.sp_rotate);
     CHECK(!c.sp_start && c.sp_dark);
+    CHECK(c.so_show && !c.so_rotate && !c.so_start && !c.so_dark);
+    CHECK_STR(c.so_room, "Stua + Kj\xC3\xB8kken");
     CHECK_STR(c.sp_client_id, "0123456789abcdef0123456789abcdef");
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
 

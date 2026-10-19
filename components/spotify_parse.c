@@ -146,6 +146,72 @@ int spotify_parse_devices(const char *json, spotify_device_t *out, int max)
     return n;
 }
 
+/* What `uri` played from, as Sonos takes it: a playlist
+ * ("spotify:user:x:playlist:ID" too) or an album; "" otherwise. */
+static void context_uri(const char *uri, char *out, size_t out_len)
+{
+    const char *pl = strstr(uri, ":playlist:");
+    out[0] = '\0';
+    if (strncmp(uri, "spotify:", 8) == 0 && pl != NULL) {
+        snprintf(out, out_len, "spotify:playlist:%s", pl + 10);
+    } else if (strncmp(uri, "spotify:album:", 14) == 0) {
+        snprintf(out, out_len, "%s", uri);
+    }
+}
+
+int spotify_parse_recent(const char *json, spotify_recent_t *out, int max)
+{
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "items");
+    if (!cJSON_IsArray(items)) {
+        cJSON_Delete(root);
+        return -1;
+    }
+    int n = 0;
+    const cJSON *it;
+    cJSON_ArrayForEach(it, items)
+    {
+        if (n == max) {
+            break;
+        }
+        const cJSON *track = cJSON_GetObjectItemCaseSensitive(it, "track");
+        const cJSON *album = cJSON_GetObjectItemCaseSensitive(track, "album");
+        const cJSON *ctx = cJSON_GetObjectItemCaseSensitive(it, "context");
+        spotify_recent_t r;
+        memset(&r, 0, sizeof(r));
+        /* A playlist or album as such; from anything else (an artist,
+         * Liked Songs, a search) the track's album. */
+        context_uri(str_at(ctx, "uri"), r.uri, sizeof(r.uri));
+        if (strncmp(r.uri, "spotify:album:", 14) == 0 || r.uri[0] == '\0') {
+            context_uri(str_at(album, "uri"), r.uri, sizeof(r.uri));
+            copy(r.name, sizeof(r.name), str_at(album, "name"));
+        }
+        copy(r.image_url, sizeof(r.image_url), pick_image(cJSON_GetObjectItemCaseSensitive(album, "images")));
+        bool seen = r.uri[0] == '\0';
+        for (int i = 0; i < n && !seen; i++) {
+            seen = strcmp(out[i].uri, r.uri) == 0;
+        }
+        if (!seen) {
+            out[n++] = r;
+        }
+    }
+    cJSON_Delete(root);
+    return n;
+}
+
+bool spotify_parse_playlist(const char *json, char *name, size_t name_len, char *image_url, size_t image_len)
+{
+    cJSON *root = cJSON_Parse(json);
+    const char *nm = str_at(root, "name");
+    const bool ok = *nm != '\0';
+    if (ok) {
+        copy(name, name_len, nm);
+        copy(image_url, image_len, pick_image(cJSON_GetObjectItemCaseSensitive(root, "images")));
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
 bool spotify_parse_token(const char *json, char *access, size_t access_len, char *refresh, size_t refresh_len,
                          int *expires_in)
 {

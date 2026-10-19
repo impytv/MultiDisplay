@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "cJSON.h"
+#include "esp_attr.h"
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
@@ -27,10 +28,13 @@ static const char *TAG = "spotify";
 #define SP_API         "https://api.spotify.com/v1"
 #define SP_TOKEN_URL   "https://accounts.spotify.com/api/token"
 #define SP_AUTH_URL    "https://accounts.spotify.com/authorize"
-#define SP_SCOPES      "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+/* The last two for the Sonos screen's "recently played" (main/sonos.c); a
+ * login from before them is asked to log in again there. */
+#define SP_SCOPES      "user-read-playback-state user-modify-playback-state user-read-currently-playing " \
+                       "user-read-recently-played playlist-read-private"
 #define SP_NVS         "spotify"
 #define SP_TOKEN_MAX   512
-#define SP_CODE_MAX    640
+#define SP_CODE_MAX    1024 /* ~450 characters with the five scopes */
 #define SP_TIMEOUT_MS  10000
 #define SP_REPLY_MAX   (96 * 1024)  /* a player reply is 5-15 KB */
 #define SP_IMAGE_MAX   (256 * 1024) /* a 300 px cover is 20-40 KB */
@@ -46,13 +50,13 @@ static char s_user[64];
 static spotify_login_t s_login;
 static char s_verifier[65];          /* of the login under way */
 static char s_state[128];            /* likewise; "" = none */
-static char s_code[SP_CODE_MAX];     /* waiting for the weather task */
+static EXT_RAM_BSS_ATTR char s_code[SP_CODE_MAX]; /* waiting for the weather task */
 
 /* The weather task's own (off its 8 KB stack, which a TLS handshake needs). */
 static char s_access[SP_TOKEN_MAX];
 static char s_w_refresh[SP_TOKEN_MAX], s_w_fresh[SP_TOKEN_MAX];
 static char s_w_auth[SP_TOKEN_MAX + 8];
-static char s_w_code[SP_CODE_MAX];
+static EXT_RAM_BSS_ATTR char s_w_code[SP_CODE_MAX];
 static int64_t s_access_until_us;
 static int s_retry_after_s;
 static esp_http_client_handle_t s_client; /* kept alive to api.spotify.com */
@@ -569,6 +573,61 @@ esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id)
         return SPOTIFY_ERR_NO_DEVICE;
     }
     return ESP_FAIL;
+}
+
+/* A 401 or 403 for a permission the login lacks. */
+static bool missing_scope(int status)
+{
+    return (status == 401 || status == 403) && s_resp.buf &&
+           (strstr(s_resp.buf, "scope") || strstr(s_resp.buf, "ermission"));
+}
+
+esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count)
+{
+    *count = 0;
+    esp_err_t err;
+    const int status = api(HTTP_METHOD_GET, "/me/player/recently-played?limit=50", NULL, &err);
+    if (missing_scope(status)) {
+        return SPOTIFY_ERR_SCOPE;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    json_use_psram();
+    const int n = status == 200 && s_resp.buf ? spotify_parse_recent(s_resp.buf, out, max) : -1;
+    if (n < 0) {
+        ESP_LOGW(TAG, "Recently played: HTTP %d %.200s", status, s_resp.buf ? s_resp.buf : "");
+        return ESP_FAIL;
+    }
+    *count = n;
+    return ESP_OK;
+}
+
+esp_err_t spotify_get_playlist(const char *uri, char *name, size_t name_len, char *image_url, size_t image_len)
+{
+    const char *id = strncmp(uri, "spotify:playlist:", 17) == 0 ? uri + 17 : "";
+    if (id[0] == '\0' || strlen(id) > 40) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char path[96];
+    snprintf(path, sizeof(path), "/playlists/%s?fields=name,images", id);
+    esp_err_t err;
+    const int status = api(HTTP_METHOD_GET, path, NULL, &err);
+    if (missing_scope(status)) {
+        return SPOTIFY_ERR_SCOPE;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (status == 404 || status == 403) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    json_use_psram();
+    if (status != 200 || s_resp.buf == NULL || !spotify_parse_playlist(s_resp.buf, name, name_len, image_url, image_len)) {
+        ESP_LOGW(TAG, "Playlist %s: HTTP %d", id, status);
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 int spotify_retry_after_s(void)

@@ -149,6 +149,11 @@ static void sanitize_view_settings(app_config_t *c)
     c->sp_rotate = c->sp_rotate ? 1 : 0;
     c->sp_start = c->sp_start ? 1 : 0;
     c->sp_dark = c->sp_dark ? 1 : 0;
+    c->so_show = c->so_show ? 1 : 0;
+    c->so_rotate = c->so_rotate ? 1 : 0;
+    c->so_start = c->so_start ? 1 : 0;
+    c->so_dark = c->so_dark ? 1 : 0;
+    c->so_room[APP_CONFIG_SONOS_ROOM_MAX - 1] = '\0';
     c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
     if (!app_config_spotify_id_valid(c->sp_client_id)) {
         c->sp_client_id[0] = '\0';
@@ -190,6 +195,7 @@ static void seed_defaults(app_config_t *out)
     out->mon_astro = 1;
     out->clk_in = 1;
     out->sp_start = 1;
+    out->so_start = 1;
     out->clk_out = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
@@ -357,6 +363,11 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "spstart", &out->sp_start); /* the rotation may start from it if never saved */
     nvs_get_u8(h, "spdark", &out->sp_dark);   /* the theme's if never saved */
     load_str(h, "spid", out->sp_client_id, sizeof(out->sp_client_id));
+    nvs_get_u8(h, "soshow", &out->so_show); /* no Sonos screen if never saved */
+    nvs_get_u8(h, "sorot", &out->so_rotate);
+    nvs_get_u8(h, "sostart", &out->so_start); /* the rotation may start from it if never saved */
+    nvs_get_u8(h, "sodark", &out->so_dark);
+    load_str(h, "soroom", out->so_room, sizeof(out->so_room));
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -400,6 +411,9 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "Spotify: %s%s%s%s, client ID %s", out->sp_show ? "shown" : "not shown",
              out->sp_rotate ? ", in the rotation" : "", out->sp_start ? "" : ", the rotation not started from it",
              out->sp_dark ? ", dark" : "", out->sp_client_id[0] ? "set" : "not set");
+    ESP_LOGI(TAG, "Sonos: %s%s%s%s, room '%s'", out->so_show ? "shown" : "not shown",
+             out->so_rotate ? ", in the rotation" : "", out->so_start ? "" : ", the rotation not started from it",
+             out->so_dark ? ", dark" : "", out->so_room);
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -494,6 +508,11 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "spstart", cfg->sp_start ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "spdark", cfg->sp_dark ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "spid", cfg->sp_client_id);
+    if (err == ESP_OK) err = nvs_set_u8(h, "soshow", cfg->so_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "sorot", cfg->so_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "sostart", cfg->so_start ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "sodark", cfg->so_dark ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, "soroom", cfg->so_room);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {

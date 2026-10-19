@@ -100,6 +100,13 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddBoolToObject(sp, "dark", c->sp_dark);
     cJSON_AddStringToObject(sp, "client_id", c->sp_client_id);
 
+    cJSON *so = cJSON_AddObjectToObject(root, "sonos");
+    cJSON_AddBoolToObject(so, "show", c->so_show);
+    cJSON_AddBoolToObject(so, "rotate", c->so_rotate);
+    cJSON_AddBoolToObject(so, "start_rotation", c->so_start);
+    cJSON_AddBoolToObject(so, "dark", c->so_dark);
+    cJSON_AddStringToObject(so, "room", c->so_room);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -276,6 +283,12 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(sp, "start_rotation", &c->sp_start);
     get_bool(sp, "dark", &c->sp_dark);
     ok &= get_str(sp, "client_id", c->sp_client_id, sizeof(c->sp_client_id));
+    const cJSON *so = cJSON_GetObjectItemCaseSensitive(root, "sonos");
+    get_bool(so, "show", &c->so_show);
+    get_bool(so, "rotate", &c->so_rotate);
+    get_bool(so, "start_rotation", &c->so_start);
+    get_bool(so, "dark", &c->so_dark);
+    ok &= get_str(so, "room", c->so_room, sizeof(c->so_room));
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

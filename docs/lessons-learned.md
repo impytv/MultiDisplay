@@ -292,3 +292,28 @@ guides answered 403 until the container was restarted.
 *Lesson:* after a pull, rebase or checkout that touches `server/`, run
 `docker compose restart update-site` and check that `/montering/` and
 `/bruk/` answer 200.
+
+### A library's "prefer internal" allocations
+
+Showing a Sonos speaker's 640-px cover (1.27.0) took the lowest free
+internal RAM from ~60 KB to ~28 KB, though mbedTLS and our own buffers were
+in PSRAM: esp_new_jpeg asks for its working memory - about 30 KB for a row
+of blocks that wide - with `jpeg_calloc_inner`, which takes internal RAM
+for as long as there is any. Found by logging
+`heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)` around each step of
+the first poll. Its two `*_inner` allocators are now wrapped (`--wrap` in
+`main/CMakeLists.txt`, `main/draw.c`) to put pieces over 4 KB in PSRAM;
+decoding takes no longer.
+*Lesson:* when the internal low point drops, log the minimum around each
+step rather than guessing, and check a binary library's undefined symbols
+(`nm`) for allocators that pick internal RAM by themselves.
+
+### Buffers for a screen that isn't on show
+
+The Spotify screen held two 300-px covers (360 KB of PSRAM) from start-up,
+whether shown or not, which left ~370 KB free. Since 1.27.0 both the
+Spotify and the Sonos screen allocate their covers when on show and give
+them back on another screen (`spotify_release`, `sonos_release`), for ~650
+KB free elsewhere.
+*Lesson:* big buffers a screen needs only while on show belong to that
+time, not to start-up.

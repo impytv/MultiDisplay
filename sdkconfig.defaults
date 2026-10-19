@@ -226,3 +226,6 @@ CONFIG_LWIP_DHCP_GET_NTP_SRV=y
 # uxTaskGetSystemState() for each task's stack high-water mark in /status
 # (main/diag.c).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# The Spotify login's return (/spotify/svar?code=..&state=..) is ~600
+# characters with the scopes the Sonos screen added (1.27.0); 512 refused it.
+CONFIG_HTTPD_MAX_URI_LEN=1536

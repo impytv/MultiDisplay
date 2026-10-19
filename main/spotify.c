@@ -17,7 +17,6 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
-#include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -74,9 +73,9 @@ static bool s_woke_at_end;     /* the poll woken as the track ended */
  * mark it so: its controls are greyed out too. */
 static char s_refused[48];
 
-/* The cover, SP_COVER square, RGB565 (PSRAM); s_cover_url is the one in
- * it. The weather task decodes into the scratch, then copies under the
- * lock. */
+/* The cover, SP_COVER square, RGB565 (PSRAM, only while the screen is on
+ * show); s_cover_url is the one in it. The weather task decodes into the
+ * scratch, then copies under the lock. */
 static uint16_t *s_cover_px, *s_cover_scratch;
 static lv_image_dsc_t s_cover_img;
 static char s_cover_url[160];
@@ -476,48 +475,54 @@ bool spotify_tap(int x, int y)
  * The weather task
  * ------------------------------------------------------------------------ */
 
-/* Decode a JPEG cover into s_cover_scratch, scaled to fill SP_COVER square
- * (the middle of a picture that isn't square). */
-static bool decode_cover(const uint8_t *jpg, size_t len)
+/* The cover's memory, while the screen is on show (see
+ * spotify_release). */
+static bool cover_alloc(void)
 {
-    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
-    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
-    jpeg_dec_handle_t dec = NULL;
-    if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
+    if (s_cover_px != NULL) {
+        return true;
+    }
+    const size_t n = (size_t)SP_COVER * SP_COVER * sizeof(uint16_t);
+    uint16_t *px = heap_caps_aligned_alloc(16, n, MALLOC_CAP_SPIRAM);
+    uint16_t *scratch = heap_caps_aligned_alloc(16, n, MALLOC_CAP_SPIRAM);
+    if (px == NULL || scratch == NULL) {
+        ESP_LOGE(TAG, "No memory for the cover");
+        heap_caps_free(px);
+        heap_caps_free(scratch);
         return false;
     }
-    jpeg_dec_io_t io = { .inbuf = (uint8_t *)jpg, .inbuf_len = (int)len };
-    jpeg_dec_header_info_t info;
-    uint16_t *px = NULL;
-    bool ok = false;
-    int out_len = 0;
-    if (jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK && info.width > 0 && info.height > 0 &&
-        info.width <= 2000 && info.height <= 2000 && jpeg_dec_get_outbuf_len(dec, &out_len) == JPEG_ERR_OK &&
-        (px = heap_caps_aligned_alloc(16, (size_t)out_len, MALLOC_CAP_SPIRAM)) != NULL) {
-        io.outbuf = (uint8_t *)px;
-        ok = jpeg_dec_process(dec, &io) == JPEG_ERR_OK;
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        heap_caps_free(px);
+        heap_caps_free(scratch);
+        return false;
     }
-    jpeg_dec_close(dec);
-    if (ok) {
-        const int side = info.width < info.height ? info.width : info.height;
-        const int ox = (info.width - side) / 2, oy = (info.height - side) / 2;
-        for (int y = 0; y < SP_COVER; y++) {
-            const uint16_t *row = px + (size_t)(oy + y * side / SP_COVER) * info.width + ox;
-            for (int x = 0; x < SP_COVER; x++) {
-                s_cover_scratch[y * SP_COVER + x] = row[x * side / SP_COVER];
-            }
-        }
-    } else {
-        ESP_LOGW(TAG, "Cover not decoded (%u bytes)", (unsigned)len);
+    s_cover_px = px;
+    s_cover_scratch = scratch;
+    s_cover_img.data = (const uint8_t *)px;
+    s_cover_ok = false;
+    s_cover_url[0] = '\0';
+    esp_lv_adapter_unlock();
+    return true;
+}
+
+void spotify_release(void)
+{
+    if (s_cover_px == NULL || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
     }
-    heap_caps_free(px);
-    return ok;
+    heap_caps_free(s_cover_px);
+    heap_caps_free(s_cover_scratch);
+    s_cover_px = s_cover_scratch = NULL;
+    s_cover_img.data = NULL;
+    s_cover_ok = false;
+    s_cover_url[0] = '\0';
+    esp_lv_adapter_unlock();
 }
 
 /* The cover for `url`, if it isn't the one shown. */
 static void fetch_cover(const char *url)
 {
-    if (strcmp(url, s_cover_url) == 0 || s_cover_px == NULL) {
+    if (!cover_alloc() || strcmp(url, s_cover_url) == 0) {
         return;
     }
     bool ok = false;
@@ -525,7 +530,7 @@ static void fetch_cover(const char *url)
         uint8_t *jpg = NULL;
         size_t len = 0;
         if (spotify_get_image(url, &jpg, &len) == ESP_OK) {
-            ok = decode_cover(jpg, len);
+            ok = draw_jpeg_square(jpg, len, s_cover_scratch, SP_COVER);
             free(jpg);
         }
     }
@@ -712,18 +717,10 @@ lv_obj_t *spotify_build(lv_obj_t *screen)
     lv_label_set_long_mode(s_msg, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
 
-    s_cover_px = heap_caps_calloc((size_t)SP_COVER * SP_COVER, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    s_cover_scratch = heap_caps_calloc((size_t)SP_COVER * SP_COVER, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-    if (s_cover_px == NULL || s_cover_scratch == NULL) {
-        ESP_LOGE(TAG, "No memory for the cover");
-        free(s_cover_px);
-        free(s_cover_scratch);
-        s_cover_px = s_cover_scratch = NULL;
-    }
+    /* The pixels come with the first cover (cover_alloc). */
     s_cover_img = (lv_image_dsc_t){
         .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565, .w = SP_COVER, .h = SP_COVER,
                     .stride = SP_COVER * 2 },
-        .data = (const uint8_t *)s_cover_px,
         .data_size = SP_COVER * SP_COVER * 2,
     };
     lv_timer_create(spotify_tick_cb, SP_TICK_MS, NULL);
@@ -772,12 +769,12 @@ static esp_err_t h_return(httpd_req_t *req)
 {
     const size_t qlen = httpd_req_get_url_query_len(req) + 1;
     char *q = qlen > 1 && qlen < 2048 ? malloc(qlen) : NULL;
-    char *code = malloc(1024);
+    char *code = malloc(1536); /* longer than any code kept (SP_CODE_MAX), so a cut one is refused */
     char state[160] = "", error[64] = "";
     bool ok = false;
     if (q != NULL && code != NULL && httpd_req_get_url_query_str(req, q, qlen) == ESP_OK) {
         code[0] = '\0';
-        form_field(q, "code", code, 1024);
+        form_field(q, "code", code, 1536);
         form_field(q, "state", state, sizeof(state));
         form_field(q, "error", error, sizeof(error));
         ok = spotify_auth_return(state, code, error);

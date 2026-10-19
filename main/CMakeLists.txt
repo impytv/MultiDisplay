@@ -18,6 +18,7 @@ idf_component_register(
         "month.c"
         "clockscreen.c"
         "spotify.c"
+        "sonos.c"
         "satellite.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
@@ -50,6 +51,8 @@ idf_component_register(
         "../components/chip_temp.c"
         "../components/spotify_client.c"
         "../components/spotify_parse.c"
+        "../components/sonos_client.c"
+        "../components/sonos_parse.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -102,6 +105,11 @@ endif()
 if(lvgl_lib)
     target_compile_options(${lvgl_lib} PRIVATE -Wno-format)
 endif()
+
+# The JPEG decoder's allocations that would rather be internal RAM go
+# through main/draw.c instead, which puts the big ones in PSRAM.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=jpeg_calloc_inner"
+    "-Wl,--wrap=jpeg_calloc_align_inner")
 
 # LVGL's allocator (lv_mem_psram.c) is only referenced from the LVGL
 # library, which links after this one; make sure the linker keeps it.

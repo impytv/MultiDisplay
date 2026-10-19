@@ -28,4 +28,10 @@ void draw_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv
 /* A filled circle of radius r around cx, cy. */
 void draw_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color);
 
+/* A JPEG's middle square at `side` x `side` px, as RGB565 into out (16-byte
+ * aligned, side * side pixels). Scaled down while decoding where the
+ * decoder can (side a multiple of 8), so a big picture needs no buffer of
+ * its full size. False if it can't be read. */
+bool draw_jpeg_square(const uint8_t *jpg, size_t len, uint16_t *out, int side);
+
 #endif

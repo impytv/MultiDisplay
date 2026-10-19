@@ -7,6 +7,10 @@
 
 #include <string.h>
 
+#include "esp_heap_caps.h"
+#include "esp_jpeg_dec.h"
+#include "esp_log.h"
+
 #include "app.h"
 #include "draw.h"
 
@@ -196,4 +200,123 @@ int draw_text_w(const char *txt)
     lv_point_t sz;
     lv_text_get_size(&sz, txt, g_font_body, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     return sz.x;
+}
+
+/* The JPEG decoder's working memory. Its own allocator (esp_new_jpeg's
+ * jpeg_calloc_inner and jpeg_calloc_align_inner) takes internal RAM while
+ * there is any: about 30 KB for a 600-px picture's row of blocks, which
+ * took the lowest free internal RAM from ~60 KB to ~28 KB - too near what
+ * WiFi needs. Linked in their place (--wrap, main/CMakeLists.txt): small
+ * pieces still internal, big ones from PSRAM, either falling back to the
+ * other. */
+#define JPEG_INTERNAL_MAX 4096
+
+void *__wrap_jpeg_calloc_inner(size_t size)
+{
+    return size <= JPEG_INTERNAL_MAX
+               ? heap_caps_calloc_prefer(1, size, 2, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT,
+                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+               : heap_caps_calloc_prefer(1, size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void *__wrap_jpeg_calloc_align_inner(size_t size, int aligned)
+{
+    const uint32_t first = size <= JPEG_INTERNAL_MAX ? MALLOC_CAP_INTERNAL : MALLOC_CAP_SPIRAM;
+    const uint32_t then = size <= JPEG_INTERNAL_MAX ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL;
+    void *p = heap_caps_aligned_calloc((size_t)aligned, 1, size, first | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_aligned_calloc((size_t)aligned, 1, size, then | MALLOC_CAP_8BIT);
+}
+
+/* Decode jpg, scaled to sw x sh if those aren't 0, into *px (into `into` if
+ * the result is exactly into_len bytes, else a new PSRAM buffer). */
+static bool jpeg_decode(const uint8_t *jpg, size_t len, int sw, int sh, uint16_t *into, size_t into_len,
+                        uint16_t **px, int *w, int *h)
+{
+    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
+    cfg.output_type = JPEG_PIXEL_FORMAT_RGB565_LE;
+    cfg.scale.width = (uint16_t)sw;
+    cfg.scale.height = (uint16_t)sh;
+    jpeg_dec_handle_t dec = NULL;
+    if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
+        return false;
+    }
+    jpeg_dec_io_t io = { .inbuf = (uint8_t *)jpg, .inbuf_len = (int)len };
+    jpeg_dec_header_info_t info;
+    int out_len = 0;
+    bool ok = false;
+    *px = NULL;
+    if (jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK && jpeg_dec_get_outbuf_len(dec, &out_len) == JPEG_ERR_OK) {
+        *w = sw ? sw : info.width;
+        *h = sh ? sh : info.height;
+        if (into != NULL && (size_t)out_len == into_len) {
+            *px = into;
+        } else {
+            *px = heap_caps_aligned_alloc(16, (size_t)out_len, MALLOC_CAP_SPIRAM);
+        }
+        if (*px != NULL && (size_t)out_len >= (size_t)*w * *h * 2) {
+            io.outbuf = (uint8_t *)*px;
+            ok = jpeg_dec_process(dec, &io) == JPEG_ERR_OK;
+        }
+    }
+    jpeg_dec_close(dec);
+    if (!ok && *px != into) {
+        heap_caps_free(*px);
+        *px = NULL;
+    }
+    return ok;
+}
+
+bool draw_jpeg_square(const uint8_t *jpg, size_t len, uint16_t *out, int side)
+{
+    /* The size first, to choose the scale. */
+    jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
+    jpeg_dec_handle_t dec = NULL;
+    jpeg_dec_header_info_t info = { 0 };
+    if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
+        return false;
+    }
+    jpeg_dec_io_t io = { .inbuf = (uint8_t *)jpg, .inbuf_len = (int)len };
+    const bool head = jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK;
+    jpeg_dec_close(dec);
+    if (!head || info.width == 0 || info.height == 0 || info.width > 4000 || info.height > 4000) {
+        ESP_LOGW("draw", "Not a JPEG to decode (%u bytes)", (unsigned)len);
+        return false;
+    }
+    /* Scaled so the shorter side is `side` (in 8s), if smaller. */
+    const int W = info.width, H = info.height, m = W < H ? W : H;
+    int sw = 0, sh = 0;
+    if (m > side && side % 8 == 0) {
+        sw = (W * side / m + 7) & ~7;
+        sh = (H * side / m + 7) & ~7;
+        if (sw > W || sh > H) {
+            sw = sh = 0;
+        }
+    }
+    /* Straight into out if it comes out at side x side. */
+    const size_t out_len = (size_t)side * side * 2;
+    uint16_t *px;
+    int w, h;
+    bool ok = jpeg_decode(jpg, len, sw, sh, (sw ? sw : W) == side && (sh ? sh : H) == side ? out : NULL, out_len, &px,
+                          &w, &h);
+    if (!ok && sw) {
+        ok = jpeg_decode(jpg, len, 0, 0, W == side && H == side ? out : NULL, out_len, &px, &w, &h); /* the scale refused */
+    }
+    if (!ok) {
+        ESP_LOGW("draw", "JPEG %dx%d not decoded", W, H);
+        return false;
+    }
+    if (px == out) {
+        return true;
+    }
+    /* The middle square, nearest pixel. */
+    const int s = w < h ? w : h, ox = (w - s) / 2, oy = (h - s) / 2;
+    for (int y = 0; y < side; y++) {
+        const uint16_t *row = px + (size_t)(oy + y * s / side) * w + ox;
+        for (int x = 0; x < side; x++) {
+            out[y * side + x] = row[x * s / side];
+        }
+    }
+    heap_caps_free(px);
+    return true;
 }
