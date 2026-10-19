@@ -43,6 +43,7 @@ Er skjermen ikke satt sammen ennå, se <a href="../montering/">monteringsveiledn
 <li><a href="#kalender">Kalender</a></li>
 <li><a href="#maned">Månedskalender</a></li>
 <li><a href="#klokke">Klokke</a></li>
+<li><a href="#spotify">Spotify</a></li>
 <li><a href="#europa">Satellittbilde over Europa</a></li>
 <li><a href="#vaer">Vær</a></li>
 <li><a href="#uke">Uke</a></li>
@@ -66,7 +67,7 @@ Er skjermen ikke satt sammen ennå, se <a href="../montering/">monteringsveiledn
 <li><b>Sveip opp fra nederste kant</b> for å få en meny med alle skjermbildene, gruppert etter sted. Trykk på et for å gå dit. Menyen lukkes hvis du trykker ved siden av knappene, sveiper ned eller lar den være i et halvt minutt.</li>
 <li>På en telefon eller PC på samme nett har <b>navigasjonssiden</b> på <a href="http://multidisplay.local/">http://multidisplay.local/</a> en knapp for hvert skjermbilde. Den viser også hvilket som vises nå. Nederst er det lenker til oppsettsiden og til denne veiledningen.</li>
 </ul>
-<p>Skjermbildene kommer i denne rekkefølgen: Oversikt, Kalender, Månedskalender, Klokke og Satellittbilde over Europa. Deretter kommer skjermbildene for hvert sted, i den rekkefølgen stedene står på oppsettsiden.
+<p>Skjermbildene kommer i denne rekkefølgen: Oversikt, Kalender, Månedskalender, Klokke, Spotify og Satellittbilde over Europa. Deretter kommer skjermbildene for hvert sted, i den rekkefølgen stedene står på oppsettsiden.
 Skjermen husker hvilket skjermbilde du sist trykket deg fram til, også etter en omstart.</p>
 </div>
 
@@ -77,7 +78,7 @@ Hvis skjermen har fått et annet navn, bytter du ut <code>multidisplay</code> me
 <ul>
 <li><b>Steder</b> kommer først, med opptil fem steder. Åpne et sted for å endre det. Under <b>Finn sted</b> kan du skrive et stedsnavn, så fylles navn og koordinater ut. Kryss av for skjermbildene stedet skal ha. De innstillingene hvert skjermbilde har, dukker opp rett under avkrysningen.
 Ved siden av hvert skjermbilde er det en <b>i automatisk bytte</b>-boks (se <a href="#bytte">Automatisk bytte</a>).</li>
-<li><b>Andre skjermer</b> er skjermbildene som gjelder hele skjermen og ikke et bestemt sted. Det er Oversikt, Kalender, Månedskalender, Klokke og Satellittbilde.</li>
+<li><b>Andre skjermer</b> er skjermbildene som gjelder hele skjermen og ikke et bestemt sted. Det er Oversikt, Kalender, Månedskalender, Klokke, Spotify og Satellittbilde.</li>
 <li><b>Innstillinger</b> har delene Visning, Automatisk bytte, Tilgang og passord og Vedlikehold.</li>
 </ul>
 <p>Det står «Ulagrede endringer» til du lagrer. Klokkeslett skrives med 24 timer (TT:MM).</p>
@@ -132,6 +133,24 @@ Målingen jevnes ut over omtrent ett minutt. Den kan likevel variere en grad ell
 Du kan også skrive justeringen direkte i <i>Justering (°C)</i>. Siden viser hva brikken måler nå, og hva det blir med justeringen, med én desimal.
 Justeringen gjelder bare denne skjermen og er ikke med i sikkerhetskopier.</div>
 <figure><img src="skjermer/klokke.jpg" alt="Klokke med klokkeslett, dato, ukenummer og temperatur inne og ute" loading="lazy"><figcaption>Klokken med dato, ukenummer og temperaturen inne og ute.</figcaption></figure>
+</section>
+
+<section class="card" id="spotify">
+<h3>Spotify</h3>
+<p>Det som spilles på Spotify-kontoen skjermen er koblet til, med omslaget, tittelen, artistene og albumet, hvor langt sangen har kommet, og hvilken enhet den spilles på. Skjermen spiller ingenting selv, men styrer Spotify på en telefon, PC eller høyttaler.
+Knappene hopper til forrige eller neste sang og spiller eller pauser. Kan enheten stilles i volum fra andre, er det også knapper for volumet, ti prosent om gangen. Trykk ved siden av knappene bytter skjermbilde som vanlig.</p>
+<p>Spilles det ingenting, står det en knapp for hver av kontoens enheter som Spotify kjenner til. Trykk på en for å starte avspillingen der. Enheter vises bare når Spotify-appen nylig har vært åpen på dem.</p>
+<p>Styringen krever <b>Spotify Premium</b>. Noen enheter, for eksempel en del TV-er, forsterkere og høyttalere med Chromecast, lar Spotify ikke styres fra andre enn sin egen app. Da er knappene grå, og det står «Spotify lar ikke skjermen styre denne enheten». Skjermen viser likevel hva som spilles.</p>
+<div class="set"><b>Oppsett</b>Skjermen trenger en egen app hos Spotify. Den lages én gang og kan brukes av alle skjermene dine:
+<ol>
+<li>Gå til <a href="https://developer.spotify.com/dashboard">developer.spotify.com/dashboard</a> og logg inn. Velg <i>Create app</i>, gi den et navn, og kryss av for <i>Web API</i>.</li>
+<li>Under <i>Redirect URIs</i> legger du inn adressen som står på oppsettsiden, <code>https://multidisplay.erlandsen.dev/spotify/</code>.</li>
+<li>Under <i>User Management</i> legger du inn navn og e-post for hver Spotify-konto som skal brukes, opptil fem.</li>
+<li>På oppsettsiden, under Andre skjermer → Spotify, limer du inn appens <i>Client ID</i> i <i>Klient-ID</i>, krysser av for <i>Vis Spotify</i> (og <i>i automatisk bytte</i> om du vil) og lagrer.</li>
+<li>Trykk <i>Koble til Spotify</i> og logg inn med kontoen skjermen skal styre.</li>
+</ol>
+Påloggingen gjelder bare denne skjermen og er ikke med i sikkerhetskopier. <i>Koble fra</i> glemmer den.</div>
+<figure><img src="skjermer/spotify.jpg" alt="Spotify-skjermen med omslag, sangtittel, artist, fremdrift og knapper" loading="lazy"><figcaption>Spotify mens det spilles på en telefon. Volumet kan ikke styres fra andre på en iPhone, så knappene for det mangler.</figcaption></figure>
 </section>
 
 <section class="card" id="europa">

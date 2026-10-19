@@ -543,7 +543,10 @@ the next track, the volume (- and +, in steps of 10 %) and the device it
 plays on. With nothing playing, a button for each of the account's
 devices starts playback there. The display plays nothing itself; it
 controls Spotify on a phone, speaker or computer through Spotify's Web
-API, and controlling needs **Spotify Premium**. Asked every 5 s while
+API, and controlling needs **Spotify Premium**. Some devices (many TVs,
+amplifiers and Cast speakers) are *restricted*: Spotify refuses commands
+for them ("403 Restricted device"), so their controls are greyed out with a
+note - also for a device that refuses without being marked so. Asked every 5 s while
 playing (10 s paused), at once after a button; the progress bar moves on
 by itself between, and the poll comes early when a track should have
 ended. The buttons are drawn and hit-tested by `main/spotify.c`
