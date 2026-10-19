@@ -96,7 +96,7 @@ static backoff_t s_fail;
 
 static bool dark(void)
 {
-    return g_cfg->theme == APP_THEME_DARK;
+    return g_cfg->theme == APP_THEME_DARK || g_cfg->sp_dark;
 }
 
 static lv_color_t c_txt(void)
@@ -683,6 +683,12 @@ static lv_obj_t *text_label(const lv_font_t *font, lv_color_t colour, int y)
 lv_obj_t *spotify_build(lv_obj_t *screen)
 {
     s_root = screen_root_create(screen);
+    if (g_cfg->sp_dark && g_cfg->theme != APP_THEME_DARK) {
+        /* Dark on its own: the dark theme's background and text. */
+        lv_obj_set_style_bg_color(s_root, lv_color_hex(0x15171A), 0);
+        lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(s_root, lv_palette_lighten(LV_PALETTE_GREY, 5), 0);
+    }
     s_canvas = lv_obj_create(s_root);
     lv_obj_remove_style_all(s_canvas);
     lv_obj_set_size(s_canvas, LV_PCT(100), LV_PCT(100));

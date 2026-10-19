@@ -96,6 +96,8 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON *sp = cJSON_AddObjectToObject(root, "spotify"); /* the login is the display's own: not backed up */
     cJSON_AddBoolToObject(sp, "show", c->sp_show);
     cJSON_AddBoolToObject(sp, "rotate", c->sp_rotate);
+    cJSON_AddBoolToObject(sp, "start_rotation", c->sp_start);
+    cJSON_AddBoolToObject(sp, "dark", c->sp_dark);
     cJSON_AddStringToObject(sp, "client_id", c->sp_client_id);
 
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
@@ -271,6 +273,8 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     const cJSON *sp = cJSON_GetObjectItemCaseSensitive(root, "spotify");
     get_bool(sp, "show", &c->sp_show);
     get_bool(sp, "rotate", &c->sp_rotate);
+    get_bool(sp, "start_rotation", &c->sp_start);
+    get_bool(sp, "dark", &c->sp_dark);
     ok &= get_str(sp, "client_id", c->sp_client_id, sizeof(c->sp_client_id));
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");

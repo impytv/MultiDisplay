@@ -253,9 +253,13 @@ typedef struct {
     /* The Spotify screen (main/spotify.c): shown, and in the rotation, and
      * the client ID of the app registered at Spotify for it ("" = none
      * yet). The login itself is per display, kept by
-     * components/spotify_client.c, not here. */
+     * components/spotify_client.c, not here. sp_start: the rotation may
+     * start from the Spotify screen (otherwise it stays until a tap);
+     * sp_dark: the screen dark whatever the theme. */
     uint8_t sp_show;
     uint8_t sp_rotate;
+    uint8_t sp_start;
+    uint8_t sp_dark;
     char sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX];
 } app_config_t;
 

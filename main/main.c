@@ -392,6 +392,9 @@ static void show_view(stop_kind_t kind)
     if (kind == STOP_RADAR || kind == STOP_SHIPS || kind == STOP_RAIN) {
         lv_obj_set_style_text_color(g_status_label, lv_color_hex(radar_status_colour()), 0);
         lv_obj_align(g_status_label, LV_ALIGN_CENTER, 212, 0); /* over the table half */
+    } else if (kind == STOP_SPOTIFY && g_cfg->sp_dark) {
+        lv_obj_set_style_text_color(g_status_label, lv_palette_lighten(LV_PALETTE_GREY, 5), 0);
+        lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
     } else {
         lv_obj_remove_local_style_prop(g_status_label, LV_STYLE_TEXT_COLOR, 0);
         lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
@@ -726,6 +729,10 @@ static void auto_rotate_timer_cb(lv_timer_t *t)
         return;
     }
     if (s_auto_running && now - s_auto_switch_ms < (uint32_t)g_cfg->auto_dwell_s * 1000u) {
+        return;
+    }
+    /* Left on Spotify, perhaps to watch what plays: stays, if so set. */
+    if (!s_auto_running && s_stops[g_view_index].kind == STOP_SPOTIFY && !g_cfg->sp_start) {
         return;
     }
     s_auto_running = true;

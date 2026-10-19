@@ -336,6 +336,12 @@ static char *build_spotify(char *p, char *end, const app_config_t *cfg)
                    "<div class=chk><label><input type=checkbox name=spshow value=1%s>"
                    "Vis Spotify</label><label><input type=checkbox name=sprot value=1%s>"
                    "i automatisk bytte</label></div>"
+                   "<div class=chk><label><input type=checkbox name=spstart value=1%s>"
+                   "Automatisk bytte kan starte herfra</label><label><input type=checkbox name=spdark "
+                   "value=1%s>Alltid m&oslash;rkt</label></div>"
+                   "<small>Uten haken ved <i>Automatisk bytte kan starte herfra</i> blir Spotify st&aring;ende "
+                   "til noen trykker. Med <i>Alltid m&oslash;rkt</i> er dette skjermbildet m&oslash;rkt "
+                   "ogs&aring; med lyst tema.</small>"
                    "<small>Hva som spilles p&aring; Spotify-kontoen til denne skjermen, med knapper for "
                    "forrige, spill/pause, neste og volum, og for &aring; starte avspillingen p&aring; en av "
                    "kontoens enheter. Skjermen spiller ikke selv, men styrer Spotify p&aring; telefonen, en "
@@ -348,7 +354,8 @@ static char *build_spotify(char *p, char *end, const app_config_t *cfg)
                    "<i>Redirect URI</i>. Under <i>User Management</i> legger du inn navnet og "
                    "e-postadressen til hver Spotify-konto som skal brukes, inntil fem. Samme app og "
                    "klient-ID kan brukes p&aring; alle skjermene.</small>",
-                   cfg->sp_show ? " checked" : "", cfg->sp_rotate ? " checked" : "", cfg->sp_client_id,
+                   cfg->sp_show ? " checked" : "", cfg->sp_rotate ? " checked" : "",
+                   cfg->sp_start ? " checked" : "", cfg->sp_dark ? " checked" : "", cfg->sp_client_id,
                    redirect[0] ? redirect : "https://.../spotify/");
     char user[64];
     const spotify_login_t st = spotify_login_state(user, sizeof(user));
@@ -1293,6 +1300,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->clk_in = form_field(body, "clkin", val, sizeof(val)) ? 1 : 0;
         cfg->sp_show = form_field(body, "spshow", val, sizeof(val)) ? 1 : 0;
         cfg->sp_rotate = form_field(body, "sprot", val, sizeof(val)) ? 1 : 0;
+        cfg->sp_start = form_field(body, "spstart", val, sizeof(val)) ? 1 : 0;
+        cfg->sp_dark = form_field(body, "spdark", val, sizeof(val)) ? 1 : 0;
         char spid[48];
         if (form_field(body, "spid", spid, sizeof(spid))) {
             /* Pasted with spaces around it, perhaps; one that isn't a client
@@ -1584,7 +1593,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         "<p style='font-family:system-ui;max-width:24rem;margin:3rem auto;text-align:center'>"
         "Lagret. Starter p&aring; nytt&hellip;"
         "<p style='font-family:system-ui;text-align:center'>"
-        "<a href=/>Tilbake til oppsettsiden</a></p>");
+        "<a href=/oppsett>Tilbake til oppsettsiden</a></p>");
     xTaskCreatePinnedToCore(reboot_task, "reboot", REBOOT_TASK_STACK, NULL, 5, NULL, 0);
     return ESP_OK;
 }

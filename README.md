@@ -564,7 +564,10 @@ Setting it up:
    display.
 2. On the setup page, under **Andre skjermer → Spotify**, paste the app's
    **Klient-ID**, tick **Vis Spotify** (and **i automatisk bytte**), and
-   save.
+   save. Unticking **Automatisk bytte kan starte herfra** keeps the
+   rotation from starting while the Spotify screen is shown (one already
+   running passes through as usual); **Alltid mørkt** draws this screen in
+   the dark theme's colours whatever the theme.
 3. Press **Koble til Spotify** there and log in with the account this
    display is to control.
 
