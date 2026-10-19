@@ -158,9 +158,7 @@ with a throwaway key, so displays won't accept it.
   - `/coredump`: the crash dump from the last crash, if any. Decode it with
     `idf.py coredump-info -c coredump.bin`, using the build of that same
     firmware. `curl -X POST http://DEVICE-IP/coredump/erase` removes it.
-    The crash dump partition comes with the partition table; a board flashed
-    before 1.1.0 needs `idf.py -p PORT partition-table-flash` once (it only
-    adds a partition at the end).
+    The crash dump partition comes with the partition table.
   - `/screen.png`: a screenshot of what's on the screen.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
@@ -721,8 +719,7 @@ most 6), and a line (with its direction) ending in `#<n>` goes under name
 ```
 
 The headings come first on the board, in their order, and the lines in
-none stay under their stop's name. The text holds up to 399 characters
-(199 before 1.19.0; saved settings are converted).
+none stay under their stop's name. The text holds up to 399 characters.
 
 You rarely need to write it by hand: below the field the setup page has a
 departure picker (`components/setup_departures.js`, served as `/dep.js`). Search for a stop (nearest the location's coordinates
@@ -818,7 +815,3 @@ missing/generic User-Agent with `403 Forbidden`; use something like
 `sdkconfig` is **not committed** (see `.gitignore`); `sdkconfig.defaults`
 holds the shared build settings and regenerates a fresh `sdkconfig` on first
 build.
-
-The "Fly" tab (aircraft radar) and severe weather alerts described above have
-since shipped; a dedicated rain radar map ("Regn") remains a placeholder for
-a future feature.

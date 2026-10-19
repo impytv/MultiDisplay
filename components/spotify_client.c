@@ -29,7 +29,7 @@ static const char *TAG = "spotify";
 #define SP_TOKEN_URL   "https://accounts.spotify.com/api/token"
 #define SP_AUTH_URL    "https://accounts.spotify.com/authorize"
 /* The last two for the Sonos screen's "recently played" (main/sonos.c); a
- * login from before them is asked to log in again there. */
+ * login without them is asked to log in again there. */
 #define SP_SCOPES      "user-read-playback-state user-modify-playback-state user-read-currently-playing " \
                        "user-read-recently-played playlist-read-private"
 #define SP_NVS         "spotify"

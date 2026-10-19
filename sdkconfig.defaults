@@ -227,5 +227,5 @@ CONFIG_LWIP_DHCP_GET_NTP_SRV=y
 # (main/diag.c).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 # The Spotify login's return (/spotify/svar?code=..&state=..) is ~600
-# characters with the scopes the Sonos screen added (1.27.0); 512 refused it.
+# characters with the scopes the Sonos screen needs.
 CONFIG_HTTPD_MAX_URI_LEN=1536

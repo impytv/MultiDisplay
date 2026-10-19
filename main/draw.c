@@ -205,8 +205,7 @@ int draw_text_w(const char *txt)
 /* The JPEG decoder's working memory. Its own allocator (esp_new_jpeg's
  * jpeg_calloc_inner and jpeg_calloc_align_inner) takes internal RAM while
  * there is any: about 30 KB for a 600-px picture's row of blocks, which
- * took the lowest free internal RAM from ~60 KB to ~28 KB - too near what
- * WiFi needs. Linked in their place (--wrap, main/CMakeLists.txt): small
+ * would leave too little for WiFi. Linked in their place (--wrap, main/CMakeLists.txt): small
  * pieces still internal, big ones from PSRAM, either falling back to the
  * other. */
 #define JPEG_INTERNAL_MAX 4096
