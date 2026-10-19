@@ -30,6 +30,7 @@
 #include "astro.h"
 #include "chip_temp.h"
 #include "holidays.h"
+#include "spotify_client.h"
 #include "web_auth.h"
 #include "cJSON.h"
 #include "mdns.h"
@@ -325,6 +326,55 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                       now, off);
 }
 
+/* The Spotify screen, and the login for it (spotify_client.h). */
+static char *build_spotify(char *p, char *end, const app_config_t *cfg)
+{
+    char redirect[160];
+    app_config_spotify_redirect(cfg->ota_url, redirect, sizeof(redirect));
+    p = buf_append(p, end,
+                   "<details class=sec id=spotify><summary>Spotify</summary>"
+                   "<div class=chk><label><input type=checkbox name=spshow value=1%s>"
+                   "Vis Spotify</label><label><input type=checkbox name=sprot value=1%s>"
+                   "i automatisk bytte</label></div>"
+                   "<small>Hva som spilles p&aring; Spotify-kontoen til denne skjermen, med knapper for "
+                   "forrige, spill/pause, neste og volum, og for &aring; starte avspillingen p&aring; en av "
+                   "kontoens enheter. Skjermen spiller ikke selv, men styrer Spotify p&aring; telefonen, en "
+                   "h&oslash;yttaler eller PC-en. &Aring; styre krever Spotify Premium.</small>"
+                   "<label>Klient-ID</label><input name=spid maxlength=32 autocomplete=off spellcheck=false "
+                   "value='%s'>"
+                   "<small>Fra en app du lager p&aring; <a href='https://developer.spotify.com/dashboard' "
+                   "target=_blank rel=noopener>developer.spotify.com/dashboard</a> (eieren m&aring; ha "
+                   "Premium): kryss av for <i>Web API</i>, og legg inn <code>%s</code> som "
+                   "<i>Redirect URI</i>. Under <i>User Management</i> legger du inn navnet og "
+                   "e-postadressen til hver Spotify-konto som skal brukes, inntil fem. Samme app og "
+                   "klient-ID kan brukes p&aring; alle skjermene.</small>",
+                   cfg->sp_show ? " checked" : "", cfg->sp_rotate ? " checked" : "", cfg->sp_client_id,
+                   redirect[0] ? redirect : "https://.../spotify/");
+    char user[64];
+    const spotify_login_t st = spotify_login_state(user, sizeof(user));
+    if (redirect[0] == '\0') {
+        p = buf_append(p, end, "<p>Innloggingen hos Spotify krever at oppdateringsadressen (under "
+                               "<i>Vedlikehold</i>) begynner med https://.</p>");
+    } else if (cfg->sp_client_id[0] == '\0') {
+        p = buf_append(p, end, "<p>Lagre klient-ID-en, s&aring; kan du koble skjermen til Spotify her.</p>");
+    } else if (st == SPOTIFY_CONNECTED) {
+        p = buf_append(p, end, "<p>Koblet til Spotify som <b>");
+        p = html_escape_append(p, end, user[0] ? user : "?");
+        p = buf_append(p, end, "</b>. <a href='/spotify/login'>Logg inn med en annen konto</a></p>"
+                               "<button type=submit class=lt2 formaction='/spotify/koble-fra' formmethod=post "
+                               "formnovalidate>Koble fra Spotify</button>");
+    } else if (st == SPOTIFY_CONNECTING) {
+        p = buf_append(p, end, "<p>Kobler til Spotify... Last siden p&aring; nytt om litt.</p>");
+    } else {
+        p = buf_append(p, end,
+                       "<p><a href='/spotify/login'><b>Koble til Spotify</b></a>%s</p>"
+                       "<small>Logg inn med Spotify-kontoen denne skjermen skal styre. Innloggingen gjelder bare "
+                       "denne skjermen og er ikke med i sikkerhetskopier.</small>",
+                       st == SPOTIFY_LOGIN_FAILED ? " &ndash; forrige fors&oslash;k mislyktes." : "");
+    }
+    return buf_append(p, end, "</details>");
+}
+
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
 {
     static const char *const COLOUR[APP_CONFIG_CAL_FEEDS] = { "#2e86de", "#e67e22", "#27ae60" };
@@ -414,6 +464,7 @@ static char *build_page(const app_config_t *cfg)
                   cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year(),
                   cfg->mon_cal ? " checked" : "");
     p = build_clock(p, end, cfg);
+    p = build_spotify(p, end, cfg);
     p = buf_append(p, end,
                   "<details class=sec><summary>Satellittbilde</summary>"
                   "<div class=chk><label><input type=checkbox name=satshow value=1%s>"
@@ -1240,6 +1291,21 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->clk_show = form_field(body, "clkshow", val, sizeof(val)) ? 1 : 0;
         cfg->clk_rotate = form_field(body, "clkrot", val, sizeof(val)) ? 1 : 0;
         cfg->clk_in = form_field(body, "clkin", val, sizeof(val)) ? 1 : 0;
+        cfg->sp_show = form_field(body, "spshow", val, sizeof(val)) ? 1 : 0;
+        cfg->sp_rotate = form_field(body, "sprot", val, sizeof(val)) ? 1 : 0;
+        char spid[48];
+        if (form_field(body, "spid", spid, sizeof(spid))) {
+            /* Pasted with spaces around it, perhaps; one that isn't a client
+             * ID (the page's script says so first) is left as it was. */
+            char *id = spid;
+            while (*id == ' ') {
+                id++;
+            }
+            id[strcspn(id, " ")] = '\0';
+            if (app_config_spotify_id_valid(id)) {
+                snprintf(cfg->sp_client_id, sizeof(cfg->sp_client_id), "%.32s", id);
+            }
+        }
         /* The temperature offset: from a thermometer's reading now, if one
          * was typed in, else as given. Out of range is ignored. */
         char deg[16];
@@ -1717,6 +1783,28 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
     httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
     esp_err_t err = httpd_register_uri_handler(
         s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
+    return err;
+}
+
+/* Like h_added without the password: only the Host is checked. */
+static esp_err_t h_added_open(httpd_req_t *req)
+{
+    if (!host_ok(req)) {
+        return ESP_OK;
+    }
+    esp_err_t (*handler)(httpd_req_t *) = req->user_ctx;
+    return handler(req);
+}
+
+esp_err_t wifi_provision_add_open_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
+    esp_err_t err = httpd_register_uri_handler(
+        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_open, .user_ctx = handler });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
     return err;
 }

@@ -29,6 +29,8 @@
 #include "calendar.h"
 #include "month.h"
 #include "clockscreen.h"
+#include "spotify.h"
+#include "spotify_client.h"
 #include "chip_temp.h"
 #include "satellite.h"
 #include "tide.h"
@@ -104,8 +106,9 @@ typedef struct {
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
 /* The screens one for the display (overview, calendar, month, clock,
- * Europe), and the most a location can have (build_stops' order[]). */
-#define STOPS_GLOBAL  5
+ * Spotify, Europe), and the most a location can have (build_stops'
+ * order[]). */
+#define STOPS_GLOBAL  6
 #define STOPS_PER_LOC 9
 static view_stop_t s_stops[STOPS_GLOBAL + STOPS_PER_LOC * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
@@ -140,6 +143,7 @@ static lv_obj_t *s_tide_root;     /* tides; likewise */
 static lv_obj_t *s_cal_root;      /* the calendar; only if shown */
 static lv_obj_t *s_month_root;    /* the month calendar; only if shown */
 static lv_obj_t *s_clock_root;    /* the clock screen; only if shown */
+static lv_obj_t *s_spotify_root;  /* the Spotify screen; only if shown */
 static lv_obj_t *s_sat_root;      /* the satellite image; only if Europe or a close-up is shown */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
@@ -307,6 +311,9 @@ static void build_stops(void)
     if (g_cfg->clk_show) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_CLOCK, 0 };
     }
+    if (g_cfg->sp_show) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_SPOTIFY, 0 };
+    }
     if (g_cfg->sat_show) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_SAT_EUROPE, 0 };
     }
@@ -356,7 +363,7 @@ static void build_stops(void)
 static void show_view(stop_kind_t kind)
 {
     lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root, s_air_root, s_week_root,
-                                s_tide_root, s_cal_root, s_month_root, s_clock_root, s_sat_root };
+                                s_tide_root, s_cal_root, s_month_root, s_clock_root, s_spotify_root, s_sat_root };
     lv_obj_t *shown = (kind == STOP_OVERVIEW) ? s_overview_root
                     : (kind == STOP_WEATHER) ? s_detail_root
                     : (kind == STOP_DEPARTURES) ? s_dep_root
@@ -366,6 +373,7 @@ static void show_view(stop_kind_t kind)
                     : (kind == STOP_CALENDAR) ? s_cal_root
                     : (kind == STOP_MONTH) ? s_month_root
                     : (kind == STOP_CLOCK) ? s_clock_root
+                    : (kind == STOP_SPOTIFY) ? s_spotify_root
                     : (kind == STOP_SAT_EUROPE || kind == STOP_SAT) ? s_sat_root : s_radar_root;
     for (size_t k = 0; k < sizeof(roots) / sizeof(roots[0]); k++) {
         if (roots[k] == NULL) {
@@ -429,6 +437,9 @@ static void view_enter(int idx)
         break;
     case STOP_CLOCK:
         clockscreen_enter();
+        break;
+    case STOP_SPOTIFY:
+        spotify_enter();
         break;
     case STOP_SAT_EUROPE:
         satellite_enter(-1);
@@ -495,6 +506,7 @@ static const char *const STOP_TITLES[] = {
     [STOP_RAIN] = "Nedb\xC3\xB8r", [STOP_DEPARTURES] = "Avganger", [STOP_AIR] = "Luft", [STOP_WEEK] = "Uke",
     [STOP_TIDE] = "Tidevann", [STOP_CALENDAR] = "Kalender", [STOP_SAT_EUROPE] = "Europa",
     [STOP_SAT] = "Satellitt", [STOP_MONTH] = "M\xC3\xA5ned", [STOP_CLOCK] = "Klokke",
+    [STOP_SPOTIFY] = "Spotify",
 };
 
 static void nav_close(void)
@@ -649,6 +661,9 @@ static void screen_touch_cb(lv_event_t *e)
     if (s_stops[g_view_index].kind == STOP_MONTH && month_tap(p.x, p.y)) {
         return; /* its own buttons */
     }
+    if (s_stops[g_view_index].kind == STOP_SPOTIFY && spotify_tap(p.x, p.y)) {
+        return;
+    }
     if (s_stop_count <= 1) {
         return; /* nothing to cycle through */
     }
@@ -684,6 +699,9 @@ static bool stop_in_rotation(int i)
     }
     if (st->kind == STOP_CLOCK) {
         return g_cfg->clk_rotate;
+    }
+    if (st->kind == STOP_SPOTIFY) {
+        return g_cfg->sp_rotate;
     }
     return (g_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
 }
@@ -732,6 +750,7 @@ static const char *const STOP_NAMES[] = {
     [STOP_RAIN] = "nedbor", [STOP_DEPARTURES] = "avganger", [STOP_AIR] = "luft", [STOP_WEEK] = "uke",
     [STOP_TIDE] = "tidevann", [STOP_CALENDAR] = "kalender", [STOP_SAT_EUROPE] = "europa",
     [STOP_SAT] = "satellitt", [STOP_MONTH] = "maned", [STOP_CLOCK] = "klokke",
+    [STOP_SPOTIFY] = "spotify",
 };
 
 static esp_err_t screen_send_list(httpd_req_t *req)
@@ -893,6 +912,9 @@ static void build_ui(lv_obj_t *screen)
     }
     if (g_cfg->clk_show) {
         s_clock_root = clockscreen_build(screen);
+    }
+    if (g_cfg->sp_show) {
+        s_spotify_root = spotify_build(screen);
     }
     if (g_cfg->sat_show || s_any_sat) {
         s_sat_root = satellite_build(screen);
@@ -1110,6 +1132,7 @@ static void yr_weather_task(void *arg)
     wifi_provision_add_get_handler("/screen", screen_handler);
     wifi_provision_add_get_handler("/nav.json", nav_list_handler);
     wifi_provision_add_post_handler("/nav", nav_go_handler);
+    spotify_add_handlers();
     diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 
@@ -1153,6 +1176,9 @@ static void yr_weather_task(void *arg)
             }
             if (stop->kind != STOP_DEPARTURES) {
                 entur_client_close();
+            }
+            if (stop->kind != STOP_SPOTIFY) {
+                spotify_close();
             }
             if (stop->kind != STOP_OVERVIEW && stop->kind != STOP_WEATHER && stop->kind != STOP_WEEK &&
                 stop->kind != STOP_AIR) {
@@ -1216,6 +1242,9 @@ static void yr_weather_task(void *arg)
             case STOP_CLOCK:
                 wait_ms = clockscreen_poll(active_view);
                 break;
+            case STOP_SPOTIFY:
+                wait_ms = spotify_poll(active_view);
+                break;
             case STOP_SAT_EUROPE:
                 wait_ms = satellite_poll(-1, active_view);
                 break;
@@ -1238,6 +1267,12 @@ static void yr_weather_task(void *arg)
         /* A poll made in the dark for a firmware on trial: no more till light. */
         if (!s_backlight_on && wait_ms < DARK_POLL_MS) {
             wait_ms = DARK_POLL_MS;
+        }
+
+        /* A Spotify login just made on the setup page: its code traded for
+         * the tokens, whatever screen is on show. */
+        if (g_cfg->sp_client_id[0]) {
+            spotify_auth_service();
         }
 
         /* Firmware updates: a check or install that is due or was asked for
@@ -1338,6 +1373,9 @@ void app_main(void)
     assert(g_cfg != NULL);
     app_config_load(g_cfg);
     yr_client_set_contact_email(g_cfg->yr_email);
+    char sp_redirect[160];
+    app_config_spotify_redirect(g_cfg->ota_url, sp_redirect, sizeof(sp_redirect));
+    spotify_init(g_cfg->sp_client_id, sp_redirect);
 
     /* Resume on whatever screen was showing before this boot (see
      * app_config_save_last_view) rather than always starting at the

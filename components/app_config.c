@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -144,6 +145,12 @@ static void sanitize_view_settings(app_config_t *c)
     c->mon_cal = c->mon_cal ? 1 : 0;
     c->clk_show = c->clk_show ? 1 : 0;
     c->clk_in = c->clk_in ? 1 : 0;
+    c->sp_show = c->sp_show ? 1 : 0;
+    c->sp_rotate = c->sp_rotate ? 1 : 0;
+    c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
+    if (!app_config_spotify_id_valid(c->sp_client_id)) {
+        c->sp_client_id[0] = '\0';
+    }
     c->clk_rotate = c->clk_rotate ? 1 : 0;
     if (c->clk_out > c->location_count) {
         c->clk_out = 1; /* a location since removed: the first */
@@ -342,6 +349,9 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "clkshow", &out->clk_show); /* no clock screen if never saved */
     nvs_get_u8(h, "clkrot", &out->clk_rotate);
     nvs_get_u8(h, "clkin", &out->clk_in);   /* shown if never saved */
+    nvs_get_u8(h, "spshow", &out->sp_show); /* no Spotify screen if never saved */
+    nvs_get_u8(h, "sprot", &out->sp_rotate);
+    load_str(h, "spid", out->sp_client_id, sizeof(out->sp_client_id));
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -382,6 +392,8 @@ esp_err_t app_config_load(app_config_t *out)
              out->clk_show ? "shown" : "not shown", out->clk_rotate ? ", in the rotation" : "",
              out->clk_in ? "shown" : "not shown", out->temp_offset_dc / 10.0,
              out->clk_out ? out->locations[out->clk_out - 1].name : "none");
+    ESP_LOGI(TAG, "Spotify: %s%s, client ID %s", out->sp_show ? "shown" : "not shown",
+             out->sp_rotate ? ", in the rotation" : "", out->sp_client_id[0] ? "set" : "not set");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -471,6 +483,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "clkshow", cfg->clk_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkrot", cfg->clk_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkin", cfg->clk_in ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "spshow", cfg->sp_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "sprot", cfg->sp_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, "spid", cfg->sp_client_id);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -576,11 +591,13 @@ void app_config_hostname(const char *in, char *out, size_t out_len)
     out[n] = '\0';
 }
 
-void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
+/* The folder of the manifest at `ota_url` (http:// or https://, or https://
+ * only with `https`) and `sub` in it, into out; "" if it isn't one. */
+static void site_url(const char *ota_url, bool https, const char *sub, char *out, size_t out_len)
 {
     out[0] = '\0';
     const char *host = NULL;
-    if (strncmp(ota_url, "http://", 7) == 0) {
+    if (!https && strncmp(ota_url, "http://", 7) == 0) {
         host = ota_url + 7;
     } else if (strncmp(ota_url, "https://", 8) == 0) {
         host = ota_url + 8;
@@ -597,10 +614,33 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
             dir = i;
         }
     }
-    if (dir + sizeof("/bruk/") > out_len) {
+    if (dir + strlen(sub) + 2 > out_len) {
         return;
     }
-    snprintf(out, out_len, "%.*s/bruk/", (int)dir, ota_url);
+    snprintf(out, out_len, "%.*s/%s", (int)dir, ota_url, sub);
+}
+
+void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
+{
+    site_url(ota_url, false, "bruk/", out, out_len);
+}
+
+void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len)
+{
+    site_url(ota_url, true, "spotify/", out, out_len);
+}
+
+bool app_config_spotify_id_valid(const char *id)
+{
+    if (strlen(id) != APP_CONFIG_SPOTIFY_ID_MAX - 1) {
+        return id[0] == '\0';
+    }
+    for (const char *c = id; *c; c++) {
+        if (!isxdigit((unsigned char)*c)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void app_config_sanitize(app_config_t *cfg)

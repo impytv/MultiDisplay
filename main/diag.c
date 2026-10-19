@@ -215,6 +215,7 @@ static const char *const SERVICE_NAMES[DIAG_SERVICE_COUNT] = {
     [DIAG_CALENDAR] = "Kalender",
     [DIAG_SATELLITE] = "Satellittbilde",
     [DIAG_AURORA] = "Nordlys",
+    [DIAG_SPOTIFY] = "Spotify",
 };
 
 typedef struct {

@@ -29,6 +29,8 @@ services:
       # its name in the site folder to mount onto.
       - ./montering:/usr/share/nginx/html/montering:ro
       - ./bruk:/usr/share/nginx/html/bruk:ro
+      # Where Spotify sends a display's login back to (main/spotify.c).
+      - ./spotify:/usr/share/nginx/html/spotify:ro
     read_only: true
     tmpfs:
       - /tmp

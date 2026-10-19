@@ -50,4 +50,10 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
 /* The same for POST `uri`. */
 esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
+/* GET `uri` with no password asked: for a page another site sends the
+ * browser to (the Spotify login's return), which the login cookie, being
+ * SameSite=Strict, doesn't come with. The handler must check the request
+ * itself. */
+esp_err_t wifi_provision_add_open_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
+
 #endif

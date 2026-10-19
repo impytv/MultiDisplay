@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="nb">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Spotify – MultiDisplay</title>
+<style>
+:root{color-scheme:light dark;--bg:#f6f6f4;--fg:#222;--acc:#2d5a86}
+@media(prefers-color-scheme:dark){:root{--bg:#15181c;--fg:#e4e6e8;--acc:#6f9fd0}}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,sans-serif;margin:0;padding:2rem 16px;line-height:1.5}
+main{max-width:36rem;margin:0 auto}
+a{color:var(--acc)}
+</style>
+</head>
+<body>
+<main>
+<h1>Spotify</h1>
+<p id="msg">Sender deg tilbake til skjermen...</p>
+</main>
+<script>
+// Spotify only sends a login back to an https:// address, so it comes
+// here (the Redirect URI on the setup page), and this page passes the
+// answer on to the display that asked: its address is in the state, after
+// the "~" (spotify_client.c). The display checks the state itself.
+(function () {
+  const q = new URLSearchParams(location.search);
+  const state = q.get('state') || '';
+  const host = state.slice(state.indexOf('~') + 1);
+  const msg = document.getElementById('msg');
+  if (state.indexOf('~') < 1 || !/^[A-Za-z0-9.-]{1,64}(:[0-9]{1,5})?$/.test(host)) {
+    msg.textContent = 'Denne siden brukes når en MultiDisplay-skjerm kobles til Spotify. Start fra oppsettsiden til skjermen.';
+    return;
+  }
+  const back = new URLSearchParams();
+  back.set('state', state);
+  if (q.get('code')) back.set('code', q.get('code'));
+  if (q.get('error')) back.set('error', q.get('error'));
+  const url = 'http://' + host + '/spotify/svar?' + back.toString();
+  // Not kept in the history: the code works once only.
+  location.replace(url);
+  msg.innerHTML = '';
+  msg.append('Sender deg tilbake til skjermen. Skjer det ikke noe, ');
+  const a = document.createElement('a');
+  a.href = url;
+  a.textContent = 'trykk her';
+  msg.append(a, '.');
+})();
+</script>
+</body>
+</html>

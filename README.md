@@ -534,6 +534,52 @@ it is left out of settings backups. The chip's warmth follows how hard it
 works too (fetching, the rain radar), so expect the reading to wander by a
 degree or so.
 
+### Spotify
+
+One screen for the whole display, after the clock: what the display's
+Spotify account is playing, with the cover, the title, the artists and
+the album, a progress bar, buttons for the previous track, play/pause and
+the next track, the volume (- and +, in steps of 10 %) and the device it
+plays on. With nothing playing, a button for each of the account's
+devices starts playback there. The display plays nothing itself; it
+controls Spotify on a phone, speaker or computer through Spotify's Web
+API, and controlling needs **Spotify Premium**. Asked every 5 s while
+playing (10 s paused), at once after a button; the progress bar moves on
+by itself between, and the poll comes early when a track should have
+ended. The buttons are drawn and hit-tested by `main/spotify.c`
+(`spotify_tap`, like the month calendar's); a tap elsewhere changes screen
+as usual.
+
+Setting it up:
+
+1. Create an app at <https://developer.spotify.com/dashboard> (its owner
+   needs Premium): tick **Web API**, and add the **Redirect URI** the setup
+   page shows - the folder `spotify/` next to the manifest, which must be
+   `https://` (Spotify takes plain http only for 127.0.0.1). Under **User
+   Management** add the name and e-mail of each Spotify account to be
+   used; an app in development mode allows five. One app serves every
+   display.
+2. On the setup page, under **Andre skjermer → Spotify**, paste the app's
+   **Klient-ID**, tick **Vis Spotify** (and **i automatisk bytte**), and
+   save.
+3. Press **Koble til Spotify** there and log in with the account this
+   display is to control.
+
+The login uses Authorization Code with PKCE, which needs no client secret
+(`components/spotify_client.c`). `/spotify/login` sends the browser to
+Spotify with a fresh verifier and a state holding a nonce and the display's
+address as the browser reached it. Spotify returns to the update site's
+`server/spotify/index.html`, which sends the browser on to
+`http://<display>/spotify/svar` with the code; that page asks for no
+password (the login cookie is SameSite=Strict, so it doesn't come along
+from another site), and the state, made for this login and used once, is
+the check. The weather task then trades the code for the tokens and asks
+for the account's name, shown on the setup page. The refresh token is kept
+in NVS (namespace `spotify`) for this display only - not in backups, and
+dropped if the client ID changes; **Koble fra Spotify** forgets it. The
+client ID and the two ticks are in backups as `spotify.client_id`,
+`spotify.show` and `spotify.rotate`.
+
 ### Satellite
 
 MET Norway's latest Meteosat image of Europe (a new one every 15 minutes),

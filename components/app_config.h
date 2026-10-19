@@ -39,6 +39,8 @@
  * or 2 (about 3200 km, sharper). */
 /* The temperature offset, in tenths of a degree. */
 #define APP_CONFIG_TEMP_OFFSET_MAX 500
+/* A Spotify client ID: 32 hex digits, and the NUL. */
+#define APP_CONFIG_SPOTIFY_ID_MAX 33
 #define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
@@ -248,6 +250,13 @@ typedef struct {
      * get the room's, in tenths of a degree; measured against a
      * thermometer on the setup page. Per display, so not in backups. */
     int16_t temp_offset_dc;
+    /* The Spotify screen (main/spotify.c): shown, and in the rotation, and
+     * the client ID of the app registered at Spotify for it ("" = none
+     * yet). The login itself is per display, kept by
+     * components/spotify_client.c, not here. */
+    uint8_t sp_show;
+    uint8_t sp_rotate;
+    char sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX];
 } app_config_t;
 
 /**
@@ -288,6 +297,14 @@ void app_config_hostname(const char *in, char *out, size_t out_len);
  * `ota_url` (an http:// or https:// manifest address) is on, next to the
  * manifest. "" for anything else. */
 void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
+
+/* Where Spotify sends the browser back after a login (server/spotify/):
+ * the folder "spotify/" next to the manifest, if `ota_url` is https://
+ * (Spotify takes nothing else for a home network). "" otherwise. */
+void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len);
+
+/* Whether `id` looks like a Spotify client ID (32 hex digits). */
+bool app_config_spotify_id_valid(const char *id);
 
 /**
  * Bring every setting into its allowed range (as app_config_load does).

@@ -102,6 +102,7 @@ let sa=N(f,'shiplat'),so=N(f,'shiplon');if(sa.closest('[hidden]')||!sa.value.tri
 if(!num(sa.value)||Math.abs(+sa.value.replace(',','.'))>90)bad.push(X(sa,'Breddegrad fra -90 til 90, eller tomt.'));
 if(!num(so.value)||Math.abs(+so.value.replace(',','.'))>180)bad.push(X(so,'Lengdegrad fra -180 til 180, eller tomt.'))});
 TM.forEach(k=>{let x=F.querySelector('[name='+k+']'),t=hm(x.value);if(t===null)bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30 eller 2230.'));else x.value=t});
+{let x=F.querySelector('[name=spid]');if(x){x.value=x.value.trim();if(x.value&&!/^[0-9a-fA-F]{32}$/.test(x.value))bad.push(X(x,'Klient-ID-en er 32 tegn, 0-9 og a-f.'))}}
 F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;if(v&&!/^(https?|webcal):\/\/\S+$/.test(v))bad.push(X(x,'Adressen må begynne med https://, http:// eller webcal://.'))});
 [['tempref',-40,60,1],['tempoff',-50,50,0]].forEach(([k,lo,hi,o])=>{let x=F.querySelector('[name='+k+']'),v=x?x.value.trim():'';if(!x||o&&!v)return;
 if(!num(v)||+v.replace(',','.')<lo||+v.replace(',','.')>hi)bad.push(X(x,'Et tall fra '+lo+' til '+hi+(o?', eller tomt.':'.')))});

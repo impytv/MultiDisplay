@@ -64,6 +64,8 @@ void test_config(void)
     a.clk_rotate = 1;
     a.clk_out = 2;
     a.clk_in = 0;
+    a.sp_show = 1;
+    snprintf(a.sp_client_id, sizeof(a.sp_client_id), "0123456789abcdef0123456789abcdef");
     a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
@@ -115,6 +117,8 @@ void test_config(void)
     CHECK(c.clk_show && c.clk_rotate);
     CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.clk_in, 0);
+    CHECK(c.sp_show && !c.sp_rotate);
+    CHECK_STR(c.sp_client_id, "0123456789abcdef0123456789abcdef");
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
@@ -198,6 +202,15 @@ void test_config(void)
     CHECK_STR(guide, "");
     app_config_guide_url("http:///manifest.json", guide, sizeof(guide));
     CHECK_STR(guide, "");
+    /* Spotify's return page: https only. */
+    app_config_spotify_redirect("https://multidisplay.example.no/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "https://multidisplay.example.no/spotify/");
+    app_config_spotify_redirect("http://192.168.0.119:8070/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "");
+    CHECK(app_config_spotify_id_valid("0123456789abcdefABCDEF0123456789"));
+    CHECK(app_config_spotify_id_valid(""));
+    CHECK(!app_config_spotify_id_valid("0123456789abcdefABCDEF012345678"));
+    CHECK(!app_config_spotify_id_valid("0123456789abcdefABCDEF012345678g"));
     app_config_guide_url("", guide, sizeof(guide));
     CHECK_STR(guide, "");
     char tiny[16];

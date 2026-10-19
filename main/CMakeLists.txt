@@ -17,6 +17,7 @@ idf_component_register(
         "calendar.c"
         "month.c"
         "clockscreen.c"
+        "spotify.c"
         "satellite.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
@@ -47,6 +48,8 @@ idf_component_register(
         "../components/ota_writer.c"
         "../components/restart.c"
         "../components/chip_temp.c"
+        "../components/spotify_client.c"
+        "../components/spotify_parse.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -84,7 +87,10 @@ idf_component_register(
         json
         # Decodes MET's rain radar images (components/rain_client.c); already
         # in the build for esp_lv_decoder.
-        espressif__libpng)
+        espressif__libpng
+        # Decodes Spotify's album covers (main/spotify.c); likewise already
+        # in the build for esp_lv_decoder.
+        espressif__esp_new_jpeg)
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
 if("lvgl" IN_LIST build_components)

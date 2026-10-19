@@ -93,6 +93,11 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddBoolToObject(clk, "indoor", c->clk_in);
     cJSON_AddNumberToObject(clk, "outdoor_location", c->clk_out); /* 1 = the first, 0 = none */
 
+    cJSON *sp = cJSON_AddObjectToObject(root, "spotify"); /* the login is the display's own: not backed up */
+    cJSON_AddBoolToObject(sp, "show", c->sp_show);
+    cJSON_AddBoolToObject(sp, "rotate", c->sp_rotate);
+    cJSON_AddStringToObject(sp, "client_id", c->sp_client_id);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -263,6 +268,10 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(clk, "rotate", &c->clk_rotate);
     get_bool(clk, "indoor", &c->clk_in);
     get_u8(clk, "outdoor_location", &c->clk_out);
+    const cJSON *sp = cJSON_GetObjectItemCaseSensitive(root, "spotify");
+    get_bool(sp, "show", &c->sp_show);
+    get_bool(sp, "rotate", &c->sp_rotate);
+    ok &= get_str(sp, "client_id", c->sp_client_id, sizeof(c->sp_client_id));
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }
