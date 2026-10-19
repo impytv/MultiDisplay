@@ -562,6 +562,9 @@ esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id)
     if (status == 403 && s_resp.buf && strstr(s_resp.buf, "PREMIUM_REQUIRED")) {
         return SPOTIFY_ERR_PREMIUM;
     }
+    if (status == 403 && s_resp.buf && strstr(s_resp.buf, "Restricted device")) {
+        return SPOTIFY_ERR_RESTRICTED;
+    }
     if (status == 404) {
         return SPOTIFY_ERR_NO_DEVICE;
     }

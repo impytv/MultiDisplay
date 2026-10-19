@@ -80,6 +80,7 @@ void spotify_base64url(const uint8_t *in, size_t len, char *out);
 #define SPOTIFY_ERR_PREMIUM   0x7f21 /* the account has no Premium: no control */
 #define SPOTIFY_ERR_NO_DEVICE 0x7f22 /* nothing to send the command to */
 #define SPOTIFY_ERR_RATE      0x7f23 /* asked too often: wait spotify_retry_after_s() */
+#define SPOTIFY_ERR_RESTRICTED 0x7f24 /* the device takes no commands from the Web API */
 
 typedef enum {
     SPOTIFY_NOT_CONNECTED,

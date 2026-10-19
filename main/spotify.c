@@ -70,6 +70,9 @@ static int s_dev_count;
 static char s_note[96];        /* a message under the cover, "" = none */
 static uint32_t s_note_tick;
 static bool s_woke_at_end;     /* the poll woken as the track ended */
+/* A device that refused a command as restricted, though Spotify didn't
+ * mark it so: its controls are greyed out too. */
+static char s_refused[48];
 
 /* The cover, SP_COVER square, RGB565 (PSRAM); s_cover_url is the one in
  * it. The weather task decodes into the scratch, then copies under the
@@ -158,10 +161,17 @@ static int dev_rows_max(void)
  * Drawing
  * ------------------------------------------------------------------------ */
 
-static void draw_play_button(lv_layer_t *layer, int cx, int cy, bool playing)
+/* The playing device takes no commands from here (adapter lock held). */
+static bool device_locked(void)
 {
-    draw_dot(layer, cx, cy, SP_PLAY_R, c_green());
-    const lv_color_t ink = lv_color_hex(0x101820);
+    const spotify_device_t *d = &s_player.device;
+    return d->restricted || (s_refused[0] && strcmp(s_refused, d->id) == 0);
+}
+
+static void draw_play_button(lv_layer_t *layer, int cx, int cy, bool playing, bool locked)
+{
+    draw_dot(layer, cx, cy, SP_PLAY_R, locked ? c_card() : c_green());
+    const lv_color_t ink = locked ? c_dim() : lv_color_hex(0x101820);
     if (playing) { /* pause: two bars */
         draw_rect(layer, cx - 13, cy - 15, cx - 5, cy + 15, 2, ink);
         draw_rect(layer, cx + 5, cy - 15, cx + 13, cy + 15, 2, ink);
@@ -172,10 +182,10 @@ static void draw_play_button(lv_layer_t *layer, int cx, int cy, bool playing)
 }
 
 /* Previous (dir -1) or next (+1): a triangle against a bar. */
-static void draw_skip_button(lv_layer_t *layer, int cx, int cy, int dir)
+static void draw_skip_button(lv_layer_t *layer, int cx, int cy, int dir, bool locked)
 {
     draw_dot(layer, cx, cy, SP_SKIP_R, c_card());
-    const lv_color_t ink = c_txt();
+    const lv_color_t ink = locked ? c_dim() : c_txt();
     const int pts[3][2] = { { cx - 8 * dir, cy - 12 }, { cx - 8 * dir, cy + 12 }, { cx + 8 * dir, cy } };
     draw_triangle(layer, pts, ink);
     const int bx = cx + 10 * dir;
@@ -202,9 +212,11 @@ static void draw_player(lv_layer_t *layer)
         snprintf(buf, sizeof(buf), "%s %s", p->playing ? "Spiller p\xC3\xA5" : "Pauset p\xC3\xA5", p->device.name);
         draw_text_fit(layer, buf, SP_X, SP_TOP + SP_COVER + 10, SP_COVER, c_dim());
     }
-    if (s_note[0]) {
-        draw_text_wrap(layer, s_note, SP_X, SP_TOP + SP_COVER + 14 + lh, SP_COVER, 2,
-                       lv_palette_main(LV_PALETTE_RED));
+    const bool locked = device_locked();
+    if (s_note[0] || locked) {
+        draw_text_wrap(layer, s_note[0] ? s_note : "Spotify lar ikke skjermen styre denne enheten.", SP_X,
+                       SP_TOP + SP_COVER + 14 + lh, SP_COVER, 2,
+                       s_note[0] ? lv_palette_main(LV_PALETTE_RED) : c_dim());
     }
 
     /* Progress, and the times either side under it. */
@@ -221,12 +233,12 @@ static void draw_player(lv_layer_t *layer)
     }
 
     const int cx = SP_COL_X + SP_COL_W / 2;
-    draw_skip_button(layer, cx - SP_SKIP_DX, SP_CTRL_Y, -1);
-    draw_play_button(layer, cx, SP_CTRL_Y, p->playing);
-    draw_skip_button(layer, cx + SP_SKIP_DX, SP_CTRL_Y, 1);
+    draw_skip_button(layer, cx - SP_SKIP_DX, SP_CTRL_Y, -1, locked);
+    draw_play_button(layer, cx, SP_CTRL_Y, p->playing, locked);
+    draw_skip_button(layer, cx + SP_SKIP_DX, SP_CTRL_Y, 1, locked);
 
     /* Volume: - [bar] +, the percent under the bar. */
-    if (p->device.has_volume && p->device.volume >= 0) {
+    if (p->device.has_volume && p->device.volume >= 0 && !locked) {
         const int mx = SP_COL_X + SP_VOL_R, plx = SP_COL_X + SP_COL_W - SP_VOL_R;
         draw_dot(layer, mx, SP_VOL_Y, SP_VOL_R, c_card());
         draw_rect(layer, mx - 10, SP_VOL_Y - 2, mx + 10, SP_VOL_Y + 2, 1, c_txt());
@@ -406,6 +418,10 @@ bool spotify_tap(int x, int y)
 {
     if (showing_player()) {
         const int cx = SP_COL_X + SP_COL_W / 2;
+        if (device_locked()) {
+            /* Greyed out: taken, so as not to change screen. */
+            return x >= SP_COL_X && y >= SP_PROG_Y - 20;
+        }
         if (near(x, y, cx, SP_CTRL_Y, SP_PLAY_R + 14)) {
             /* Shown at once; the answer after the command puts it right. */
             s_player.progress_ms = progress_now();
@@ -534,6 +550,8 @@ static const char *err_text(esp_err_t err)
         return "Fant ingen enhet \xC3\xA5 spille p\xC3\xA5. \xC3\x85pne Spotify p\xC3\xA5 en av dem f\xC3\xB8rst.";
     case SPOTIFY_ERR_RATE:
         return "Spotify ber oss vente litt.";
+    case SPOTIFY_ERR_RESTRICTED:
+        return "Spotify lar ikke skjermen styre denne enheten.";
     default:
         return "Spotify svarte ikke. Pr\xC3\xB8v igjen.";
     }
@@ -576,7 +594,13 @@ uint32_t spotify_poll(int for_view)
     }
     if (cmd) {
         const esp_err_t err = spotify_command(c, value, device);
-        if (err != ESP_OK) {
+        if (err == SPOTIFY_ERR_RESTRICTED && c != SPOTIFY_TRANSFER) {
+            /* For good: the playing device's controls greyed out. */
+            if (esp_lv_adapter_lock(-1) == ESP_OK) {
+                snprintf(s_refused, sizeof(s_refused), "%s", s_player.device.id);
+                esp_lv_adapter_unlock();
+            }
+        } else if (err != ESP_OK) {
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 note(err_text(err));
                 esp_lv_adapter_unlock();
@@ -616,6 +640,10 @@ uint32_t spotify_poll(int for_view)
         fetch_cover(s_scratch.image_url);
     }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        if (s_scratch.active && strcmp(s_scratch.device.id, s_player.device.id) != 0) {
+            ESP_LOGI(TAG, "Playing on %s (%s)%s", s_scratch.device.name, s_scratch.device.type,
+                     s_scratch.device.restricted ? ", restricted" : "");
+        }
         if (strcmp(s_scratch.item_id, s_player.item_id) != 0 || !s_scratch.playing) {
             s_woke_at_end = false;
         }
