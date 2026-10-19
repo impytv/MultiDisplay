@@ -304,17 +304,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "ovshow", &out->ov_show); /* keeps the default (shown) if never saved */
     nvs_get_u8(h, "autonight", &out->auto_night_pause); /* keeps the default (on) if never saved */
     len = sizeof(out->departures); /* no departure boards if never saved */
-    if (nvs_get_blob(h, "deps", out->departures, &len) != ESP_OK) {
-        memset(out->departures, 0, sizeof(out->departures));
-    } else if (len == APP_CONFIG_MAX_LOCATIONS * APP_CONFIG_DEPARTURES_MAX_OLD) {
-        /* Saved with the shorter texts: spread them out, the last first. */
-        char *raw = (char *)out->departures;
-        for (int i = APP_CONFIG_MAX_LOCATIONS - 1; i >= 0; i--) {
-            memmove(out->departures[i], raw + i * APP_CONFIG_DEPARTURES_MAX_OLD, APP_CONFIG_DEPARTURES_MAX_OLD);
-            memset(out->departures[i] + APP_CONFIG_DEPARTURES_MAX_OLD, 0,
-                   APP_CONFIG_DEPARTURES_MAX - APP_CONFIG_DEPARTURES_MAX_OLD);
-        }
-    } else if (len != sizeof(out->departures)) {
+    if (nvs_get_blob(h, "deps", out->departures, &len) != ESP_OK || len != sizeof(out->departures)) {
         memset(out->departures, 0, sizeof(out->departures));
     }
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {

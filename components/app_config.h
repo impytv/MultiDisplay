@@ -46,10 +46,8 @@
 #define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
- * the text entur_parse_selection() reads (see entur_client.h). Before 1.19.0
- * it was 200 bytes, which the stored "deps" blob is converted from. */
-#define APP_CONFIG_DEPARTURES_MAX     400
-#define APP_CONFIG_DEPARTURES_MAX_OLD 200
+ * the text entur_parse_selection() reads (see entur_client.h). */
+#define APP_CONFIG_DEPARTURES_MAX 400
 
 /* Aircraft radar: how far out (kilometres) it looks around a location. */
 #define APP_CONFIG_RADAR_KM_DEFAULT 40

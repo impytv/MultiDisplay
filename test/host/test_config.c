@@ -280,18 +280,13 @@ void test_config(void)
     CHECK(app_config_ship_centre(&c, 0) == &c.locations[0]);
     CHECK_STR(c.ship_at[0].name, "");
 
-    /* Departures saved before 1.19.0, 200 bytes each, come back in place. */
-    static char old_deps[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX_OLD];
-    memset(old_deps, 0, sizeof(old_deps));
-    snprintf(old_deps[0], sizeof(old_deps[0]), "6505");
-    snprintf(old_deps[1], sizeof(old_deps[1]), "58858=VYG:Line:R31/v502");
-    memset(old_deps[4], 'x', sizeof(old_deps[4]) - 1);
+    /* A departures blob of another size is not read: no departure boards. */
+    static char odd_deps[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX / 2];
+    memset(odd_deps, 0, sizeof(odd_deps));
+    snprintf(odd_deps[0], sizeof(odd_deps[0]), "6505");
     nvs_handle_t h;
     nvs_open("cfg", NVS_READWRITE, &h);
-    nvs_set_blob(h, "deps", old_deps, sizeof(old_deps));
+    nvs_set_blob(h, "deps", odd_deps, sizeof(odd_deps));
     app_config_load(&c);
-    CHECK_STR(c.departures[0], "6505");
-    CHECK_STR(c.departures[1], "58858=VYG:Line:R31/v502");
-    CHECK_INT(strlen(c.departures[4]), APP_CONFIG_DEPARTURES_MAX_OLD - 1);
-    CHECK_STR(c.departures[2], "");
+    CHECK_STR(c.departures[0], "");
 }
