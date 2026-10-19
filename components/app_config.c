@@ -235,30 +235,20 @@ esp_err_t app_config_load(app_config_t *out)
         }
         out->location_count = cnt;
     } else {
-        /* Legacy single-location layout (firmware before multi-location). */
-        load_str(h, "name", out->locations[0].name, sizeof(out->locations[0].name));
-        load_str(h, "lat", out->locations[0].lat, sizeof(out->locations[0].lat));
-        load_str(h, "lon", out->locations[0].lon, sizeof(out->locations[0].lon));
         out->location_count = 1;
     }
 
-    /* Per-location screens and radar ranges. Firmware before per-location
-     * settings stored one radar bitmask ("radar": weather always, radar where
-     * the bit is set) and one shared range ("radarkm"); read those if the new
-     * keys aren't there yet. */
+    /* Per-location screens and radar ranges: the weather only, and the
+     * default range, if never saved. */
     if (!load_bits(h, "show", "showhi", out->show)) {
-        uint8_t mask = 0;
-        nvs_get_u8(h, "radar", &mask);
         for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-            out->show[i] = APP_SHOW_WEATHER | ((mask & (1u << i)) ? APP_SHOW_RADAR : 0);
+            out->show[i] = APP_SHOW_WEATHER;
         }
     }
     size_t len = sizeof(out->radar_km);
     if (nvs_get_blob(h, "radarkms", out->radar_km, &len) != ESP_OK || len != sizeof(out->radar_km)) {
-        uint16_t km = APP_CONFIG_RADAR_KM_DEFAULT;
-        nvs_get_u16(h, "radarkm", &km);
         for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-            out->radar_km[i] = km;
+            out->radar_km[i] = APP_CONFIG_RADAR_KM_DEFAULT;
         }
     }
     len = sizeof(out->ship_km);
@@ -276,11 +266,7 @@ esp_err_t app_config_load(app_config_t *out)
     len = sizeof(out->ship_min_len_m);
     if (nvs_get_blob(h, "shipminlens", out->ship_min_len_m, &len) != ESP_OK ||
         len != sizeof(out->ship_min_len_m)) {
-        uint16_t m = 0; /* the older single setting for every location */
-        nvs_get_u16(h, "shipminlen", &m);
-        for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
-            out->ship_min_len_m[i] = m;
-        }
+        memset(out->ship_min_len_m, 0, sizeof(out->ship_min_len_m)); /* every ship if never saved */
     }
     len = sizeof(out->ship_near_km); /* no inner circle if never saved */
     if (nvs_get_blob(h, "shipnearkms", out->ship_near_km, &len) != ESP_OK || len != sizeof(out->ship_near_km)) {
@@ -510,16 +496,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
         key[6] = (char)('0' + i);
         err = nvs_set_str(h, key, cfg->cal_url[i]);
     }
-    /* Retire the pre-per-location radar keys; missing keys just return NOT_FOUND. */
-    nvs_erase_key(h, "radar");
-    nvs_erase_key(h, "radarkm");
-    nvs_erase_key(h, "shipminlen");
     if (err == ESP_OK) err = nvs_set_u8(h, "prov", 1);
-    /* Retire the legacy single-location keys, if this NVS was written by an
-     * older firmware. Missing keys just return NOT_FOUND - ignore. */
-    nvs_erase_key(h, "name");
-    nvs_erase_key(h, "lat");
-    nvs_erase_key(h, "lon");
     if (err == ESP_OK) err = nvs_commit(h);
 
     nvs_close(h);
