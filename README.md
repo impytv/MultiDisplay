@@ -585,9 +585,8 @@ in NVS (namespace `spotify`) for this display only - not in backups, and
 dropped if the client ID changes; **Koble fra Spotify** forgets it. The
 client ID and the two ticks are in backups as `spotify.client_id`,
 `spotify.show` and `spotify.rotate`. The login also asks for
-`user-read-recently-played` and `playlist-read-private` (since 1.27.0) for
-the Sonos screen's "recently played"; a login from before is asked to log
-in again there.
+`user-read-recently-played` and `playlist-read-private`, for the Sonos
+screen's "recently played".
 
 ### Sonos
 
@@ -631,7 +630,7 @@ Asked every 3 s while playing (6 s otherwise), at once after a button
 groups every 30 s, and at once after a room joined or left, or when the
 room stops answering. The
 covers are held only while the screen is on show (as the Spotify screen's
-since 1.27.0), and decoded scaled down: a speaker's covers are 640 px.
+are), and decoded scaled down: a speaker's covers are 640 px.
 
 Under **Andre skjermer → Sonos** on the setup page: **Vis Sonos** (and
 **i automatisk bytte**), **Automatisk bytte kan starte herfra** and
