@@ -749,7 +749,10 @@ a button for each screen the display has, grouped by location as a tap
 steps through them, with the one on show marked (checked every 5 s, so taps
 on the display show too). A press switches the display as a tap on it would:
 the automatic rotation waits until the display has been left alone for its
-idle time. Touching the display works as before. The setup page is a link
+idle time. Touching the display works as before. Under the screens,
+**Slå av skjermen** switches the screen off as the screen menu's button does
+(till a touch); while it's off the button reads **Skjermen er av - slå den
+på** and lights it (as does pressing a screen). The setup page is a link
 away, at **`/oppsett`**, and so is the usage guide (**Brukerveiledning**):
 `bruk/` on the update site, next to the manifest of the display's update
 address (`http://192.168.0.119:8070/bruk/` for the default), so a display

@@ -815,6 +815,7 @@ static esp_err_t screen_send_list(httpd_req_t *req)
 {
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "vises", g_view_index + 1);
+    cJSON_AddBoolToObject(root, "lyser", s_backlight_on);
     cJSON *list = cJSON_AddArrayToObject(root, "skjermer");
     for (int i = 0; i < s_stop_count; i++) {
         const view_stop_t *st = &s_stops[i];
@@ -850,6 +851,16 @@ static void screen_go(int want)
         if (want != g_view_index) {
             view_switch(want, false);
         }
+        esp_lv_adapter_unlock();
+    }
+}
+
+/* Switch the screen off from the web, as the screen menu's button does. */
+static void screen_off(void)
+{
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        s_off_by_hand = true;
+        backlight(false);
         esp_lv_adapter_unlock();
     }
 }
@@ -894,8 +905,9 @@ static esp_err_t screen_handler(httpd_req_t *req)
 }
 
 /* The navigation page's (wifi_provision.c, nav_page.js): GET /nav.json is
- * /screen's list, POST /nav with vis=N switches as /screen?vis=N does. On
- * unless unticked on the setup page (g_cfg->nav_page). */
+ * /screen's list, POST /nav with vis=N switches as /screen?vis=N does, and
+ * with lys=0 or lys=1 switches the screen off (till a touch) or lights it.
+ * On unless unticked on the setup page (g_cfg->nav_page). */
 static bool nav_allowed(httpd_req_t *req)
 {
     if (g_cfg->nav_page) {
@@ -921,6 +933,14 @@ static esp_err_t nav_go_handler(httpd_req_t *req)
     if (req->content_len > 0 && req->content_len < sizeof(body)) {
         const int r = httpd_req_recv(req, body, req->content_len);
         body[r > 0 ? r : 0] = '\0';
+    }
+    if (form_field(body, "lys", val, sizeof(val))) {
+        if (strcmp(val, "0") == 0) {
+            screen_off();
+        } else {
+            screen_go(g_view_index);
+        }
+        return screen_send_list(req);
     }
     const int n = form_field(body, "vis", val, sizeof(val)) ? atoi(val) : 0;
     if (n < 1 || n > s_stop_count) {
