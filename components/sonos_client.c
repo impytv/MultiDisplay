@@ -19,7 +19,8 @@
 static const char *TAG = "sonos";
 
 #define SO_TIMEOUT_MS   5000
-#define SO_REPLY_MAX    (96 * 1024)  /* the favourites or the rooms, a few KB each */
+#define SO_REPLY_MAX    (96 * 1024)  /* the favourites (~1.5 KB each) or the rooms */
+#define SO_FAVS_ASKED   "30"         /* favourites asked for: some can't be started (Sonos Radio's) */
 #define SO_IMAGE_MAX    (256 * 1024) /* a speaker's 640 px cover is ~90 KB */
 #define SO_SSDP_MS      1500
 /* Spotify as a Sonos service: 2311 in most places, 3079 in some. */
@@ -252,16 +253,11 @@ esp_err_t sonos_get_now(const sonos_room_t *room, sonos_now_t *out)
 
 esp_err_t sonos_get_state(const sonos_room_t *room, sonos_state_t *out)
 {
-    sonos_now_t now = { 0 };
     const esp_err_t err = soap(room->ip, "AVTransport", "GetTransportInfo", INSTANCE);
     if (err != ESP_OK) {
         return err;
     }
-    if (!sonos_parse_now(s_resp.buf, NULL, NULL, NULL, room->ip, &now)) {
-        return ESP_FAIL;
-    }
-    *out = now.state;
-    return ESP_OK;
+    return sonos_parse_state(s_resp.buf, out) ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t sonos_join(const sonos_room_t *room, const char *coord_uuid)
@@ -310,7 +306,7 @@ esp_err_t sonos_get_favorites(const sonos_room_t *room, sonos_fav_t *out, int ma
     const esp_err_t err = soap(room->ip, "ContentDirectory", "Browse",
                                "<ObjectID>FV:2</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>"
                                "<Filter>*</Filter><StartingIndex>0</StartingIndex>"
-                               "<RequestedCount>50</RequestedCount><SortCriteria></SortCriteria>");
+                               "<RequestedCount>" SO_FAVS_ASKED "</RequestedCount><SortCriteria></SortCriteria>");
     if (err != ESP_OK) {
         return err;
     }
@@ -443,4 +439,9 @@ esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len)
     *data = (unsigned char *)b.buf;
     *len = b.len;
     return ESP_OK;
+}
+
+void sonos_client_release(void)
+{
+    http_buf_free(&s_resp);
 }

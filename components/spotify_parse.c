@@ -159,19 +159,19 @@ static void context_uri(const char *uri, char *out, size_t out_len)
     }
 }
 
-int spotify_parse_recent(const char *json, spotify_recent_t *out, int max)
+int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max, char *before, size_t before_len)
 {
+    before[0] = '\0';
     cJSON *root = cJSON_Parse(json);
     const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "items");
     if (!cJSON_IsArray(items)) {
         cJSON_Delete(root);
         return -1;
     }
-    int n = 0;
     const cJSON *it;
     cJSON_ArrayForEach(it, items)
     {
-        if (n == max) {
+        if (n >= max) {
             break;
         }
         const cJSON *track = cJSON_GetObjectItemCaseSensitive(it, "track");
@@ -194,6 +194,10 @@ int spotify_parse_recent(const char *json, spotify_recent_t *out, int max)
         if (!seen) {
             out[n++] = r;
         }
+    }
+    /* "next" is null on the last page. */
+    if (cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "next"))) {
+        copy(before, before_len, str_at(cJSON_GetObjectItemCaseSensitive(root, "cursors"), "before"));
     }
     cJSON_Delete(root);
     return n;

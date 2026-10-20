@@ -197,6 +197,18 @@ static int position_now(void)
     return s_now.duration_s > 0 && p > s_now.duration_s ? s_now.duration_s : p;
 }
 
+/* Whether answer b shows anything a didn't. Not the position while it
+ * plays, which the progress bar moves on by itself (sonos_tick_cb). */
+static bool now_changed(const sonos_now_t *a, const sonos_now_t *b)
+{
+    const bool moving = b->state == SONOS_PLAYING || b->state == SONOS_TRANSITIONING;
+    return a->state != b->state || a->empty != b->empty || a->stream != b->stream ||
+           a->duration_s != b->duration_s || (!moving && a->position_s != b->position_s) ||
+           a->can_play != b->can_play || a->can_pause != b->can_pause || a->can_next != b->can_next ||
+           a->can_previous != b->can_previous || a->volume != b->volume || strcmp(a->source, b->source) != 0 ||
+           strcmp(a->title, b->title) != 0 || strcmp(a->artist, b->artist) != 0 || strcmp(a->album, b->album) != 0;
+}
+
 static void note(const char *msg)
 {
     snprintf(s_note, sizeof(s_note), "%s", msg);
@@ -695,14 +707,32 @@ static bool fetch_picture(const char *url, uint16_t **px, int side)
             return false;
         }
     }
-    unsigned char *jpg = NULL;
+    unsigned char *pic = NULL;
     size_t len = 0;
     bool ok = false;
-    if (sonos_get_image(url, &jpg, &len) == ESP_OK) {
-        ok = draw_jpeg_square(jpg, len, *px, side);
-        free(jpg);
+    if (sonos_get_image(url, &pic, &len) == ESP_OK) {
+        ok = draw_picture_square(pic, len, *px, side);
+        free(pic);
+    }
+    if (!ok) {
+        ESP_LOGW(TAG, "Cover not shown: %.160s", url); /* not asked for again */
     }
     return ok;
+}
+
+/* The player's cover given back: not drawn under the picker, whose tiles
+ * need the memory, nor on another screen. */
+static void drop_cover(void)
+{
+    if (s_cover_px == NULL || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    heap_caps_free(s_cover_px);
+    s_cover_px = NULL;
+    s_cover_img.data = NULL;
+    s_cover_ok = false;
+    s_cover_url[0] = '\0';
+    esp_lv_adapter_unlock();
 }
 
 /* The player's cover for `url`, if it isn't the one shown. Decoded
@@ -843,6 +873,7 @@ static void fetch_lists(const sonos_room_t *room)
                 name_playlist(&s_recent[i], &budget);
             }
         }
+        spotify_close(); /* asked again minutes from now: not kept open meanwhile */
     }
     if (favs == 0 && recent == 0 && list_note[0] == '\0') {
         list_note = "Ingen favoritter i Sonos-appen, og ingenting spilt nylig p\xC3\xA5 Spotify.";
@@ -912,8 +943,10 @@ static void fetch_lists(const sonos_room_t *room)
 
 void sonos_release(void)
 {
+    sonos_client_release();
+    drop_cover();
     /* The pointers are only set by this task: nothing to do, no lock. */
-    bool any = s_cover_px != NULL;
+    bool any = false;
     for (int i = 0; i < SO_TILES; i++) {
         any |= s_tiles[i].px != NULL;
     }
@@ -927,11 +960,6 @@ void sonos_release(void)
         s_tiles[i].ok = false;
         s_tiles[i].px_art[0] = '\0';
     }
-    heap_caps_free(s_cover_px);
-    s_cover_px = NULL;
-    s_cover_img.data = NULL;
-    s_cover_ok = false;
-    s_cover_url[0] = '\0';
     esp_lv_adapter_unlock();
 }
 
@@ -971,11 +999,20 @@ static bool refresh_rooms(int for_view)
     }
     s_rediscover = false;
     stamp_now(&s_rooms_at);
-    /* Which play, the first time, to start on one of them. */
+    /* Which play, the first time, to start on one of them (unless the setup
+     * page names one): each group's leader asked. */
     bool busy[SONOS_ROOMS_MAX] = { 0 };
-    if (s_room_name[0] == '\0') {
-        for (int i = 0; i < n; i++) {
-            busy[i] = sonos_get_now(&s_room_scratch[i], &s_now_scratch) == ESP_OK && s_now_scratch.state == SONOS_PLAYING;
+    bool named = false;
+    for (int i = 0; i < n; i++) {
+        named |= strcmp(s_room_scratch[i].name, g_cfg->so_room) == 0;
+    }
+    for (int i = 0; i < n && s_room_name[0] == '\0' && !named; i++) {
+        const sonos_room_t *r = &s_room_scratch[i];
+        sonos_state_t st;
+        if (strcmp(r->uuid, r->coord) == 0 && sonos_get_state(r, &st) == ESP_OK && st == SONOS_PLAYING) {
+            for (int k = 0; k < n; k++) {
+                busy[k] |= strcmp(s_room_scratch[k].coord, r->uuid) == 0;
+            }
         }
     }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -1107,29 +1144,32 @@ uint32_t sonos_poll(int for_view)
     }
 
     /* An empty room opens the picker, unless closed for it. */
+    bool opened = false;
     if (s_now_scratch.empty && esp_lv_adapter_lock(-1) == ESP_OK) {
         if (!s_picker && !s_picker_shut) {
-            s_picker = true;
+            s_picker = opened = true;
         }
         picker = s_picker;
         esp_lv_adapter_unlock();
     }
-    if (picker && !stamp_fresh(&s_lists_at, SO_LISTS_MS)) {
-        fetch_lists(&room);
-    }
-    if (!picker) {
-        fetch_cover(s_now_scratch.art_url);
-    }
     bool more = false;
     if (picker) {
+        drop_cover();
+        if (!stamp_fresh(&s_lists_at, SO_LISTS_MS)) {
+            fetch_lists(&room);
+        }
         more = fetch_tiles(3);
+    } else {
+        fetch_cover(s_now_scratch.art_url);
     }
 
+    bool changed = opened;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         if (s_room >= 0 && strcmp(s_rooms[lead_of(s_room)].uuid, room.uuid) == 0) { /* not changed meanwhile */
             if (strcmp(s_now_scratch.title, s_now.title) != 0 || s_now_scratch.state != SONOS_PLAYING) {
                 s_woke_at_end = false;
             }
+            changed |= !s_have || now_changed(&s_now, &s_now_scratch);
             s_now = s_now_scratch;
             s_now_tick = lv_tick_get();
             s_have = true;
@@ -1138,7 +1178,9 @@ uint32_t sonos_poll(int for_view)
     }
     if (lock_for_view(for_view)) {
         lv_label_set_text(g_status_label, s_have ? "" : "Henter fra Sonos...");
-        sonos_show();
+        if (changed) {
+            sonos_show(); /* not every few seconds: a redraw of the whole screen */
+        }
         esp_lv_adapter_unlock();
     }
     if (more) {

@@ -38,6 +38,10 @@ static const char *TAG = "spotify";
 #define SP_TIMEOUT_MS  10000
 #define SP_REPLY_MAX   (96 * 1024)  /* a player reply is 5-15 KB */
 #define SP_IMAGE_MAX   (256 * 1024) /* a 300 px cover is 20-40 KB */
+/* Recently played, a page at a time: ~3 KB of reply a track, and its cJSON
+ * tree about twice that - 50 at once (~150 KB) was over SP_REPLY_MAX. */
+#define SP_RECENT_PAGE  10
+#define SP_RECENT_PAGES 4
 #define SP_EARLY_US    (60 * 1000000LL) /* renew the access token this long before it runs out */
 
 /* The login: shared between the web server (logging in, the setup page)
@@ -346,6 +350,7 @@ void spotify_close(void)
         esp_http_client_cleanup(s_client);
         s_client = NULL;
     }
+    http_buf_free(&s_resp); /* grown for the biggest reply; not held for later */
 }
 
 /* One request to the API; the HTTP status (-1 if the server wasn't
@@ -585,21 +590,32 @@ static bool missing_scope(int status)
 esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count)
 {
     *count = 0;
-    esp_err_t err;
-    const int status = api(HTTP_METHOD_GET, "/me/player/recently-played?limit=50", NULL, &err);
-    if (missing_scope(status)) {
-        return SPOTIFY_ERR_SCOPE;
+    char before[32] = "";
+    for (int page = 0; page < SP_RECENT_PAGES && *count < max; page++) {
+        char path[96];
+        snprintf(path, sizeof(path), "/me/player/recently-played?limit=%d%s%s", SP_RECENT_PAGE,
+                 before[0] ? "&before=" : "", before);
+        esp_err_t err;
+        const int status = api(HTTP_METHOD_GET, path, NULL, &err);
+        if (missing_scope(status)) {
+            return SPOTIFY_ERR_SCOPE;
+        }
+        if (err != ESP_OK) {
+            return page > 0 ? ESP_OK : err; /* what the pages before gave */
+        }
+        json_use_psram();
+        const int n = status == 200 && s_resp.buf
+                          ? spotify_parse_recent(s_resp.buf, out, *count, max, before, sizeof(before))
+                          : -1;
+        if (n < 0) {
+            ESP_LOGW(TAG, "Recently played: HTTP %d %.200s", status, s_resp.buf ? s_resp.buf : "");
+            return page > 0 ? ESP_OK : ESP_FAIL;
+        }
+        *count = n;
+        if (before[0] == '\0') {
+            break;
+        }
     }
-    if (err != ESP_OK) {
-        return err;
-    }
-    json_use_psram();
-    const int n = status == 200 && s_resp.buf ? spotify_parse_recent(s_resp.buf, out, max) : -1;
-    if (n < 0) {
-        ESP_LOGW(TAG, "Recently played: HTTP %d %.200s", status, s_resp.buf ? s_resp.buf : "");
-        return ESP_FAIL;
-    }
-    *count = n;
     return ESP_OK;
 }
 

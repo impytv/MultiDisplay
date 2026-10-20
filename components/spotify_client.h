@@ -67,9 +67,10 @@ typedef struct {
     char image_url[160];
 } spotify_recent_t;
 
-/* GET /v1/me/player/recently-played's body into out, at most `max`; -1 if
- * it isn't one. */
-int spotify_parse_recent(const char *json, spotify_recent_t *out, int max);
+/* A page of GET /v1/me/player/recently-played: what it adds to out[0..n)
+ * (each once), up to `max` in all; the new count, or -1 if it isn't one.
+ * `before` gets the cursor of the page before it, "" if this is the last. */
+int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max, char *before, size_t before_len);
 
 /* GET /v1/playlists/ID?fields=name,images's body: the name, and the
  * picture nearest SPOTIFY_COVER_PX ("" if none). False without a name. */
@@ -165,7 +166,8 @@ esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len);
 /* After SPOTIFY_ERR_RATE: seconds to wait. */
 int spotify_retry_after_s(void);
 
-/* Drop the kept-alive connection to api.spotify.com. */
+/* Drop the kept-alive connection to api.spotify.com, and the replies'
+ * buffer. */
 void spotify_close(void);
 
 #endif

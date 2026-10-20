@@ -628,7 +628,11 @@ Asked every 3 s while playing (6 s otherwise), at once after a button
 groups every 30 s, and at once after a room joined or left, or when the
 room stops answering. The
 covers are held only while the screen is on show (as the Spotify screen's
-are), and decoded scaled down: a speaker's covers are 640 px.
+are), the player's not while the grid is, and decoded scaled down: a
+speaker's covers are 640 px. Covers may be JPEG or PNG (Spotify's
+"Liked Songs" is a PNG; read a row at a time, not interlaced ones). Spotify is asked for recently played 10
+tracks a page, up to 40 (50 at once is ~150 KB of reply), and the
+connection is closed again until the grid's next refresh.
 
 Under **Andre skjermer → Sonos** on the setup page: **Vis Sonos** (and
 **i automatisk bytte**), **Automatisk bytte kan starte herfra** and

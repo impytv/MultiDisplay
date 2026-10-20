@@ -89,6 +89,9 @@ int sonos_parse_rooms(const char *reply, sonos_room_t *out, int max);
 bool sonos_parse_now(const char *transport, const char *position, const char *media, const char *actions,
                      const char *ip, sonos_now_t *out);
 
+/* Only the state from GetTransportInfo's reply; false if it isn't one. */
+bool sonos_parse_state(const char *transport, sonos_state_t *out);
+
 /* GetGroupVolume's (or GetVolume's) reply; -1 if it isn't one. */
 int sonos_parse_volume(const char *reply);
 
@@ -155,5 +158,8 @@ esp_err_t sonos_play_spotify(const sonos_room_t *room, const char *spotify_uri);
 /* The picture at `url` (a cover, from a speaker or the web), in PSRAM for
  * the caller to free(). */
 esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len);
+
+/* Give back the replies' buffer, on another screen. */
+void sonos_client_release(void);
 
 #endif

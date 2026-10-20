@@ -13,6 +13,7 @@
 
 #include "app.h"
 #include "draw.h"
+#include "png_decode.h"
 
 bool draw_area_visible(const lv_layer_t *layer, const lv_area_t *a)
 {
@@ -266,8 +267,16 @@ static bool jpeg_decode(const uint8_t *jpg, size_t len, int sw, int sh, uint16_t
     return ok;
 }
 
-bool draw_jpeg_square(const uint8_t *jpg, size_t len, uint16_t *out, int side)
+bool draw_picture_square(const uint8_t *data, size_t len, uint16_t *out, int side)
 {
+    if (png_is(data, len)) {
+        /* Over white, as logos with transparency are mostly drawn for. */
+        if (!png_decode_square(data, len, out, side, 0xFFFFFF)) {
+            ESP_LOGW("draw", "PNG not decoded (%u bytes; interlaced?)", (unsigned)len);
+            return false;
+        }
+        return true;
+    }
     /* The size first, to choose the scale. */
     jpeg_dec_config_t cfg = DEFAULT_JPEG_DEC_CONFIG();
     jpeg_dec_handle_t dec = NULL;
@@ -275,19 +284,28 @@ bool draw_jpeg_square(const uint8_t *jpg, size_t len, uint16_t *out, int side)
     if (jpeg_dec_open(&cfg, &dec) != JPEG_ERR_OK) {
         return false;
     }
-    jpeg_dec_io_t io = { .inbuf = (uint8_t *)jpg, .inbuf_len = (int)len };
+    jpeg_dec_io_t io = { .inbuf = (uint8_t *)data, .inbuf_len = (int)len };
     const bool head = jpeg_dec_parse_header(dec, &io, &info) == JPEG_ERR_OK;
     jpeg_dec_close(dec);
     if (!head || info.width == 0 || info.height == 0 || info.width > 4000 || info.height > 4000) {
-        ESP_LOGW("draw", "Not a JPEG to decode (%u bytes)", (unsigned)len);
+        ESP_LOGW("draw", "Neither JPEG nor PNG (%u bytes)", (unsigned)len);
         return false;
     }
-    /* Scaled so the shorter side is `side` (in 8s), if smaller. */
+    /* Scaled so the shorter side is `side` (in 8s), if smaller - or, for a
+     * picture over 8 times that, by the most the decoder scales (1/8), the
+     * rest by the copy below. */
     const int W = info.width, H = info.height, m = W < H ? W : H;
     int sw = 0, sh = 0;
     if (m > side && side % 8 == 0) {
-        sw = (W * side / m + 7) & ~7;
-        sh = (H * side / m + 7) & ~7;
+        const int t = m > 8 * side ? (m + 7) / 8 : side;
+        sw = (W * t / m + 7) & ~7;
+        sh = (H * t / m + 7) & ~7;
+        while (sw * 8 < W) {
+            sw += 8;
+        }
+        while (sh * 8 < H) {
+            sh += 8;
+        }
         if (sw > W || sh > H) {
             sw = sh = 0;
         }
@@ -296,10 +314,10 @@ bool draw_jpeg_square(const uint8_t *jpg, size_t len, uint16_t *out, int side)
     const size_t out_len = (size_t)side * side * 2;
     uint16_t *px;
     int w, h;
-    bool ok = jpeg_decode(jpg, len, sw, sh, (sw ? sw : W) == side && (sh ? sh : H) == side ? out : NULL, out_len, &px,
+    bool ok = jpeg_decode(data, len, sw, sh, (sw ? sw : W) == side && (sh ? sh : H) == side ? out : NULL, out_len, &px,
                           &w, &h);
     if (!ok && sw) {
-        ok = jpeg_decode(jpg, len, 0, 0, W == side && H == side ? out : NULL, out_len, &px, &w, &h); /* the scale refused */
+        ok = jpeg_decode(data, len, 0, 0, W == side && H == side ? out : NULL, out_len, &px, &w, &h); /* the scale refused */
     }
     if (!ok) {
         ESP_LOGW("draw", "JPEG %dx%d not decoded", W, H);

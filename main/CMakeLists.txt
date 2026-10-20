@@ -53,6 +53,8 @@ idf_component_register(
         "../components/spotify_parse.c"
         "../components/sonos_client.c"
         "../components/sonos_parse.c"
+        "../components/png_decode.c"
+        "../components/png_inflate.c"
     INCLUDE_DIRS
         "."
         "../components"

@@ -308,6 +308,19 @@ static void radio_field(const char *s, const char *key, char *out, size_t out_le
     }
 }
 
+bool sonos_parse_state(const char *transport, sonos_state_t *out)
+{
+    char buf[32];
+    if (!sonos_xml_text(transport, "CurrentTransportState", buf, sizeof(buf))) {
+        return false;
+    }
+    *out = strcmp(buf, "PLAYING") == 0           ? SONOS_PLAYING
+           : strcmp(buf, "PAUSED_PLAYBACK") == 0 ? SONOS_PAUSED
+           : strcmp(buf, "TRANSITIONING") == 0   ? SONOS_TRANSITIONING
+                                                 : SONOS_STOPPED;
+    return true;
+}
+
 bool sonos_parse_now(const char *transport, const char *position, const char *media, const char *actions,
                      const char *ip, sonos_now_t *out)
 {
@@ -315,14 +328,10 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     memset(out, 0, sizeof(*out));
     out->volume = volume;
     out->position_s = out->duration_s = -1;
-    char buf[64];
-    if (!sonos_xml_text(transport, "CurrentTransportState", buf, sizeof(buf))) {
+    if (!sonos_parse_state(transport, &out->state)) {
         return false;
     }
-    out->state = strcmp(buf, "PLAYING") == 0           ? SONOS_PLAYING
-                 : strcmp(buf, "PAUSED_PLAYBACK") == 0 ? SONOS_PAUSED
-                 : strcmp(buf, "TRANSITIONING") == 0   ? SONOS_TRANSITIONING
-                                                       : SONOS_STOPPED;
+    char buf[64];
 
     /* The source, from what the room plays (GetMediaInfo). */
     char uri[160] = "", track_uri[160] = "", station[SONOS_TEXT_MAX] = "", station_art[SONOS_URL_MAX] = "";
@@ -351,7 +360,8 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
 
     /* The track (GetPositionInfo). */
     char *tmeta = xml_text_dup(position, "TrackMetaData");
-    char art[SONOS_URL_MAX] = "", stream[SONOS_TEXT_MAX] = "", cls[64] = "";
+    /* The stream's text room for both fields of a long "TYPE=SNG|..". */
+    char art[SONOS_URL_MAX] = "", stream[256] = "", cls[64] = "";
     if (tmeta && strstr(tmeta, "<DIDL-Lite")) {
         sonos_xml_text(tmeta, "dc:title", out->title, sizeof(out->title));
         sonos_xml_text(tmeta, "dc:creator", out->artist, sizeof(out->artist));
@@ -367,17 +377,18 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     if (out->stream) {
         /* A radio: what it plays if it says, under the station's name. */
         if (starts(stream, "TYPE=")) {
-            char t[SONOS_TEXT_MAX], a[SONOS_TEXT_MAX];
+            /* Each cut to whole characters, so "artist - title" fits. */
+            char t[(SONOS_TEXT_MAX - 3) / 2], a[(SONOS_TEXT_MAX - 3) / 2];
             radio_field(stream, "TITLE", t, sizeof(t));
             radio_field(stream, "ARTIST", a, sizeof(a));
-            snprintf(stream, sizeof(stream), "%.44s%s%.44s", a, a[0] && t[0] ? " - " : "", t);
+            snprintf(stream, sizeof(stream), "%s%s%s", a, a[0] && t[0] ? " - " : "", t);
         }
         if (out->title[0] == '\0' || starts(out->title, "x-") || strchr(out->title, '?')) {
             snprintf(out->title, sizeof(out->title), "%s", station);
         }
         if (stream[0]) {
             snprintf(out->artist, sizeof(out->artist), "%s", out->title[0] ? out->title : station);
-            snprintf(out->title, sizeof(out->title), "%s", stream);
+            copy_n(out->title, sizeof(out->title), stream, strlen(stream));
         }
     }
     art_url(art[0] ? art : station_art, ip, out->art_url, sizeof(out->art_url));
@@ -439,10 +450,14 @@ int sonos_parse_favorites(const char *reply, const char *ip, sonos_fav_t *out, i
         sonos_fav_t *f = &out[n];
         memset(f, 0, sizeof(*f));
         char art[SONOS_URL_MAX];
-        size_t mlen = 0;
+        size_t ulen = 0, mlen = 0;
+        const char *u = find_elem(item, "res", &ulen);
         const char *m = find_elem(item, "r:resMD", &mlen);
-        if (sonos_xml_text(item, "res", f->uri, sizeof(f->uri)) && f->uri[0] && strlen(f->uri) < sizeof(f->uri) - 1 &&
-            m != NULL && mlen < sizeof(f->meta)) {
+        /* Whole, as escaped (unescaping only shortens them): a cut one
+         * wouldn't play. */
+        if (u != NULL && ulen > 0 && ulen < sizeof(f->uri) && m != NULL && mlen < sizeof(f->meta)) {
+            copy_n(f->uri, sizeof(f->uri), u, ulen);
+            sonos_xml_unescape(f->uri);
             sonos_xml_text(item, "dc:title", f->title, sizeof(f->title));
             copy_n(f->meta, sizeof(f->meta), m, mlen);
             sonos_xml_unescape(f->meta);

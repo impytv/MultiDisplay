@@ -317,3 +317,17 @@ them back on another screen (`spotify_release`, `sonos_release`), for ~650
 KB free elsewhere.
 *Lesson:* big buffers a screen needs only while on show belong to that
 time, not to start-up.
+
+### A reply's size against the buffer it goes into
+
+"Recently played" asked Spotify for 50 tracks at once: about 150 KB of
+indented JSON (3 KB a track, even without `available_markets`), over the
+96 KB the Spotify client takes, and its cJSON tree would have been near
+300 KB more - on a screen that already held the player's cover and twelve
+tiles (~375 KB) with ~480 KB free. Found in review, not on the display:
+the grid can only be opened by touch. It now asks 10 tracks a page (~35
+KB), and the player's cover is given back while the grid is on show.
+*Lesson:* size a new request's reply from a full example, indented as the
+server sends it, against the buffer's limit before choosing a page size;
+and add up everything one screen holds at the same moment (pictures, a
+reply, its parse tree, TLS) against `psram_ledig` on that screen.

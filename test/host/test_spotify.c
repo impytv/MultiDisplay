@@ -45,7 +45,18 @@ static const char RECENT[] =
     "\"context\":{\"type\":\"collection\",\"uri\":\"spotify:user:u:collection\"}},"
     "{\"track\":{\"uri\":\"spotify:local:x\",\"album\":{\"name\":\"Local\"}},\"context\":null},"
     "{\"track\":{\"uri\":\"spotify:track:t7\",\"album\":{\"uri\":\"spotify:album:a7\",\"name\":\"A7\"}},"
-    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:user:u:playlist:p7\"}}]}";
+    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:user:u:playlist:p7\"}}],"
+    "\"next\":\"https://api.spotify.com/v1/me/player/recently-played?before=1760890000000&limit=10\","
+    "\"cursors\":{\"after\":\"1760899999000\",\"before\":\"1760890000000\"}}";
+
+/* The page before it, the last: the playlist again, and an album. */
+static const char RECENT_LAST[] =
+    "{\"items\":["
+    "{\"track\":{\"uri\":\"spotify:track:t8\",\"album\":{\"uri\":\"spotify:album:a8\",\"name\":\"A8\"}},"
+    "\"context\":{\"type\":\"playlist\",\"uri\":\"spotify:playlist:p1\"}},"
+    "{\"track\":{\"uri\":\"spotify:track:t9\",\"album\":{\"uri\":\"spotify:album:a9\",\"name\":\"A9\"}},"
+    "\"context\":{\"type\":\"album\",\"uri\":\"spotify:album:a9\"}}],"
+    "\"next\":null,\"cursors\":{\"after\":\"1760889000000\",\"before\":\"1760880000000\"}}";
 
 void test_spotify(void)
 {
@@ -105,7 +116,9 @@ void test_spotify(void)
     CHECK_STR(b64, "YWI");
 
     spotify_recent_t rec[SPOTIFY_RECENT_MAX];
-    CHECK_INT(spotify_parse_recent(RECENT, rec, SPOTIFY_RECENT_MAX), 5);
+    char before[32];
+    CHECK_INT(spotify_parse_recent(RECENT, rec, 0, SPOTIFY_RECENT_MAX, before, sizeof(before)), 5);
+    CHECK_STR(before, "1760890000000");
     CHECK_STR(rec[0].uri, "spotify:playlist:p1");
     CHECK_STR(rec[0].name, ""); /* named by spotify_get_playlist */
     CHECK_STR(rec[0].image_url, "https://i.scdn.co/a1");
@@ -115,8 +128,12 @@ void test_spotify(void)
     CHECK_STR(rec[2].name, "A4");
     CHECK_STR(rec[3].uri, "spotify:album:a6");
     CHECK_STR(rec[4].uri, "spotify:playlist:p7");
-    CHECK_INT(spotify_parse_recent(RECENT, rec, 2), 2);
-    CHECK_INT(spotify_parse_recent("{}", rec, 2), -1);
+    CHECK_INT(spotify_parse_recent(RECENT_LAST, rec, 5, SPOTIFY_RECENT_MAX, before, sizeof(before)), 6);
+    CHECK_STR(rec[5].uri, "spotify:album:a9"); /* p1 was there already */
+    CHECK_STR(before, "");                     /* the last page */
+    CHECK_INT(spotify_parse_recent(RECENT, rec, 0, 2, before, sizeof(before)), 2);
+    CHECK_INT(spotify_parse_recent(RECENT_LAST, rec, 2, 2, before, sizeof(before)), 2);
+    CHECK_INT(spotify_parse_recent("{}", rec, 0, 2, before, sizeof(before)), -1);
     char pn[64], pi[160];
     CHECK(spotify_parse_playlist("{\"name\":\"Kos\",\"images\":[{\"url\":\"https://mosaic\",\"width\":null}]}", pn,
                                  sizeof(pn), pi, sizeof(pi)));

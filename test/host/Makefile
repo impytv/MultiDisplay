@@ -9,16 +9,16 @@ CFLAGS  += -std=gnu17 -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-fun
            -fsanitize=address,undefined -fno-omit-frame-pointer \
            -include stubs/sdkconfig.h -Istubs -I. -I$(ROOT)/components -I$(ROOT)/main -I$(CJSON)
 LDFLAGS += -fsanitize=address,undefined
-LDLIBS  += -lm
+LDLIBS  += -lm -lz
 
 SRCS := main.c stubs/stubs.c test_version.c test_form.c test_http.c test_sun.c test_entur.c \
-        test_adsb.c test_routes.c test_owners.c test_config.c test_air.c test_yr.c test_tide.c test_ical.c test_sat.c test_aurora.c test_alerts.c test_web_auth.c test_holidays.c test_astro.c test_spotify.c test_sonos.c \
+        test_adsb.c test_routes.c test_owners.c test_config.c test_air.c test_yr.c test_tide.c test_ical.c test_sat.c test_aurora.c test_alerts.c test_web_auth.c test_holidays.c test_astro.c test_spotify.c test_sonos.c test_png.c png_inflate_zlib.c \
         $(ROOT)/components/app_config.c $(ROOT)/components/app_config_json.c $(ROOT)/components/holidays.c $(ROOT)/components/astro.c $(CJSON)/cJSON.c
 
 run: host_tests
 	./host_tests
 
-host_tests: $(SRCS) $(wildcard *.h stubs/*.h $(ROOT)/components/*.[ch] $(ROOT)/main/sun.c)
+host_tests: $(SRCS) $(wildcard *.h stubs/*.h data/png/*.h $(ROOT)/components/*.[ch] $(ROOT)/main/sun.c)
 	$(CC) $(CFLAGS) $(SRCS) $(LDFLAGS) $(LDLIBS) -o $@
 
 clean:

@@ -530,7 +530,7 @@ static void fetch_cover(const char *url)
         uint8_t *jpg = NULL;
         size_t len = 0;
         if (spotify_get_image(url, &jpg, &len) == ESP_OK) {
-            ok = draw_jpeg_square(jpg, len, s_cover_scratch, SP_COVER);
+            ok = draw_picture_square(jpg, len, s_cover_scratch, SP_COVER);
             free(jpg);
         }
     }

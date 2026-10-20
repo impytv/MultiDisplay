@@ -1204,10 +1204,8 @@ static void yr_weather_task(void *arg)
             if (stop->kind != STOP_DEPARTURES) {
                 entur_client_close();
             }
-            if (stop->kind != STOP_SPOTIFY && stop->kind != STOP_SONOS) {
-                spotify_close(); /* the Sonos screen asks Spotify what was played */
-            }
             if (stop->kind != STOP_SPOTIFY) {
+                spotify_close();
                 spotify_release();
             }
             if (stop->kind != STOP_SONOS) {

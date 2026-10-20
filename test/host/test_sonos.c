@@ -92,6 +92,10 @@ void test_sonos(void)
     free(media);
     free(act);
     CHECK(!sonos_parse_now("<x/>", NULL, NULL, NULL, "1.2.3.4", &now));
+    sonos_state_t st;
+    CHECK(sonos_parse_state("<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>", &st));
+    CHECK_INT(st, SONOS_PAUSED);
+    CHECK(!sonos_parse_state("<x/>", &st));
 
     /* NRK P3 from a favourite: the station's name and logo, no pause. */
     tr = slurp("data/sonos/transport_playing.xml");
@@ -119,6 +123,19 @@ void test_sonos(void)
           "Kygo|ALBUM &lt;/r:streamContent&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>";
     CHECK(sonos_parse_now(tr, pos, media, NULL, "1.2.3.4", &now));
     CHECK_STR(now.title, "Kygo - Firestone");
+    /* A long title cut to whole characters, the artist still there. */
+    char longpos[512], want[96];
+    snprintf(longpos, sizeof(longpos), "<TrackMetaData>&lt;DIDL-Lite&gt;&lt;item&gt;&lt;r:streamContent&gt;TYPE=SNG|TITLE ");
+    for (int i = 0; i < 50; i++) {
+        strcat(longpos, "\xC3\xA6");
+    }
+    strcat(longpos, "|ARTIST Kygo|ALBUM &lt;/r:streamContent&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>");
+    CHECK(sonos_parse_now(tr, longpos, media, NULL, "1.2.3.4", &now));
+    snprintf(want, sizeof(want), "Kygo - ");
+    for (int i = 0; i < 22; i++) {
+        strcat(want, "\xC3\xA6");
+    }
+    CHECK_STR(now.title, want);
     free(media);
 
     /* An album shared from Spotify, from the queue. */
@@ -159,6 +176,19 @@ void test_sonos(void)
     CHECK_STR(favs[0].art_url, "https://gfx.nrk.no/F4h3WlHK4YUujwYdbFsM5QORv-xqxofMsvznIYSiBGsw");
     CHECK_INT(sonos_parse_favorites("<x/>", "1.2.3.4", favs, 2), -1);
     free(fav);
+    /* An address too long to keep is left out, not cut: 60 "&" are 300
+     * characters escaped. */
+    char longfav[1024];
+    for (int k = 0; k < 2; k++) {
+        snprintf(longfav, sizeof(longfav), "<Result>&lt;DIDL-Lite&gt;&lt;item id=&quot;1&quot;&gt;&lt;dc:title&gt;Lang"
+                                           "&lt;/dc:title&gt;&lt;res&gt;");
+        for (int i = 0; i < (k == 0 ? 60 : 40); i++) {
+            strcat(longfav, "&amp;amp;");
+        }
+        strcat(longfav, "&lt;/res&gt;&lt;r:resMD&gt;x&lt;/r:resMD&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</Result>");
+        CHECK_INT(sonos_parse_favorites(longfav, "1.2.3.4", favs, 2), k == 0 ? 0 : 1);
+    }
+    CHECK_INT((int)strlen(favs[0].uri), 40);
 
     char *fault = slurp("data/sonos/fault800.xml");
     CHECK_INT(sonos_parse_fault(fault), 800);
