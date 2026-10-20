@@ -108,8 +108,8 @@ F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;
 {let x=F.querySelector('[name=tempref]'),v=x?x.value.trim():'',t=+v.replace(',','.'),c=x&&x.dataset.chip,i=F.querySelector('[name=clkin]'),need=i&&i.checked&&!i.dataset.was,blank=need?'.':', eller la feltet stå tomt.';
 if(x&&!v&&need)bad.push(X(x,'Skriv inn hva et termometer ved skjermen viser nå, så temperaturen inne blir riktig.'));
 if(v){if(!num(v)||t<0||t>40)bad.push(X(x,'Skriv temperaturen i rommet, et tall fra 0 til 40'+blank));
-else if(c===undefined)bad.push(X(x,'Brikken har ikke målt temperaturen ennå. Prøv igjen om et minutt'+blank));
-else if(Math.abs(Math.round(t*10)-c)>500)bad.push(X(x,'Gir en justering over 50 °C. Sjekk temperaturen.'))}}
+else if(c==='')bad.push(X(x,'Brikken har ikke målt temperaturen ennå. Prøv igjen om et minutt'+blank));
+else if(c&&Math.abs(Math.round(t*10)-c)>500)bad.push(X(x,'Gir en justering over 50 °C. Sjekk temperaturen.'))}}
 let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv inn WiFi-nettet.'));
 F.querySelectorAll('[name^=lat],[name^=lon],[name^=shiplat],[name^=shiplon]').forEach(x=>x.value=x.value.replace(',','.'));
 if(bad.length){e.preventDefault();let d=bad[0].closest('details');while(d){d.open=true;d=d.parentNode.closest('details')}

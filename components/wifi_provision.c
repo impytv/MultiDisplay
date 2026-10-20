@@ -279,11 +279,11 @@ static void tenths_text(char *dst, size_t len, int dc)
  * worked out on saving from what a thermometer shows (tempref). */
 static char *build_clock(char *p, char *end, const app_config_t *cfg)
 {
-    char off[16], now[192] = "Ingen m&aring;ling enn&aring;.", chip[24] = "";
+    char off[16], now[192] = "Ingen m&aring;ling enn&aring;.", chip[24] = " data-chip=''";
     tenths_text(off, sizeof(off), cfg->temp_offset_dc);
     float raw;
     if (chip_temp_raw(&raw)) {
-        snprintf(chip, sizeof(chip), " data-chip=%d", (int)lroundf(raw * 10.0f)); /* for the page's check */
+        snprintf(chip, sizeof(chip), " data-chip=%d", (int)lroundf(raw * 10.0f)); /* for the page's check; '' = none yet */
         char r[16], shown[16];
         tenths_text(r, sizeof(r), (int)lroundf(raw * 10.0f));
         tenths_text(shown, sizeof(shown), (int)lroundf(raw * 10.0f) + cfg->temp_offset_dc);
@@ -950,6 +950,9 @@ static esp_err_t send_setup_page(httpd_req_t *req)
         return httpd_resp_send_500(req);
     }
     httpd_resp_set_type(req, "text/html");
+    /* Never from the browser's cache: it holds the settings and the chip's
+     * reading as they are now, and must go with the /setup.js served now. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_sendstr(req, page);
     free(page);
     return err;

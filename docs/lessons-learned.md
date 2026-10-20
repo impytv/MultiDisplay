@@ -344,3 +344,16 @@ main stack is now 8 KB (freed when `app_main` returns).
 *Lesson:* after an OTA, check that the new build is the one running -
 something only it serves (a changed `/setup.js`, a new log line), and
 `omstart` not `krasj` - before testing on it.
+
+### A page and its script from two firmwares
+
+A user calibrating the temperature was told "Brikken har ikke målt
+temperaturen ennå" right above the chip's reading. The setup page was sent
+without `Cache-Control`, `/setup.js` with `no-cache`: a browser restoring
+the tab kept the page from before the display updated itself (no
+`data-chip` in it) and fetched the new script, which took the missing
+attribute for "no reading". The page is now `no-store`, and "no reading"
+is said by the page (`data-chip=''`), not by an attribute's absence.
+*Lesson:* send a page built from live state `no-store`; and let a script
+treat what the page doesn't say as "unknown, leave it to the server" -
+the display may have updated under an open tab.
