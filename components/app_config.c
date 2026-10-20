@@ -93,6 +93,16 @@ static void sanitize_view_settings(app_config_t *c)
     }
     c->dim_enabled = c->dim_enabled ? 1 : 0;
     c->night_off = c->night_off ? 1 : 0;
+    {
+        static const uint8_t wake[] = APP_CONFIG_NIGHT_WAKE_CHOICES;
+        bool ok = false;
+        for (size_t i = 0; i < sizeof(wake); i++) {
+            ok |= c->night_wake_min == wake[i];
+        }
+        if (!ok) {
+            c->night_wake_min = APP_CONFIG_NIGHT_WAKE_DEFAULT;
+        }
+    }
     if (c->dim_start >= 24 * 60 || c->dim_end >= 24 * 60) {
         c->dim_start = APP_CONFIG_DIM_START_DEFAULT;
         c->dim_end = APP_CONFIG_DIM_END_DEFAULT;
@@ -182,6 +192,7 @@ static void seed_defaults(app_config_t *out)
     snprintf(out->locations[0].lon, sizeof(out->locations[0].lon), "%s", CONFIG_MULTIDISPLAY_LONGITUDE);
     out->location_count = 1;
     out->dim_enabled = 1;
+    out->night_wake_min = APP_CONFIG_NIGHT_WAKE_DEFAULT;
     out->dim_start = APP_CONFIG_DIM_START_DEFAULT;
     out->dim_end = APP_CONFIG_DIM_END_DEFAULT;
     out->title_px = APP_CONFIG_TITLE_PX_DEFAULT;
@@ -193,7 +204,6 @@ static void seed_defaults(app_config_t *out)
     out->swipe_nav = 1;
     out->mon_moon = 1;
     out->mon_astro = 1;
-    out->clk_in = 1;
     out->sp_start = 1;
     out->so_start = 1;
     out->clk_out = 1;
@@ -314,6 +324,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
     nvs_get_u8(h, "dimon", &out->dim_enabled); /* these three keep the defaults if never saved */
     nvs_get_u8(h, "nightoff", &out->night_off); /* dims if never saved */
+    nvs_get_u8(h, "nightwake", &out->night_wake_min);
     nvs_get_u16(h, "dimstart", &out->dim_start);
     nvs_get_u16(h, "dimend", &out->dim_end);
     nvs_get_u8(h, "titlepx", &out->title_px); /* the font settings too */
@@ -333,7 +344,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "moncal", &out->mon_cal); /* off if never saved */
     nvs_get_u8(h, "clkshow", &out->clk_show); /* no clock screen if never saved */
     nvs_get_u8(h, "clkrot", &out->clk_rotate);
-    nvs_get_u8(h, "clkin", &out->clk_in);   /* shown if never saved */
+    const bool clkin_saved = nvs_get_u8(h, "clkin", &out->clk_in) == ESP_OK;
     nvs_get_u8(h, "spshow", &out->sp_show); /* no Spotify screen if never saved */
     nvs_get_u8(h, "sprot", &out->sp_rotate);
     nvs_get_u8(h, "spstart", &out->sp_start); /* the rotation may start from it if never saved */
@@ -346,6 +357,9 @@ esp_err_t app_config_load(app_config_t *out)
     load_str(h, "soroom", out->so_room, sizeof(out->so_room));
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
+    if (!clkin_saved) {
+        out->clk_in = out->temp_offset_dc != 0; /* indoors if calibrated (it was shown by default) */
+    }
     for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
         char key[] = "calurl0";
         key[6] = (char)('0' + i);
@@ -459,6 +473,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "nightwake", cfg->night_wake_min);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimstart", cfg->dim_start);
     if (err == ESP_OK) err = nvs_set_u16(h, "dimend", cfg->dim_end);
     if (err == ESP_OK) err = nvs_set_u8(h, "titlepx", cfg->title_px);
@@ -622,6 +637,17 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
 void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len)
 {
     site_url(ota_url, true, "spotify/", out, out_len);
+}
+
+bool app_config_temp_offset_from(int ref_dc, int chip_dc, int16_t *out)
+{
+    const int dc = ref_dc - chip_dc;
+    if (ref_dc < APP_CONFIG_TEMP_REF_MIN || ref_dc > APP_CONFIG_TEMP_REF_MAX || dc < -APP_CONFIG_TEMP_OFFSET_MAX ||
+        dc > APP_CONFIG_TEMP_OFFSET_MAX) {
+        return false;
+    }
+    *out = (int16_t)dc;
+    return true;
 }
 
 bool app_config_spotify_id_valid(const char *id)

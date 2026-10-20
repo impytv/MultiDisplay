@@ -19,7 +19,14 @@ void test_config(void)
     CHECK_INT(a.screen_ctl, 0); /* off unless ticked */
     CHECK_INT(a.nav_page, 1);   /* on unless unticked */
     CHECK_INT(a.swipe_nav, 1);  /* on unless unticked */
-    CHECK_INT(a.clk_in, 1);     /* indoors shown unless unticked */
+    CHECK_INT(a.clk_in, 0);     /* indoors not until calibrated */
+    CHECK_INT(a.night_wake_min, 2);
+    a.night_wake_min = 7;       /* not a choice: the default */
+    app_config_sanitize(&a);
+    CHECK_INT(a.night_wake_min, 2);
+    a.night_wake_min = 30;
+    app_config_sanitize(&a);
+    CHECK_INT(a.night_wake_min, 30);
     CHECK_INT(a.sp_start, 1);   /* the rotation may start from Spotify unless unticked */
     CHECK_INT(a.sp_dark, 0);    /* the theme's unless ticked */
     CHECK_INT(a.so_start, 1);   /* likewise for Sonos */
@@ -47,6 +54,7 @@ void test_config(void)
     snprintf(a.ship_at[1].lon, sizeof(a.ship_at[1].lon), "18.9950");
     snprintf(a.departures[1], sizeof(a.departures[1]), "58858=VYG:Line:R31/v502");
     a.night_off = 1;
+    a.night_wake_min = 10;
     a.dim_start = 22 * 60 + 23;
     a.ota_auto = 1;
     a.ota_at = 13 * 60 + 5;
@@ -136,6 +144,19 @@ void test_config(void)
     CHECK_STR(c.so_room, "Stua + Kj\xC3\xB8kken");
     CHECK_STR(c.sp_client_id, "0123456789abcdef0123456789abcdef");
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
+    {
+        /* Indoors from a backup only on a board that is calibrated. */
+        static app_config_t src, dst;
+        app_config_load(&src);
+        src.clk_in = 1;
+        char *bk = app_config_to_json(&src, false);
+        app_config_load(&dst);
+        dst.temp_offset_dc = 0;
+        CHECK(app_config_from_json(bk, &dst, err, sizeof(err)) && !dst.clk_in);
+        dst.temp_offset_dc = -150;
+        CHECK(app_config_from_json(bk, &dst, err, sizeof(err)) && dst.clk_in);
+        free(bk);
+    }
 
     CHECK(app_config_cal_url_valid("https://outlook.office365.com/owa/calendar/a/b/calendar.ics"));
     CHECK(app_config_cal_url_valid("webcal://x.example/cal.ics"));
@@ -143,6 +164,7 @@ void test_config(void)
     CHECK(!app_config_cal_url_valid("https://x.example/a b.ics"));
     CHECK(!app_config_cal_url_valid(""));
     CHECK_INT(c.night_off, 1);
+    CHECK_INT(c.night_wake_min, 10);
     CHECK_INT(c.dim_start, 22 * 60 + 23);
     CHECK_INT(c.ota_auto, 1);
     CHECK_INT(c.ota_at, 13 * 60 + 5);
@@ -227,6 +249,15 @@ void test_config(void)
     CHECK(app_config_spotify_id_valid(""));
     CHECK(!app_config_spotify_id_valid("0123456789abcdefABCDEF012345678"));
     CHECK(!app_config_spotify_id_valid("0123456789abcdefABCDEF012345678g"));
+    /* The offset from a thermometer's reading: only a room's temperature. */
+    int16_t off = 7;
+    CHECK(app_config_temp_offset_from(215, 365, &off) && off == -150);
+    CHECK(app_config_temp_offset_from(0, 100, &off) && off == -100);
+    CHECK(app_config_temp_offset_from(400, 400, &off) && off == 0);
+    CHECK(!app_config_temp_offset_from(-5, 365, &off) && off == 0);
+    CHECK(!app_config_temp_offset_from(401, 365, &off));
+    CHECK(!app_config_temp_offset_from(100, 601, &off) && off == 0); /* -50.1 */
+    CHECK(app_config_temp_offset_from(100, 600, &off) && off == -500);
     app_config_guide_url("", guide, sizeof(guide));
     CHECK_STR(guide, "");
     char tiny[16];
@@ -289,4 +320,18 @@ void test_config(void)
     nvs_set_blob(h, "deps", odd_deps, sizeof(odd_deps));
     app_config_load(&c);
     CHECK_STR(c.departures[0], "");
+
+    /* Indoors never ticked or unticked: shown if calibrated, as it was by
+     * default before it needed a calibration. */
+    test_nvs_clear();
+    nvs_open("cfg", NVS_READWRITE, &h);
+    nvs_set_u16(h, "tempoff", (uint16_t)-142);
+    app_config_load(&c);
+    CHECK(c.clk_in && c.temp_offset_dc == -142);
+    nvs_set_u8(h, "clkin", 0);
+    app_config_load(&c);
+    CHECK(!c.clk_in);
+    test_nvs_clear();
+    app_config_load(&c);
+    CHECK(!c.clk_in);
 }

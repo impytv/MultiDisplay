@@ -331,3 +331,16 @@ KB), and the player's cover is given back while the grid is on show.
 server sends it, against the buffer's limit before choosing a page size;
 and add up everything one screen holds at the same moment (pictures, a
 reply, its parse tree, TLS) against `psram_ledig` on that screen.
+
+### "Oppdatert" is not "running"
+
+An OTA of a build that changed nothing at startup answered "Oppdatert -
+starter på nytt", and the display came back with the same version number
+and no new errors in `/log` - but it was the previous firmware. The new
+one had overflowed the `main` task's 3584-byte stack in `build_ui`
+(which `app_main` runs before it returns) and the bootloader rolled
+back. Only `/status` said so: `"omstart":"krasj"` and a crash dump. The
+main stack is now 8 KB (freed when `app_main` returns).
+*Lesson:* after an OTA, check that the new build is the one running -
+something only it serves (a changed `/setup.js`, a new log line), and
+`omstart` not `krasj` - before testing on it.

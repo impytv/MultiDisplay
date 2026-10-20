@@ -36,6 +36,7 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     add_hhmm(night, "from", c->dim_start);
     add_hhmm(night, "to", c->dim_end);
     cJSON_AddBoolToObject(night, "screen_off", c->night_off);
+    cJSON_AddNumberToObject(night, "wake_minutes", c->night_wake_min);
 
     cJSON *fonts = cJSON_AddObjectToObject(root, "fonts");
     cJSON_AddNumberToObject(fonts, "title_px", c->title_px);
@@ -218,6 +219,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_hhmm(night, "from", &c->dim_start);
     get_hhmm(night, "to", &c->dim_end);
     get_bool(night, "screen_off", &c->night_off);
+    get_u8(night, "wake_minutes", &c->night_wake_min);
     const cJSON *fonts = cJSON_GetObjectItemCaseSensitive(root, "fonts");
     get_u8(fonts, "title_px", &c->title_px);
     get_bool(fonts, "title_bold", &c->title_bold);
@@ -276,6 +278,9 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(clk, "show", &c->clk_show);
     get_bool(clk, "rotate", &c->clk_rotate);
     get_bool(clk, "indoor", &c->clk_in);
+    if (!c->temp_offset_dc) {
+        c->clk_in = 0; /* the offset isn't in backups: not until this board is calibrated */
+    }
     get_u8(clk, "outdoor_location", &c->clk_out);
     const cJSON *sp = cJSON_GetObjectItemCaseSensitive(root, "spotify");
     get_bool(sp, "show", &c->sp_show);

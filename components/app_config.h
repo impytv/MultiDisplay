@@ -39,6 +39,10 @@
  * or 2 (about 3200 km, sharper). */
 /* The temperature offset, in tenths of a degree. */
 #define APP_CONFIG_TEMP_OFFSET_MAX 500
+/* A thermometer's reading by the display, to work the offset out from: a
+ * room's, in tenths of a degree. */
+#define APP_CONFIG_TEMP_REF_MIN 0
+#define APP_CONFIG_TEMP_REF_MAX 400
 /* A Spotify client ID: 32 hex digits, and the NUL. */
 #define APP_CONFIG_SPOTIFY_ID_MAX 33
 /* A Sonos room's name, and the NUL. */
@@ -109,6 +113,10 @@
  * local midnight. */
 #define APP_CONFIG_DIM_START_DEFAULT (22 * 60)
 #define APP_CONFIG_DIM_END_DEFAULT   (7 * 60)
+/* How long a touch lights the screen switched off at night, in minutes:
+ * one of these. */
+#define APP_CONFIG_NIGHT_WAKE_DEFAULT 2
+#define APP_CONFIG_NIGHT_WAKE_CHOICES {1, 2, 5, 10, 15, 30}
 
 /* Fonts (app_config_t.title_* / text_*): pixel sizes of the two text
  * classes. The screens are laid out at fixed positions, so the ranges stop
@@ -163,8 +171,9 @@ typedef struct {
      * dim_enabled. */
     uint8_t dim_enabled;
     /* During that window: 0 = dim the screen, 1 = switch it off (a touch
-     * lights it for a minute). */
+     * lights it for night_wake_min minutes). */
     uint8_t night_off;
+    uint8_t night_wake_min;
     uint16_t dim_start;
     uint16_t dim_end;
     /* Two font classes: title_* for the heading of each screen (the location
@@ -317,6 +326,11 @@ void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len)
 
 /* Whether `id` looks like a Spotify client ID (32 hex digits). */
 bool app_config_spotify_id_valid(const char *id);
+
+/* The offset (tenths) that makes the chip's reading `chip_dc` the
+ * thermometer's `ref_dc`. False if `ref_dc` isn't a room's temperature or
+ * the offset would be out of range. */
+bool app_config_temp_offset_from(int ref_dc, int chip_dc, int16_t *out);
 
 /**
  * Bring every setting into its allowed range (as app_config_load does).

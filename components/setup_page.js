@@ -104,8 +104,12 @@ if(!num(so.value)||Math.abs(+so.value.replace(',','.'))>180)bad.push(X(so,'Lengd
 TM.forEach(k=>{let x=F.querySelector('[name='+k+']'),t=hm(x.value);if(t===null)bad.push(X(x,'Skriv tid som TT:MM, f.eks. 22:30 eller 2230.'));else x.value=t});
 {let x=F.querySelector('[name=spid]');if(x){x.value=x.value.trim();if(x.value&&!/^[0-9a-fA-F]{32}$/.test(x.value))bad.push(X(x,'Klient-ID-en er 32 tegn, 0-9 og a-f.'))}}
 F.querySelectorAll('[name^=calurl]').forEach(x=>{let v=x.value.trim();x.value=v;if(v&&!/^(https?|webcal):\/\/\S+$/.test(v))bad.push(X(x,'Adressen må begynne med https://, http:// eller webcal://.'))});
-[['tempref',-40,60,1],['tempoff',-50,50,0]].forEach(([k,lo,hi,o])=>{let x=F.querySelector('[name='+k+']'),v=x?x.value.trim():'';if(!x||o&&!v)return;
-if(!num(v)||+v.replace(',','.')<lo||+v.replace(',','.')>hi)bad.push(X(x,'Et tall fra '+lo+' til '+hi+(o?', eller tomt.':'.')))});
+{let x=F.querySelector('[name=tempoff]'),v=x?x.value.trim():'';if(x&&(!num(v)||Math.abs(+v.replace(',','.'))>50))bad.push(X(x,'Et tall fra -50 til 50.'))}
+{let x=F.querySelector('[name=tempref]'),v=x?x.value.trim():'',t=+v.replace(',','.'),c=x&&x.dataset.chip,i=F.querySelector('[name=clkin]'),need=i&&i.checked&&!i.dataset.was,blank=need?'.':', eller la feltet stå tomt.';
+if(x&&!v&&need)bad.push(X(x,'Skriv inn hva et termometer ved skjermen viser nå, så temperaturen inne blir riktig.'));
+if(v){if(!num(v)||t<0||t>40)bad.push(X(x,'Skriv temperaturen i rommet, et tall fra 0 til 40'+blank));
+else if(c===undefined)bad.push(X(x,'Brikken har ikke målt temperaturen ennå. Prøv igjen om et minutt'+blank));
+else if(Math.abs(Math.round(t*10)-c)>500)bad.push(X(x,'Gir en justering over 50 °C. Sjekk temperaturen.'))}}
 let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv inn WiFi-nettet.'));
 F.querySelectorAll('[name^=lat],[name^=lon],[name^=shiplat],[name^=shiplon]').forEach(x=>x.value=x.value.replace(',','.'));
 if(bad.length){e.preventDefault();let d=bad[0].closest('details');while(d){d.open=true;d=d.parentNode.closest('details')}

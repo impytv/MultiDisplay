@@ -237,7 +237,10 @@ for the next stop and **the left half** for the previous one (both wrap
 around). **Swipe up from the bottom edge** for a menu of every screen,
 grouped by location like the navigation page: a button switches to that
 screen, and a tap beside the buttons, a swipe down or half a minute
-untouched closes it. A tap in the bottom 40 px acts when the finger lifts
+untouched closes it. **Slå av skjermen** at its top switches the screen
+off until the next touch, which only lights it again (also through the
+night window and the morning); while it's off, nothing is fetched and the
+rotation stands still, as at night. A tap in the bottom 40 px acts when the finger lifts
 rather than when it lands, to tell it from a swipe. The swipe can be turned
 off with **Sveip opp fra bunnen for å velge skjerm** under **Vedlikehold →
 Navigasjonsside**. The screens, in order:
@@ -525,10 +528,14 @@ The temperature comes from the ESP32-S3's own sensor (`components/chip_temp.c`),
 read every 5 s and smoothed over about a minute. It measures the chip,
 which runs some 15 °C above the room, so an offset is added: type what a
 thermometer by the display shows into **Riktig temperatur nå (°C)** and the
-offset is worked out from the chip's reading when the page is saved, or
-type the offset itself into **Justering (°C)**. Calibrate after the display
+offset is worked out from the chip's reading when the page is saved (a
+room's temperature, 0 to 40 °C, and only once the chip has a reading;
+anything else is refused and the offset kept), or type the offset itself into **Justering (°C)**. Calibrate after the display
 has been on for half an hour. The offset belongs to that board's sensor, so
-it is left out of settings backups. The chip's warmth follows how hard it
+it is left out of settings backups. **Vis temperaturen inne** is off
+until the display is calibrated: ticking it needs a thermometer reading in
+the same save, and a backup turns it on only on a display that already has
+an offset. The chip's warmth follows how hard it
 works too (fetching, the rain radar), so expect the reading to wander by a
 degree or so.
 
@@ -670,8 +677,10 @@ again if MET changes the image.
 Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
 times (local time, default 22:00–07:00) either dims the screen (**Demp
 skjermen**: a dark layer over it, as the backlight can't be dimmed) or
-switches it off (**Slå av skjermen**). When it's off, a touch lights it for two
-minutes (as does picking a screen over the web); that touch only wakes it.
+switches it off (**Slå av skjermen**). When it's off, a touch lights it for
+**Lyser etter trykk** (1, 2, 5, 10, 15 or 30 minutes, default 2; in backups
+as `night.wake_minutes`); so does picking a screen over the web. That touch
+only wakes it.
 While it's off, the automatic rotation stands still and nothing is fetched
 at all - only the clock keeps itself set by NTP, and the firmware update
 check is still made at its time. Lighting it (in the morning, or by a touch)

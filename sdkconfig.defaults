@@ -229,3 +229,6 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 # The Spotify login's return (/spotify/svar?code=..&state=..) is ~600
 # characters with the scopes the Sonos screen needs.
 CONFIG_HTTPD_MAX_URI_LEN=1536
+# app_main builds the first screen (build_ui) on the main task, which needs
+# more than the default 3584 bytes; the stack is freed once app_main returns.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

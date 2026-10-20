@@ -73,8 +73,7 @@ static const char *TAG = "main";
 #define NIGHT_DIM_OPA         LV_OPA_70
 
 /* With the screen switched off at night instead (g_cfg->night_off), a touch
- * (or a screen change from the web) lights it for this long. */
-#define NIGHT_WAKE_MS         (2 * 60 * 1000)
+ * (or a screen change from the web) lights it for g_cfg->night_wake_min. */
 
 /* While it is off, the screen on show is polled at most this often (the
  * aircraft screen would otherwise ask every 5 s all night); lighting it
@@ -150,6 +149,7 @@ static lv_obj_t *s_sat_root;      /* the satellite image; only if Europe or a cl
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
 static volatile bool s_backlight_on = true; /* written in the LVGL task, read by the weather task too */
+static bool s_off_by_hand;        /* switched off from the screen menu: stays off till a touch */
 static lv_obj_t *s_offline_label; /* "Ingen WiFi" / "Ingen internett" in a corner */
 static void night_timer_cb(lv_timer_t *t);
 static void nightly_housekeeping(void);
@@ -162,6 +162,9 @@ static void backlight(bool on)
 {
     if (!on) {
         nav_close(); /* the screen menu doesn't wait in the dark */
+    }
+    if (on) {
+        s_off_by_hand = false;
     }
     if (on != s_backlight_on && waveshare_rgb_lcd_backlight_set(on) == ESP_OK) {
         s_backlight_on = on;
@@ -502,7 +505,9 @@ static void screen_tap(int x, int w)
 /* The screen menu (g_cfg->swipe_nav): a swipe up from the bottom edge shows
  * a button for every screen, grouped by location as on the navigation page.
  * A button switches to its screen; a tap beside them, a swipe down or
- * NAV_CLOSE_MS untouched closes it. Built when opened, deleted when closed. */
+ * NAV_CLOSE_MS untouched closes it. "Slå av skjermen" switches the screen
+ * off until the next touch (which only lights it), as at night; nothing is
+ * fetched meanwhile. Built when opened, deleted when closed. */
 #define NAV_EDGE_PX  40 /* a swipe starts this close to the bottom */
 #define NAV_SWIPE_PX 80 /* and goes this far up (or, to close, down) */
 #define NAV_CLOSE_MS 30000
@@ -566,6 +571,18 @@ static void nav_event_cb(lv_event_t *e)
     }
 }
 
+/* "Slå av skjermen": on letting go, so the touch that lights it again is
+ * the next one. */
+static void nav_off_cb(lv_event_t *e)
+{
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) {
+        return;
+    }
+    nav_close();
+    s_off_by_hand = true;
+    backlight(false);
+}
+
 static void nav_open(lv_obj_t *screen)
 {
     const bool dark = (g_cfg->theme == APP_THEME_DARK);
@@ -581,11 +598,28 @@ static void nav_open(lv_obj_t *screen)
     lv_obj_add_flag(s_nav, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_nav, nav_event_cb, LV_EVENT_ALL, NULL);
 
-    lv_obj_t *title = lv_label_create(s_nav);
+    lv_obj_t *top = lv_obj_create(s_nav);
+    lv_obj_remove_style_all(top);
+    lv_obj_clear_flag(top, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(top, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(top, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *title = lv_label_create(top);
     lv_obj_set_style_text_font(title, g_font_large, 0);
     lv_label_set_text(title, "Velg skjerm");
 
     const lv_color_t dim = dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060);
+    lv_obj_t *off = lv_button_create(top);
+    lv_obj_add_event_cb(off, nav_event_cb, LV_EVENT_PRESSED, NULL); /* holds the menu open, like the others */
+    lv_obj_add_event_cb(off, nav_off_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_pad_hor(off, 20, 0);
+    lv_obj_set_style_pad_ver(off, 10, 0);
+    lv_obj_set_style_shadow_width(off, 0, 0);
+    lv_obj_set_style_bg_color(off, dark ? lv_color_hex(0x3A3A3A) : lv_color_hex(0xE2E2E2), 0);
+    lv_obj_set_style_text_color(off, dark ? lv_color_white() : lv_color_hex(0x202020), 0);
+    lv_obj_t *ol = lv_label_create(off);
+    lv_label_set_text(ol, "Sl\xC3\xA5 av skjermen");
+
     lv_obj_t *btns = NULL;
     int group = -2;
     for (int i = 0; i < s_stop_count; i++) {
@@ -1039,7 +1073,9 @@ static void night_apply(void)
     } else {
         lv_obj_set_style_bg_opa(s_tap_layer, LV_OPA_TRANSP, 0);
     }
-    backlight(!(s_night_dim && g_cfg->night_off));
+    if (!s_off_by_hand) { /* switched off from the menu: not lit by the morning either */
+        backlight(!(s_night_dim && g_cfg->night_off));
+    }
 }
 
 /* Once a second, in the LVGL task: switch the screen off again a while
@@ -1048,7 +1084,7 @@ static void night_timer_cb(lv_timer_t *t)
 {
     (void)t;
     nightly_housekeeping();
-    if (s_night_dim && g_cfg->night_off && s_backlight_on && lv_tick_get() - s_last_touch_ms > NIGHT_WAKE_MS) {
+    if (s_night_dim && g_cfg->night_off && s_backlight_on && lv_tick_get() - s_last_touch_ms > g_cfg->night_wake_min * 60u * 1000u) {
         backlight(false);
     }
     const diag_net_t net = diag_net_state();

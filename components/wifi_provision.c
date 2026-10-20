@@ -279,10 +279,11 @@ static void tenths_text(char *dst, size_t len, int dc)
  * worked out on saving from what a thermometer shows (tempref). */
 static char *build_clock(char *p, char *end, const app_config_t *cfg)
 {
-    char off[16], now[192] = "Ingen m&aring;ling enn&aring;.";
+    char off[16], now[192] = "Ingen m&aring;ling enn&aring;.", chip[24] = "";
     tenths_text(off, sizeof(off), cfg->temp_offset_dc);
     float raw;
     if (chip_temp_raw(&raw)) {
+        snprintf(chip, sizeof(chip), " data-chip=%d", (int)lroundf(raw * 10.0f)); /* for the page's check */
         char r[16], shown[16];
         tenths_text(r, sizeof(r), (int)lroundf(raw * 10.0f));
         tenths_text(shown, sizeof(shown), (int)lroundf(raw * 10.0f) + cfg->temp_offset_dc);
@@ -297,13 +298,13 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                    "i automatisk bytte</label></div>"
                    "<small>Klokkeslett, dato og temperaturen inne og ute, som en egen skjerm etter "
                    "m&aring;nedskalenderen.</small>"
-                   "<div class=chk><label><input type=checkbox name=clkin value=1%s>"
+                   "<div class=chk><label><input type=checkbox name=clkin value=1%s%s>"
                    "Vis temperaturen inne</label></div>"
                    "<small>M&aring;les i selve brikken og kan bomme mye, selv med justeringen nedenfor.</small>"
                    "<label>Temperatur ute for</label><select name=clkout id=clkout>"
                    "<option value=''%s>Ingen</option>",
                    cfg->clk_show ? " checked" : "", cfg->clk_rotate ? " checked" : "",
-                   cfg->clk_in ? " checked" : "", cfg->clk_out == 0 ? " selected" : "");
+                   cfg->clk_in ? " checked" : "", cfg->clk_in && cfg->temp_offset_dc ? " data-was=1" : "", cfg->clk_out == 0 ? " selected" : "");
     /* The locations by their place in the form; the page's script keeps the
      * list in step as locations are renamed, moved, added or removed. */
     for (int i = 0; i < cfg->location_count; i++) {
@@ -315,7 +316,7 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                       "</select><small>Temperaturen n&aring; fra Meteorologisk institutt, hentet hvert "
                       "tiende minutt.</small>"
                       "<label>Riktig temperatur n&aring; (&deg;C)</label>"
-                      "<input name=tempref inputmode=decimal placeholder='f.eks. 21,5'>"
+                      "<input name=tempref inputmode=decimal placeholder='f.eks. 21,5'%s>"
                       "<small>%s Temperaturen kommer fra en sensor i selve brikken, som er varmere enn "
                       "rommet. Skriv inn hva et termometer ved skjermen viser n&aring;, s&aring; regnes "
                       "justeringen ut n&aring;r du lagrer. La skjermen st&aring; p&aring; en halvtime "
@@ -324,7 +325,7 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
                       "<small>Legges til brikkens temperatur. Brukes n&aring;r feltet over er tomt. "
                       "Justeringen gjelder denne skjermen og er ikke med i sikkerhetskopier.</small>"
                       "</details>",
-                      now, off);
+                      chip, now, off);
 }
 
 /* The Spotify screen, and the login for it (spotify_client.h). */
@@ -548,12 +549,19 @@ static char *build_page(const app_config_t *cfg)
                   "<input name=dimend inputmode=numeric maxlength=5 placeholder=07:00 value=%02u:%02u></div></div>"
                   "<select name=nightoff style='margin-top:.5rem'>"
                   "<option value=0%s>Demp skjermen</option><option value=1%s>Sl&aring; av skjermen</option></select>"
-                  "<small>Lokal tid, 24 timer. Dempet er skjermen fortsatt lesbar, bare m&oslash;rkere. "
-                  "Avsl&aring;tt lyser den i to minutter n&aring;r du tar p&aring; den.</small>",
+                  "<label>Lyser etter trykk (avsl&aring;tt skjerm)</label><select name=nightwake>",
                   cfg->theme == APP_THEME_DARK ? "" : " selected", cfg->theme == APP_THEME_DARK ? " selected" : "",
                   cfg->dim_enabled ? " checked" : "",
                   cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
                   cfg->night_off ? "" : " selected", cfg->night_off ? " selected" : "");
+    static const uint8_t wake[] = APP_CONFIG_NIGHT_WAKE_CHOICES;
+    for (size_t i = 0; i < sizeof(wake); i++) {
+        p = buf_append(p, end, "<option value=%u%s>%u minutt%s</option>", wake[i],
+                       cfg->night_wake_min == wake[i] ? " selected" : "", wake[i], wake[i] == 1 ? "" : "er");
+    }
+    p = buf_append(p, end,
+                  "</select><small>Lokal tid, 24 timer. Dempet er skjermen fortsatt lesbar, bare m&oslash;rkere. "
+                  "Avsl&aring;tt lyser den s&aring; lenge som valgt over n&aring;r du tar p&aring; den.</small>");
     p = buf_append(p, end,
                   "<fieldset><legend>Skrift</legend>"
                   "<div class=row><div><label>Stedsnavn (px)</label>"
@@ -1292,6 +1300,14 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         if (form_field(body, "nightoff", val, sizeof(val))) {
             cfg->night_off = (strcmp(val, "1") == 0) ? 1 : 0;
         }
+        if (form_field(body, "nightwake", val, sizeof(val))) {
+            static const uint8_t wake[] = APP_CONFIG_NIGHT_WAKE_CHOICES;
+            for (size_t i = 0; i < sizeof(wake); i++) {
+                if (atoi(val) == wake[i]) {
+                    cfg->night_wake_min = wake[i];
+                }
+            }
+        }
         if ((m = parse_hhmm(hhmm)) >= 0) {
             cfg->dim_start = (uint16_t)m;
         }
@@ -1337,6 +1353,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->mon_cal = form_field(body, "moncal", val, sizeof(val)) ? 1 : 0;
         cfg->clk_show = form_field(body, "clkshow", val, sizeof(val)) ? 1 : 0;
         cfg->clk_rotate = form_field(body, "clkrot", val, sizeof(val)) ? 1 : 0;
+        const bool in_was = cfg->clk_in && cfg->temp_offset_dc; /* on, and calibrated */
         cfg->clk_in = form_field(body, "clkin", val, sizeof(val)) ? 1 : 0;
         cfg->sp_show = form_field(body, "spshow", val, sizeof(val)) ? 1 : 0;
         cfg->sp_rotate = form_field(body, "sprot", val, sizeof(val)) ? 1 : 0;
@@ -1369,19 +1386,28 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
             }
         }
         /* The temperature offset: from a thermometer's reading now, if one
-         * was typed in, else as given. Out of range is ignored. */
+         * was typed in, else as given. A reading that isn't a room's
+         * temperature, or with no chip reading yet, leaves the offset as it
+         * was (the page's script says so first); so does one out of range.
+         * The indoor temperature is only turned on with such a reading: the
+         * chip alone reads some 15 degrees too warm. */
         char deg[16];
         int dc;
         float raw;
-        if (form_field(body, "tempref", deg, sizeof(deg)) && deg[0] && form_tenths(deg, &dc) &&
-            chip_temp_raw(&raw)) {
-            dc -= (int)lroundf(raw * 10.0f);
-            if (dc >= -APP_CONFIG_TEMP_OFFSET_MAX && dc <= APP_CONFIG_TEMP_OFFSET_MAX) {
-                cfg->temp_offset_dc = (int16_t)dc;
+        bool calibrated = false;
+        if (form_field(body, "tempref", deg, sizeof(deg)) && deg[strspn(deg, " ")]) {
+            int16_t off;
+            if (form_tenths(deg, &dc) && chip_temp_raw(&raw) &&
+                app_config_temp_offset_from(dc, (int)lroundf(raw * 10.0f), &off)) {
+                cfg->temp_offset_dc = off;
+                calibrated = true;
             }
         } else if (form_field(body, "tempoff", deg, sizeof(deg)) && form_tenths(deg, &dc) &&
                    dc >= -APP_CONFIG_TEMP_OFFSET_MAX && dc <= APP_CONFIG_TEMP_OFFSET_MAX) {
             cfg->temp_offset_dc = (int16_t)dc;
+        }
+        if (cfg->clk_in && !in_was && !calibrated) {
+            cfg->clk_in = 0;
         }
         if (form_field(body, "satzoom", val, sizeof(val)) && (val[0] == '2' || val[0] == '3') && val[1] == '\0') {
             cfg->sat_zoom = (uint8_t)(val[0] - '0');
