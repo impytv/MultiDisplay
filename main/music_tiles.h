@@ -32,6 +32,7 @@ typedef struct {
                               * for it), 0 = none */
     bool ok;
     lv_image_dsc_t img;
+    bool on;                 /* the screen's: what plays now, ringed; false after mgrid_set */
 } mgrid_tile_t;
 
 typedef struct {
@@ -49,9 +50,10 @@ void mgrid_box(const mgrid_t *g, int i, lv_area_t *a);
 /* The tile at x, y; -1 if none. */
 int mgrid_hit(const mgrid_t *g, int x, int y);
 
-/* The grid; a tile without a cover in `card` (a label's in `label_bg`). */
+/* The grid; a tile without a cover in `card` (a label's in `label_bg`),
+ * the one playing ringed in `mark`. */
 void mgrid_draw(lv_layer_t *layer, const mgrid_t *g, lv_color_t card, lv_color_t bg, lv_color_t txt,
-             lv_color_t label_bg);
+                lv_color_t label_bg, lv_color_t mark);
 
 /* A `side` px square in `bg` at x, y with `txt` on it in white, wrapped
  * and centred, in the biggest font each of its words fits in: a radio
@@ -76,5 +78,37 @@ bool mgrid_fetch(mgrid_t *g, int max);
 
 /* Weather task: the covers' memory given back. */
 void mgrid_release(mgrid_t *g);
+
+/* A tile's picture (or its label) kept for a while after the grid has
+ * gone: the player's "Starter ..." while what was tapped starts. */
+typedef struct {
+    uint16_t *px; /* MT_TILE square, PSRAM; NULL = none */
+    lv_image_dsc_t img;
+    char label[24];
+} mpic_t;
+
+/* Tile t's picture copied into p (adapter lock held); false without one
+ * (its label is taken then, if any). */
+bool mpic_take(mpic_t *p, const mgrid_tile_t *t);
+void mpic_free(mpic_t *p);
+
+/* p `side` px square at x, y: the picture scaled up, else its label on
+ * `label_bg`, else a plain `card`. */
+void mpic_draw(lv_layer_t *layer, const mpic_t *p, int x, int y, int side, lv_color_t card, lv_color_t label_bg);
+
+/* A row of tabs ("Favoritter", "Radio", "Kø", ...) from x at y, `h` high. */
+void mtabs_box(const char *const *labels, int i, int x, int y, int h, lv_area_t *a);
+int mtabs_hit(const char *const *labels, int n, int x, int y, int h, int px, int py); /* -1 = none */
+void mtabs_draw(lv_layer_t *layer, const char *const *labels, int n, int sel, int x, int y, int h, lv_color_t fill,
+                lv_color_t sel_fill, lv_color_t txt, lv_color_t sel_txt);
+
+/* "Kø": a list of tracks in two columns from `top` down to the note line
+ * at the bottom, item i's box; MT_LIST_MAX of them. */
+#define MT_LIST_ROWS 4
+#define MT_LIST_MAX  (2 * MT_LIST_ROWS)
+void mlist_box(int top, int i, lv_area_t *a);
+int mlist_hit(int top, int n, int x, int y); /* -1 = none */
+void mlist_draw_item(lv_layer_t *layer, int top, int i, const char *title, const char *artist, bool current,
+                     lv_color_t card, lv_color_t txt, lv_color_t dim, lv_color_t cur_fill, lv_color_t cur_txt);
 
 #endif

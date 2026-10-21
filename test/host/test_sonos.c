@@ -153,6 +153,8 @@ void test_sonos(void)
     CHECK_INT(now.duration_s, 213);
     CHECK(now.can_next);
     CHECK(now.queue && now.can_seek); /* the queue: shuffle, repeat and winding */
+    CHECK_INT(now.track, 1);
+    CHECK(strncmp(now.uri, "x-rincon-queue:", 15) == 0);
     CHECK(sonos_parse_now(tr, pos, media, "<Actions>Set, Stop, Pause, Play, X_DLNA_SeekTime, Next</Actions>",
                           "192.168.0.123", &now));
     CHECK(now.can_seek && !now.can_previous);
@@ -363,4 +365,26 @@ void test_sonos(void)
     CHECK(!sonos_spotify_share("spotify:artist:0gxyHStUsqpMadRV0Di1Qt", 2311, uri, sizeof(uri), meta, sizeof(meta)));
     CHECK(!sonos_spotify_share("spotify:playlist:a\"b", 2311, uri, sizeof(uri), meta, sizeof(meta)));
     CHECK(!sonos_spotify_share("spotify:album:x", 2311, uri, 20, meta, sizeof(meta)));
+
+    /* "Kø": a Browse of the queue (Q:0), as a speaker answered. */
+    {
+        char *q = slurp("data/sonos/queue.xml");
+        sonos_track_t tr3[8];
+        int first = 0, total = 0;
+        CHECK_INT(sonos_parse_queue(q, tr3, 8, &first, &total), 3);
+        CHECK_INT(first, 1);
+        CHECK_INT(total, 9);
+        CHECK_STR(tr3[0].title, "Mountain Magick");
+        CHECK_STR(tr3[0].artist, "Wolves In The Throne Room");
+        CHECK_STR(tr3[2].title, "Twin Mouthed Spring");
+        CHECK_INT(sonos_parse_queue(q, tr3, 2, &first, &total), 2); /* no more than asked */
+        free(q);
+        CHECK_INT(sonos_parse_queue("<Result>&lt;DIDL-Lite&gt;&lt;item id=&quot;Q:0/17&quot;&gt;&lt;dc:title&gt;T&lt;/dc:title&gt;"
+                                    "&lt;/item&gt;&lt;/DIDL-Lite&gt;</Result><TotalMatches>20</TotalMatches>",
+                                    tr3, 8, &first, &total),
+                  1);
+        CHECK_INT(first, 17); /* asked from the track playing */
+        CHECK_STR(tr3[0].artist, "");
+        CHECK_INT(sonos_parse_queue("<x/>", tr3, 8, &first, &total), -1);
+    }
 }

@@ -22,6 +22,10 @@ static const char *TAG = "music_tiles";
 #define MT_X         12
 #define MT_IMAGE_MAX (256 * 1024) /* a speaker's 640 px cover is ~90 KB */
 #define MT_TIMEOUT_MS 5000
+#define MT_RING      4 /* px around the tile playing */
+#define MT_TAB_PAD   16
+#define MT_TAB_GAP   8
+#define MT_LIST_GAP  8
 
 void mgrid_init(mgrid_t *g, lv_obj_t *canvas, int top)
 {
@@ -109,14 +113,18 @@ void mgrid_draw_word(lv_layer_t *layer, const char *txt, int x, int y, int side,
 }
 
 void mgrid_draw(lv_layer_t *layer, const mgrid_t *g, lv_color_t card, lv_color_t bg, lv_color_t txt,
-             lv_color_t label_bg)
+                lv_color_t label_bg, lv_color_t mark)
 {
     for (int i = 0; i < g->count; i++) {
         const mgrid_tile_t *t = &g->t[i];
         lv_area_t a;
         mgrid_box(g, i, &a);
-        if (!draw_visible(layer, a.x1, a.y1, a.x2, a.y2)) {
+        if (!draw_visible(layer, a.x1 - MT_RING, a.y1 - MT_RING, a.x2 + MT_RING, a.y2)) {
             continue;
+        }
+        if (t->on) { /* what plays: a ring around it */
+            draw_rect(layer, a.x1 - MT_RING, a.y1 - MT_RING, a.x1 + MT_TILE - 1 + MT_RING,
+                      a.y1 + MT_TILE - 1 + MT_RING, 10, mark);
         }
         if (t->ok) {
             lv_draw_image_dsc_t d;
@@ -182,6 +190,7 @@ void mgrid_set(mgrid_t *g, const mgrid_tile_t *items, int n)
         t->px = NULL;
         t->px_art = 0;
         t->ok = false;
+        t->on = false;
     }
     for (int i = 0; i < n; i++) {
         const uint32_t want = mgrid_art_hash(g->t[i].art);
@@ -363,4 +372,139 @@ void mgrid_release(mgrid_t *g)
         g->t[i].px_art = 0;
     }
     esp_lv_adapter_unlock();
+}
+
+/* --------------------------------------------------------------------------
+ * A tile's picture, kept
+ * ------------------------------------------------------------------------ */
+
+bool mpic_take(mpic_t *p, const mgrid_tile_t *t)
+{
+    mpic_free(p);
+    snprintf(p->label, sizeof(p->label), "%s", t->label);
+    if (!t->ok || t->px == NULL) {
+        return false;
+    }
+    p->px = heap_caps_malloc(TILE_BYTES, MALLOC_CAP_SPIRAM);
+    if (p->px == NULL) {
+        return false;
+    }
+    memcpy(p->px, t->px, TILE_BYTES);
+    p->img = t->img;
+    p->img.data = (const uint8_t *)p->px;
+    return true;
+}
+
+void mpic_free(mpic_t *p)
+{
+    heap_caps_free(p->px);
+    p->px = NULL;
+    p->label[0] = '\0';
+}
+
+void mpic_draw(lv_layer_t *layer, const mpic_t *p, int x, int y, int side, lv_color_t card, lv_color_t label_bg)
+{
+    if (!draw_visible(layer, x, y, x + side - 1, y + side - 1)) {
+        return;
+    }
+    if (p->px) {
+        lv_draw_image_dsc_t d;
+        lv_draw_image_dsc_init(&d);
+        d.src = &p->img;
+        d.scale_x = d.scale_y = LV_SCALE_NONE * side / MT_TILE;
+        d.pivot.x = d.pivot.y = 0;
+        d.antialias = 1;
+        lv_area_t a = { x, y, x + MT_TILE - 1, y + MT_TILE - 1 };
+        lv_draw_image(layer, &d, &a);
+    } else if (p->label[0]) {
+        mgrid_draw_word(layer, p->label, x, y, side, label_bg);
+    } else {
+        draw_rect(layer, x, y, x + side - 1, y + side - 1, 8, card);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Tabs
+ * ------------------------------------------------------------------------ */
+
+void mtabs_box(const char *const *labels, int i, int x, int y, int h, lv_area_t *a)
+{
+    for (int k = 0; k < i; k++) {
+        x += draw_text_w(labels[k]) + 2 * MT_TAB_PAD + MT_TAB_GAP;
+    }
+    a->x1 = x;
+    a->x2 = x + draw_text_w(labels[i]) + 2 * MT_TAB_PAD - 1;
+    a->y1 = y;
+    a->y2 = y + h - 1;
+}
+
+int mtabs_hit(const char *const *labels, int n, int x, int y, int h, int px, int py)
+{
+    for (int i = 0; i < n; i++) {
+        lv_area_t a;
+        mtabs_box(labels, i, x, y, h, &a);
+        if (px >= a.x1 - MT_TAB_GAP / 2 && px <= a.x2 + MT_TAB_GAP / 2 && py >= a.y1 - 6 && py <= a.y2 + 6) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void mtabs_draw(lv_layer_t *layer, const char *const *labels, int n, int sel, int x, int y, int h, lv_color_t fill,
+                lv_color_t sel_fill, lv_color_t txt, lv_color_t sel_txt)
+{
+    const int lh = lv_font_get_line_height(g_font_body);
+    for (int i = 0; i < n; i++) {
+        lv_area_t a;
+        mtabs_box(labels, i, x, y, h, &a);
+        draw_rect(layer, a.x1, a.y1, a.x2, a.y2, h / 2, i == sel ? sel_fill : fill);
+        draw_text(layer, labels[i], a.x1, a.y1 + (h - lh) / 2, a.x2 - a.x1 + 1, LV_TEXT_ALIGN_CENTER,
+                  i == sel ? sel_txt : txt);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * The queue's list
+ * ------------------------------------------------------------------------ */
+
+void mlist_box(int top, int i, lv_area_t *a)
+{
+    const int lh = lv_font_get_line_height(g_font_body);
+    const int bottom = BOARD_LCD_V_RES - lh - 12; /* the note line under it */
+    const int h = (bottom - top - (MT_LIST_ROWS - 1) * MT_LIST_GAP) / MT_LIST_ROWS;
+    const int w = (BOARD_LCD_H_RES - 2 * MT_X - MT_LIST_GAP) / 2;
+    /* Down the first column, then the second, as a list reads. */
+    a->x1 = MT_X + (i / MT_LIST_ROWS) * (w + MT_LIST_GAP);
+    a->y1 = top + (i % MT_LIST_ROWS) * (h + MT_LIST_GAP);
+    a->x2 = a->x1 + w - 1;
+    a->y2 = a->y1 + h - 1;
+}
+
+int mlist_hit(int top, int n, int x, int y)
+{
+    for (int i = 0; i < n && i < MT_LIST_MAX; i++) {
+        lv_area_t a;
+        mlist_box(top, i, &a);
+        if (x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void mlist_draw_item(lv_layer_t *layer, int top, int i, const char *title, const char *artist, bool current,
+                     lv_color_t card, lv_color_t txt, lv_color_t dim, lv_color_t cur_fill, lv_color_t cur_txt)
+{
+    lv_area_t a;
+    mlist_box(top, i, &a);
+    if (!draw_visible(layer, a.x1, a.y1, a.x2, a.y2)) {
+        return;
+    }
+    draw_rect(layer, a.x1, a.y1, a.x2, a.y2, 10, current ? cur_fill : card);
+    const int lh = lv_font_get_line_height(g_font_body);
+    const int ty = a.y1 + (a.y2 - a.y1 + 1 - (artist[0] ? 2 * lh + 2 : lh)) / 2;
+    draw_text_fit(layer, title[0] ? title : "\xE2\x80\x93", a.x1 + 14, ty, a.x2 - a.x1 - 27, current ? cur_txt : txt);
+    if (artist[0]) {
+        draw_text_fit(layer, artist, a.x1 + 14, ty + lh + 2, a.x2 - a.x1 - 27, current ? cur_txt : dim);
+    }
 }

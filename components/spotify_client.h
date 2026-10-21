@@ -44,6 +44,7 @@ typedef struct {
     bool can_shuffle, can_repeat, can_seek; /* what Spotify allows now */
     char kind[12];       /* "track", "episode", "ad", "unknown" */
     char item_id[48];    /* tells one track from the next */
+    char context[64];    /* the playlist or album it plays from (as spotify_recent_t's uri), "" if none */
     char title[SPOTIFY_TEXT_MAX];
     char artist[SPOTIFY_TEXT_MAX]; /* the artists, or a podcast's show */
     char album[SPOTIFY_TEXT_MAX];
@@ -82,6 +83,17 @@ int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max
  * something to start (`uri`, `name`, the picture nearest SPOTIFY_COVER_PX);
  * -1 if it isn't one. */
 int spotify_parse_playlists(const char *json, spotify_recent_t *out, int max);
+
+/* A track of the queue, for "Kø". */
+typedef struct {
+    char title[SPOTIFY_TEXT_MAX];
+    char artist[SPOTIFY_TEXT_MAX];
+} spotify_track_t;
+
+/* GET /v1/me/player/queue's body: what plays now (out[0], if anything
+ * plays) and what comes after it, at most `max` in all; -1 if it isn't
+ * one. */
+int spotify_parse_queue(const char *json, spotify_track_t *out, int max);
 
 /* GET /v1/playlists/ID?fields=name,images's body: the name, and the
  * picture nearest SPOTIFY_COVER_PX ("" if none). False without a name. */
@@ -177,6 +189,9 @@ esp_err_t spotify_get_playlists(spotify_recent_t *out, int max, int *count);
  * before (remembered), or asked of Spotify, at most `budget` of them now.
  * Spotify's own playlists stay "" (see spotify_get_playlist). */
 void spotify_name_playlists(spotify_recent_t *list, int n, int budget);
+
+/* What plays now and the queue after it (see spotify_parse_queue). */
+esp_err_t spotify_get_queue(spotify_track_t *out, int max, int *count);
 
 /* What was played lately (see spotify_recent_t), at most max. */
 esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count);

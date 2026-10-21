@@ -729,9 +729,13 @@ work.
   back.
 - [ ] **90. Sonos playlists in the picker.** The household's Sonos
   playlists (`SQ:`) after the favourites.
-- [ ] **91. "Kommer nå".** The next tracks in the queue (Sonos `Browse
+- [x] **91. "Kommer nå".** The next tracks in the queue (Sonos `Browse
   Q:0`, a tap jumps there with `Seek TRACK_NR`; Spotify
   `/me/player/queue`).
+  Done: a **Kø** tab in both pickers, eight tracks from the one playing. On
+  Sonos a tap plays that track (`Seek TRACK_NR`, the queue started first if
+  the room played something else); on Spotify, which has no way to jump, a
+  tap skips forward that many tracks.
 - [ ] **92. Move Spotify to another device while it plays.** The device
   buttons are only shown while nothing plays.
 - [ ] **93. Like a Spotify track.** A heart for the track playing; needs
@@ -774,6 +778,50 @@ work.
   `tiles.bin` (74 KB, HTTPS) each time it opens, so the logos take a
   moment; it could be kept (as JPEGs, not pixels) while the Sonos screen
   shows, at that much PSRAM.
+- [x] **103. Volume set by a tap on the bar.** Today a tap anywhere left of
+  the bar's middle lowers the volume a step (3 % on Sonos, 10 % on
+  Spotify), so 12 % to 40 % on Sonos is ten taps. A tap on the bar should
+  set the volume there, as on the progress bar, with - and + only at their
+  buttons; holding - or + could repeat.
+  Done on both screens; holding - or + to repeat is not (the screens get
+  taps, not long presses).
+- [x] **104. What plays marked in the picker.** A ring on the radio
+  channel, favourite or playlist playing now (`s_now.radio`, the
+  favourite's or context's URI), so the picker also shows what is on.
+  Done: an accent ring (orange on Sonos, green on Spotify). On Sonos a
+  favourite is matched by its address or its station name, and a playlist
+  or album by what was last started from the display while its group plays
+  from the queue (Sonos keeps no trace of where a queue came from).
+- [x] **105. An answer the moment a tile is tapped.** The player keeps
+  showing the old track until the speaker or Spotify reports the new one
+  (1-3 s, longer for Spotify). Show the tile's name and picture at once
+  with "Starter …"; on Spotify with nothing playing, also where it starts
+  ("Spiller på Stue-TV"), as the device is chosen without asking.
+  Done: the tile's name and picture (scaled up) with "Starter …" (Spotify:
+  "Starter på <device> …"), till the speaker or Spotify reports something
+  new, an error, or 10 s; polled every 1-1.5 s meanwhile.
+- [ ] **106. Picking another Sonos room while music plays.** A tap on an
+  idle room then adds it to the group; there is no way to show an idle room
+  to start something else there. A long press (or a tap on the room shown
+  in the group) could select instead of grouping, with a short note saying
+  which happened ("Badet er med i gruppen").
+- [x] **107. The picker closed by itself.** The Sonos picker stays open
+  across visits (the rotation comes back to it hours later), while
+  Spotify's is closed on every visit. Close both after a couple of minutes
+  without a touch, and on entering the screen, so it shows what plays.
+  Done: after 2 minutes without a touch while something plays, and on
+  entering either screen.
+- [x] **108. More than 12 in the Sonos picker.** Favourites and "spilt
+  nylig" share 12 tiles, so recently played often doesn't show at all. A
+  "Flere" tile, or a page per kind (Favoritter, Spilt nylig, Radio).
+  Done: a tab per kind (Favoritter, Nylig, Lister, Radio, Kø) in place of
+  the room buttons while picking, the room in the title; each list fetched
+  when its tab is shown. Each page still holds 12 tiles.
+- [x] **109. Spotify's playlists in the Sonos picker.** The Spotify screen
+  offers the account's playlists; the Sonos picker only what was played
+  lately. They could be a page of their own there, started through Sonos
+  as the recent ones are.
+  Done: the **Lister** tab, started through Sonos as the recent ones are.
 
 Not possible: lyrics, and Spotify's audio features and recommendations,
 which Spotify has closed to new apps; Chromecast and AirPlay directly are

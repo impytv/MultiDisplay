@@ -60,6 +60,8 @@ typedef struct {
     bool can_play, can_pause, can_next, can_previous;
     bool can_seek;
     bool queue;                  /* plays the room's queue: shuffle and repeat work */
+    int track;                   /* the queue's track playing, from 1, if `queue`; else 0 */
+    char uri[160];               /* what the room plays (CurrentURI), to tell a favourite */
     bool shuffle;                /* the queue's play mode, if `queue` */
     int repeat;                  /* SONOS_REPEAT_* */
     int volume;                  /* the room's, percent; -1 if unknown */
@@ -115,6 +117,17 @@ int sonos_parse_volume(const char *reply);
 /* A Browse of the favourites (FV:2): those that can be started, at most
  * `max`; -1 if it isn't one. */
 int sonos_parse_favorites(const char *reply, const char *ip, sonos_fav_t *out, int max);
+
+/* A track of the queue, for "Kø". */
+typedef struct {
+    char title[SONOS_TEXT_MAX];
+    char artist[SONOS_TEXT_MAX];
+} sonos_track_t;
+
+/* A Browse of the queue (Q:0): its tracks, at most `max`; the first's
+ * number (from 1) into *first and the queue's length into *total. -1 if it
+ * isn't one. */
+int sonos_parse_queue(const char *reply, sonos_track_t *out, int max, int *first, int *total);
 
 /* A SOAP fault's UPnP error code, 0 if `reply` isn't one. */
 int sonos_parse_fault(const char *reply);
@@ -195,6 +208,15 @@ bool sonos_logo_find(const uint8_t *blob, size_t len, const char *key, const uin
  * False if it doesn't fit. */
 bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, size_t uri_len, char *meta,
                        size_t meta_len);
+
+/* The queue's tracks from number `start` (from 1), at most `max`, into
+ * out[0..*count); *total the queue's length. */
+esp_err_t sonos_get_queue(const sonos_room_t *room, int start, sonos_track_t *out, int max, int *count,
+                          int *total);
+
+/* The queue's track `n` (from 1) played in `room`, the queue started if
+ * it played something else. */
+esp_err_t sonos_play_track(const sonos_room_t *room, int n);
 
 /* Start `radio` in `room`, with its logo at `art` ("" = none). */
 esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art);

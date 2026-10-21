@@ -438,3 +438,45 @@ chip when a port is opened.
 read its log; use `/status`, screenshots, and the speaker's or service's
 own replies, or say first that it will restart.
 
+
+### Memory kept for a page no longer shown
+
+The Sonos player gave back the radio page's tiles when the picker closed,
+but kept the music page's, to show them at once next time. With a page of
+12 playlists (~260 KB of tiles) closed, the player then fetched its cover
+on top, and the lowest free PSRAM fell to 124 KB, against ~280 KB with
+the tiles given back. Found by stepping through the screens one at a time
+and reading `/status`'s lowest free PSRAM after each.
+*Lesson:* memory held for something on show is given back as soon as it
+isn't, even if that costs a refetch later; and when a lowest-free figure
+drops, step through the screens and read it after each step to find the
+one that does it.
+
+### Test taps from the web don't hold off the rotation
+
+Testing the Sonos pickers with taps sent over HTTP, the automatic rotation
+moved on to a weather screen halfway, and the taps after it went to other
+screens (doing nothing). A real touch holds off the rotation; a tap made by
+test code doesn't, as it bypasses the touch callback. *Lesson:* send
+`vis=N` to /nav (which counts as a tap) before each step of such a test,
+and check a screenshot before trusting a step's result.
+
+### A mark set only after the slow part of a poll
+
+The ring on what plays was set at the end of the Sonos poll, after the
+covers it fetches; when the list was fetched again (every 2 minutes), the
+tiles were rebuilt without it and the ring stayed off for as long as the
+covers took - in one test longer than the 18 s before the screenshot.
+*Lesson:* state derived from other state (the ring, from what plays) is set
+again wherever its tiles are rebuilt, not only at one place in the poll.
+
+### Free memory in pieces too small
+
+The Spotify cover stayed empty while 527 KB of PSRAM was free: the screen
+allocated two 180 KB buffers for it (the cover shown, and one to decode the
+next into), and the largest free block was 213 KB - the pickers' 21 KB
+tiles, allocated and freed in turn, had cut the heap up. Found from
+`/status`'s `psram_storste_blokk`, not the free total.
+*Lesson:* look at the largest free block as well as the total; a large
+buffer is allocated once and kept (decoded into in place, as the Sonos
+cover is), not two of them where one does.

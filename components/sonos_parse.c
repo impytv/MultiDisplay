@@ -366,6 +366,10 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
         snprintf(out->source, sizeof(out->source), "Spotify");
     }
     out->queue = starts(uri, "x-rincon-queue:");
+    snprintf(out->uri, sizeof(out->uri), "%s", uri);
+    if (out->queue && sonos_xml_text(position, "Track", buf, sizeof(buf))) {
+        out->track = atoi(buf);
+    }
 
     /* The track (GetPositionInfo). */
     char *tmeta = xml_text_dup(position, "TrackMetaData");
@@ -521,6 +525,42 @@ int sonos_parse_favorites(const char *reply, const char *ip, sonos_fav_t *out, i
             art_url(art, ip, f->art_url, sizeof(f->art_url));
             n++;
         }
+        free(item);
+    }
+    free(didl);
+    return n;
+}
+
+int sonos_parse_queue(const char *reply, sonos_track_t *out, int max, int *first, int *total)
+{
+    char buf[16];
+    *first = 1;
+    *total = sonos_xml_text(reply, "TotalMatches", buf, sizeof(buf)) ? atoi(buf) : 0;
+    char *didl = xml_text_dup(reply, "Result");
+    if (didl == NULL) {
+        return -1;
+    }
+    int n = 0;
+    for (const char *it = strstr(didl, "<item "); it && n < max; it = strstr(it + 1, "<item ")) {
+        const char *end = strstr(it, "</item>");
+        if (end == NULL) {
+            break;
+        }
+        char *item = malloc((size_t)(end - it) + 8);
+        if (item == NULL) {
+            break;
+        }
+        memcpy(item, it, (size_t)(end - it));
+        memcpy(item + (end - it), "</item>", 8);
+        if (n == 0) {
+            const char *id = strstr(item, "id=\"Q:0/");
+            *first = id ? atoi(id + 8) : 1;
+            *first = *first > 0 ? *first : 1;
+        }
+        sonos_track_t *t = &out[n++];
+        memset(t, 0, sizeof(*t));
+        sonos_xml_text(item, "dc:title", t->title, sizeof(t->title));
+        sonos_xml_text(item, "dc:creator", t->artist, sizeof(t->artist));
         free(item);
     }
     free(didl);

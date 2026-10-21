@@ -72,6 +72,10 @@ static const char *TAG = "sonos_screen";
 #define SO_TICK_MS    500
 #define SO_COVER_RETRY_MS 30000       /* a cover that failed, asked for again */
 #define SO_NAMES_PER_POLL 4           /* playlists named, asking Spotify */
+#define SO_QUEUE_MS   15000           /* "Kø" asked again while shown (and as the track changes) */
+#define SO_PEND_MS    10000           /* "Starter ..." at most this long */
+#define SO_PEND_POLL_MS 1000          /* meanwhile asked this often */
+#define SO_PICKER_IDLE_MS (2 * 60 * 1000) /* the picker closed after this without a touch */
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_track, *s_artist, *s_album, *s_msg;
 static big_clock_t s_clock;
@@ -88,15 +92,44 @@ static uint32_t s_now_tick;      /* lv_tick_get() when it came */
 static bool s_woke_at_end;
 static bool s_picker;            /* the picker on show, not the player; set by taps */
 static bool s_picker_shut;       /* closed by a tap: not opened again for an empty room */
-static bool s_radio_page;        /* the picker shows the radio channels; set by taps */
 static char s_note[96];          /* a message for a while, "" = none */
 static uint32_t s_note_tick;
-static char s_list_note[160];    /* the picker's own, while it lasts */
+static uint32_t s_touch_tick;    /* the last tap: the picker closes some minutes after */
 
-/* The picker's pages. A favourite is played by its index in s_favs (the
- * weather task's), a Spotify item by its URI, a radio channel by its index
- * in sonos_radios(). */
+/* The picker's pages, as tabs in the row of rooms while it shows. */
+typedef enum { PG_FAV, PG_RECENT, PG_LISTS, PG_RADIO, PG_QUEUE, PG_COUNT } page_t;
+static const char *const PAGE_NAMES[PG_COUNT] = { "Favoritter", "Nylig", "Lister", "Radio", "K\xC3\xB8" };
+static page_t s_page;            /* set by taps */
+static char s_page_note[PG_COUNT][160]; /* each page's message, "" = none */
+static bool s_spotify_ok;        /* logged in to Spotify: its pages shown */
+
+/* The tiles. s_music holds the page of favourites (played by their index
+ * in s_favs, the weather task's), recently played or playlists (by their
+ * Spotify URI), whichever is shown; s_radio the radio channels (by their
+ * index in sonos_radios()). */
 static EXT_RAM_BSS_ATTR mgrid_t s_music, s_radio;
+
+/* "Kø": the queue from the track playing (or from the first, if the queue
+ * doesn't play). */
+static EXT_RAM_BSS_ATTR sonos_track_t s_queue[MT_LIST_MAX];
+static int s_queue_count, s_queue_first, s_queue_total;
+static bool s_queue_live;        /* the queue plays, s_queue[0] being the track */
+
+/* What was last started from the picker, ringed while its group plays from
+ * the queue (a playlist or album leaves no other trace of where it came
+ * from): "fav:<title>" or a Spotify URI, and the group's leader. */
+static char s_started[72];
+static char s_started_group[32];
+
+/* "Starter ...": what was tapped, shown at once till the speaker says it
+ * plays (or SO_PEND_MS). */
+static struct {
+    bool on;
+    char title[64];
+    char before[SONOS_TEXT_MAX], before_station[SONOS_TEXT_MAX]; /* what played as it was tapped */
+    uint32_t tick;
+    mpic_t pic;
+} s_pend;
 
 /* The player's cover, like the tiles'. */
 static uint16_t *s_cover_px;
@@ -107,7 +140,7 @@ static bool s_cover_ok;
 /* Buttons pressed, for the weather task to send in turn. A tap fills
  * s_cmd, and send() queues it with the group on show as its target, so a
  * room chosen next doesn't get it. */
-typedef enum { CMD_NONE, CMD_SONOS, CMD_FAV, CMD_SPOTIFY, CMD_RADIO, CMD_JOIN, CMD_LEAVE } cmd_kind_t;
+typedef enum { CMD_NONE, CMD_SONOS, CMD_FAV, CMD_SPOTIFY, CMD_RADIO, CMD_TRACK, CMD_JOIN, CMD_LEAVE } cmd_kind_t;
 typedef struct {
     cmd_kind_t kind;
     sonos_room_t target; /* the group's leader, for playback */
@@ -115,7 +148,7 @@ typedef struct {
     char coord[32];      /* the group it joins */
     sonos_cmd_t cmd;
     int value;
-    int fav;             /* or the radio channel */
+    int fav;             /* or the radio channel, or the queue's track */
     char uri[64];
 } cmd_t;
 #define SO_CMDS 6
@@ -128,8 +161,11 @@ static EXT_RAM_BSS_ATTR sonos_room_t s_room_scratch[SONOS_ROOMS_MAX];
 static EXT_RAM_BSS_ATTR sonos_now_t s_now_scratch;
 static sonos_fav_t *s_favs; /* SONOS_FAVS_MAX, PSRAM */
 static int s_fav_count;
-static EXT_RAM_BSS_ATTR spotify_recent_t s_recent[SPOTIFY_RECENT_MAX];
-static fetch_stamp_t s_rooms_at, s_lists_at;
+static EXT_RAM_BSS_ATTR spotify_recent_t s_recent[MT_MAX], s_lists[MT_MAX];
+static int s_recent_count, s_lists_count;
+static fetch_stamp_t s_rooms_at, s_favs_at, s_recent_at, s_lists_at, s_queue_at;
+static int s_built = -1;         /* the page in s_music, -1 = none */
+static int s_queue_track = -1;   /* the track "Kø" was asked for */
 static bool s_rediscover;
 static backoff_t s_fail;
 
@@ -247,25 +283,47 @@ static void toggle_box(lv_area_t *a)
     a->y2 = SO_ROW_Y + SO_ROW_H - 1;
 }
 
-static const char *page_text(void)
+/* The pages to pick from now: their ids and names; how many. */
+static int pages(page_t *ids, const char **names)
 {
-    return s_picker && s_radio_page ? "Musikk" : "Radio";
+    int n = 0;
+    for (int p = 0; p < PG_COUNT; p++) {
+        if (((p == PG_RECENT || p == PG_LISTS) && !s_spotify_ok) || (p == PG_RADIO && s_radio.count == 0)) {
+            continue;
+        }
+        ids[n] = (page_t)p;
+        names[n++] = PAGE_NAMES[p];
+    }
+    return n;
 }
 
-/* The page button, with channels chosen: "Radio" opens the picker on
- * them, and while picking it swaps between the pages. */
+/* The page shown: s_page, or the favourites if it is gone (logged out). */
+static page_t cur_page(void)
+{
+    page_t ids[PG_COUNT];
+    const char *names[PG_COUNT];
+    const int n = pages(ids, names);
+    for (int i = 0; i < n; i++) {
+        if (ids[i] == s_page) {
+            return s_page;
+        }
+    }
+    return PG_FAV;
+}
+
+/* "Radio", with channels chosen: opens the picker on them. */
 static bool page_shown(void)
 {
     return s_radio.count > 0;
 }
 
-/* The page button, left of the picker's button. */
+/* The radio button, left of the picker's button. */
 static void page_box(lv_area_t *a)
 {
     lv_area_t t;
     toggle_box(&t);
     a->x2 = t.x1 - SO_CHIP_GAP - 1;
-    a->x1 = a->x2 - draw_text_w("Musikk") - 2 * SO_CHIP_PAD;
+    a->x1 = a->x2 - draw_text_w("Radio") - 2 * SO_CHIP_PAD;
     a->y1 = SO_ROW_Y;
     a->y2 = SO_ROW_Y + SO_ROW_H - 1;
 }
@@ -315,8 +373,32 @@ static void draw_chip(lv_layer_t *layer, const lv_area_t *a, const char *text, b
               selected ? c_bg() : c_txt());
 }
 
+static void draw_button(lv_layer_t *layer, const lv_area_t *a, const char *text)
+{
+    draw_rect(layer, a->x1, a->y1, a->x2, a->y2, SO_ROW_H / 2, c_accent());
+    const int lh = lv_font_get_line_height(g_font_body);
+    draw_text(layer, text, a->x1, a->y1 + (SO_ROW_H - lh) / 2, a->x2 - a->x1 + 1, LV_TEXT_ALIGN_CENTER,
+              lv_color_hex(0x1B2631));
+}
+
 static void draw_row(lv_layer_t *layer)
 {
+    if (s_picker && s_room_count > 0) {
+        /* Picking: the pages as tabs, and the way back to the player. */
+        page_t ids[PG_COUNT];
+        const char *names[PG_COUNT];
+        const int n = pages(ids, names);
+        const page_t cur = cur_page();
+        int sel = 0;
+        for (int i = 0; i < n; i++) {
+            sel = ids[i] == cur ? i : sel;
+        }
+        mtabs_draw(layer, names, n, sel, SO_X, SO_ROW_Y, SO_ROW_H, c_card(), c_txt(), c_txt(), c_bg());
+        lv_area_t a;
+        toggle_box(&a);
+        draw_button(layer, &a, toggle_text());
+        return;
+    }
     for (int i = 0; i < s_room_count; i++) {
         lv_area_t a;
         if (chip_box(i, &a)) {
@@ -327,15 +409,13 @@ static void draw_row(lv_layer_t *layer)
         }
     }
     if (s_room_count > 0) {
+        /* The picker's buttons, in the accent: not rooms to pick. */
         lv_area_t a;
         toggle_box(&a);
-        draw_rect(layer, a.x1, a.y1, a.x2, a.y2, SO_ROW_H / 2, c_accent());
-        const int lh = lv_font_get_line_height(g_font_body);
-        draw_text(layer, toggle_text(), a.x1, a.y1 + (SO_ROW_H - lh) / 2, a.x2 - a.x1 + 1, LV_TEXT_ALIGN_CENTER,
-                  lv_color_hex(0x1B2631));
+        draw_button(layer, &a, toggle_text());
         if (page_shown()) {
             page_box(&a);
-            draw_chip(layer, &a, page_text(), false, c_card());
+            draw_button(layer, &a, "Radio");
         }
     }
 }
@@ -379,6 +459,10 @@ static void draw_player(lv_layer_t *layer)
 {
     const sonos_now_t *n = &s_now;
     char buf[96];
+    if (s_pend.on) { /* what was tapped, till it plays */
+        mpic_draw(layer, &s_pend.pic, SO_X, SO_TOP, SO_COVER, c_card(), c_radio());
+        return;
+    }
     if (s_cover_ok) {
         draw_image(layer, &s_cover_img, SO_X, SO_TOP, SO_COVER);
     } else if (n->stream && n->station[0]) {
@@ -449,10 +533,22 @@ static void draw_player(lv_layer_t *layer)
 
 static void draw_picker(lv_layer_t *layer)
 {
-    mgrid_draw(layer, s_radio_page ? &s_radio : &s_music, c_card(), c_bg(), c_txt(), c_radio());
+    const page_t page = cur_page();
+    if (page == PG_QUEUE) {
+        for (int i = 0; i < s_queue_count && i < MT_LIST_MAX; i++) {
+            mlist_draw_item(layer, SO_TOP, i, s_queue[i].title, s_queue[i].artist, s_queue_live && i == 0, c_card(),
+                            c_txt(), c_dim(), c_accent(), lv_color_hex(0x1B2631));
+        }
+    } else {
+        mgrid_draw(layer, page == PG_RADIO ? &s_radio : &s_music, c_card(), c_bg(), c_txt(), c_radio(), c_accent());
+    }
     /* A line at the bottom, below the second row. */
     const int lh = lv_font_get_line_height(g_font_body);
-    const char *msg = s_note[0] ? s_note : s_radio_page ? "" : s_list_note;
+    const bool loading = page != PG_RADIO && page != PG_QUEUE && s_music.count == 0 && s_built != (int)page;
+    const char *msg = s_note[0]               ? s_note
+                      : s_page_note[page][0] ? s_page_note[page]
+                      : loading              ? "Henter \xE2\x80\xA6"
+                                             : "";
     if (msg[0]) {
         draw_text_fit(layer, msg, SO_X, BOARD_LCD_V_RES - lh - 4, BOARD_LCD_H_RES - 2 * SO_X,
                       s_note[0] ? lv_palette_main(LV_PALETTE_RED) : c_dim());
@@ -476,7 +572,12 @@ static void sonos_draw_cb(lv_event_t *e)
 /* The labels for what's on show (adapter lock held). */
 static void sonos_show(void)
 {
-    const bool player = !s_picker && s_have && !s_now.empty;
+    const bool player = !s_picker && s_have && (!s_now.empty || s_pend.on);
+    char title[80] = "Sonos";
+    if (s_picker && s_room >= 0 && s_room < s_room_count) { /* the room it plays in, as its button is gone */
+        snprintf(title, sizeof(title), "Sonos \xC2\xB7 %.47s", s_rooms[s_room].name);
+    }
+    lv_label_set_text(s_title, title);
     lv_obj_t *const text[] = { s_track, s_artist, s_album };
     for (size_t i = 0; i < sizeof(text) / sizeof(text[0]); i++) {
         if (player) {
@@ -487,9 +588,15 @@ static void sonos_show(void)
     }
     if (player) {
         lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(s_track, s_now.title[0] ? s_now.title : "\xE2\x80\x93");
-        lv_label_set_text(s_artist, s_now.artist);
-        lv_label_set_text(s_album, s_now.album);
+        if (s_pend.on) {
+            lv_label_set_text(s_track, s_pend.title[0] ? s_pend.title : "\xE2\x80\x93");
+            lv_label_set_text(s_artist, "Starter \xE2\x80\xA6");
+            lv_label_set_text(s_album, "");
+        } else {
+            lv_label_set_text(s_track, s_now.title[0] ? s_now.title : "\xE2\x80\x93");
+            lv_label_set_text(s_artist, s_now.artist);
+            lv_label_set_text(s_album, s_now.album);
+        }
         lv_point_t sz;
         lv_text_get_size(&sz, lv_label_get_text(s_track), g_font_large, 0, 0, SO_COL_W, LV_TEXT_FLAG_NONE);
         const int lh = lv_font_get_line_height(g_font_large);
@@ -509,6 +616,14 @@ static void sonos_show(void)
     lv_obj_invalidate(s_canvas);
 }
 
+static void pend_clear(void)
+{
+    s_pend.on = false;
+    mpic_free(&s_pend.pic);
+}
+
+static void set_picker(bool on);
+
 static void sonos_tick_cb(lv_timer_t *t)
 {
     (void)t;
@@ -519,7 +634,15 @@ static void sonos_tick_cb(lv_timer_t *t)
     if (s_note[0] && lv_tick_get() - s_note_tick > SO_NOTE_MS) {
         lv_obj_invalidate(s_canvas);
     }
-    if (s_picker || !s_have || !playing() || s_now.duration_s <= 0) {
+    if (s_pend.on && lv_tick_get() - s_pend.tick > SO_PEND_MS) {
+        pend_clear(); /* the speaker never said: what it says now */
+        sonos_show();
+    }
+    if (s_picker && lv_tick_get() - s_touch_tick > SO_PICKER_IDLE_MS && s_have && !s_now.empty) {
+        set_picker(false); /* left open: back to what plays */
+        app_wake_poll();   /* its cover */
+    }
+    if (s_picker || s_pend.on || !s_have || !playing() || s_now.duration_s <= 0) {
         return;
     }
     lv_area_t a;
@@ -580,17 +703,54 @@ static void set_picker(bool on)
     sonos_show();
 }
 
+static void set_page(page_t p)
+{
+    if (p != cur_page() && p != PG_RADIO && p != PG_QUEUE) {
+        s_music.count = 0; /* the other page's tiles not shown meanwhile: the poll fills them */
+    }
+    s_page = p;
+    note("");
+    lv_obj_invalidate(s_canvas);
+    app_wake_poll(); /* the page's lists and pictures */
+}
+
+/* "Starter <title> ...": what was tapped shown at once (lock held). */
+static void pend_start(const char *title, const mgrid_tile_t *t)
+{
+    pend_clear();
+    s_pend.on = true;
+    snprintf(s_pend.title, sizeof(s_pend.title), "%s", title);
+    snprintf(s_pend.before, sizeof(s_pend.before), "%s", s_now.title);
+    snprintf(s_pend.before_station, sizeof(s_pend.before_station), "%s", s_now.station);
+    s_pend.tick = lv_tick_get();
+    if (t) {
+        mpic_take(&s_pend.pic, t);
+    }
+}
+
 bool sonos_tap(int x, int y)
 {
+    s_touch_tick = lv_tick_get();
     if (s_room_count > 0 && y >= SO_ROW_Y - 6 && y < SO_ROW_Y + SO_ROW_H + 6) {
         lv_area_t a;
         toggle_box(&a);
         a.y1 -= 6;
         a.y2 += 6;
         if (in_box(x, y, &a)) {
-            s_radio_page = false; /* "Velg musikk": the music */
+            if (s_picker && cur_page() == PG_RADIO) {
+                s_page = PG_FAV; /* "Velg musikk" next time: the music */
+            }
             set_picker(!s_picker);
             app_wake_poll(); /* the lists, or the room */
+            return true;
+        }
+        if (s_picker) {
+            page_t ids[PG_COUNT];
+            const char *names[PG_COUNT];
+            const int i = mtabs_hit(names, pages(ids, names), SO_X, SO_ROW_Y, SO_ROW_H, x, y);
+            if (i >= 0) {
+                set_page(ids[i]);
+            }
             return true;
         }
         if (page_shown()) {
@@ -598,16 +758,8 @@ bool sonos_tap(int x, int y)
             a.y1 -= 6;
             a.y2 += 6;
             if (in_box(x, y, &a)) {
-                if (!s_picker) {
-                    s_radio_page = true; /* straight to the channels */
-                    set_picker(true);
-                    app_wake_poll();
-                    return true;
-                }
-                s_radio_page = !s_radio_page;
-                note("");
-                lv_obj_invalidate(s_canvas);
-                app_wake_poll(); /* the page's pictures */
+                set_page(PG_RADIO); /* straight to the channels */
+                set_picker(true);
                 return true;
             }
         }
@@ -640,6 +792,7 @@ bool sonos_tap(int x, int y)
                 }
                 if (i != s_room) {
                     const bool same = in_group(i);
+                    pend_clear();
                     s_room = i;
                     snprintf(s_room_name, sizeof(s_room_name), "%.47s", s_rooms[i].name);
                     s_have = same;
@@ -655,7 +808,21 @@ bool sonos_tap(int x, int y)
         return false;
     }
     if (s_picker) {
-        const mgrid_t *g = s_radio_page ? &s_radio : &s_music;
+        const page_t page = cur_page();
+        if (page == PG_QUEUE) {
+            const int i = mlist_hit(SO_TOP, s_queue_count, x, y);
+            if (i < 0) {
+                return false;
+            }
+            if (!(s_queue_live && i == 0)) { /* not the one playing */
+                s_cmd.fav = s_queue_first + i;
+                pend_start(s_queue[i].title, NULL);
+                send(CMD_TRACK, SONOS_PLAY, 0);
+            }
+            set_picker(false);
+            return true;
+        }
+        const mgrid_t *g = page == PG_RADIO ? &s_radio : &s_music;
         const int i = mgrid_hit(g, x, y);
         if (i < 0) {
             return false;
@@ -663,11 +830,16 @@ bool sonos_tap(int x, int y)
         const mgrid_tile_t *t = &g->t[i];
         s_cmd.fav = t->idx;
         snprintf(s_cmd.uri, sizeof(s_cmd.uri), "%s", t->uri);
+        if (s_room >= 0) {
+            snprintf(s_started, sizeof(s_started), "%s%.63s", t->uri[0] ? "" : "fav:", t->uri[0] ? t->uri : t->title);
+            snprintf(s_started_group, sizeof(s_started_group), "%s", s_rooms[lead_of(s_room)].uuid);
+        }
+        pend_start(t->title, t);
         set_picker(false);
-        send(s_radio_page ? CMD_RADIO : t->uri[0] ? CMD_SPOTIFY : CMD_FAV, SONOS_PLAY, 0);
+        send(page == PG_RADIO ? CMD_RADIO : t->uri[0] ? CMD_SPOTIFY : CMD_FAV, SONOS_PLAY, 0);
         return true;
     }
-    if (!s_have || s_now.empty) {
+    if (!s_have || s_now.empty || s_pend.on) {
         return false;
     }
     const int cx = SO_COL_X + SO_COL_W / 2;
@@ -714,8 +886,17 @@ bool sonos_tap(int x, int y)
         return true;
     }
     if (s_now.volume >= 0 && y > SO_VOL_Y - SO_VOL_R - 14 && y < SO_VOL_Y + SO_VOL_R + 14 && x >= SO_COL_X) {
-        const int dir = x < SO_COL_X + SO_COL_W / 2 ? -1 : 1;
-        int v = s_now.volume + dir * SO_VOL_STEP;
+        /* - and + a step; the bar itself to where it's tapped. */
+        const int mx = SO_COL_X + SO_VOL_R, plx = SO_COL_X + SO_COL_W - SO_VOL_R;
+        const int bx1 = mx + SO_VOL_R + 16, bx2 = plx - SO_VOL_R - 16;
+        int v = s_now.volume;
+        if (x < bx1 - 8) {
+            v -= SO_VOL_STEP;
+        } else if (x > bx2 + 8) {
+            v += SO_VOL_STEP;
+        } else {
+            v = (x - bx1) * 100 / (bx2 - bx1);
+        }
         v = v < 0 ? 0 : v > 100 ? 100 : v;
         s_now.volume = v;
         send(CMD_SONOS, SONOS_VOLUME, v);
@@ -811,71 +992,178 @@ static void fetch_cover(const char *url)
     }
 }
 
-/* The favourites and recently played, as the tiles; the note for the
- * picker. */
-static void fetch_lists(const sonos_room_t *room)
+/* The page's message (`page`'s own, shown while it is). */
+static void page_note(page_t page, const char *msg)
 {
-    if (s_favs == NULL) {
-        s_favs = heap_caps_calloc(SONOS_FAVS_MAX, sizeof(sonos_fav_t), MALLOC_CAP_SPIRAM);
-        if (s_favs == NULL) {
-            return;
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        snprintf(s_page_note[page], sizeof(s_page_note[page]), "%s", msg);
+        lv_obj_invalidate(s_canvas);
+        esp_lv_adapter_unlock();
+    }
+}
+
+/* The lists of `page` asked for, if not lately; true if they came anew. */
+static bool fetch_page(const sonos_room_t *room, page_t page)
+{
+    const char *msg = "";
+    if (page == PG_FAV) {
+        if (stamp_fresh(&s_favs_at, SO_LISTS_MS)) {
+            return false;
         }
-    }
-    int favs = 0;
-    if (sonos_get_favorites(room, s_favs, SONOS_FAVS_MAX, &favs) != ESP_OK) {
-        favs = 0;
-    }
-    s_fav_count = favs;
-    int recent = 0;
-    const char *list_note = "";
-    if (g_cfg->sp_client_id[0] == '\0' || spotify_login_state(NULL, 0) != SPOTIFY_CONNECTED) {
-        list_note = "Koble skjermen til Spotify p\xC3\xA5 oppsettsiden for \xC3\xA5 se det du har spilt nylig.";
-    } else if (favs < MT_MAX) {
-        /* Only as many as get tiles after the favourites: each page more
-         * is a request more before the picker fills. */
-        const esp_err_t err = spotify_get_recent(s_recent, MT_MAX - favs, &recent);
+        if (s_favs == NULL) {
+            s_favs = heap_caps_calloc(SONOS_FAVS_MAX, sizeof(sonos_fav_t), MALLOC_CAP_SPIRAM);
+            if (s_favs == NULL) {
+                return false;
+            }
+        }
+        int favs = 0;
+        if (sonos_get_favorites(room, s_favs, SONOS_FAVS_MAX, &favs) != ESP_OK) {
+            favs = 0;
+            msg = "Fikk ikke hentet favorittene fra Sonos.";
+        } else if (favs == 0) {
+            msg = "Ingen favoritter i Sonos-appen.";
+        }
+        s_fav_count = favs;
+        stamp_now(&s_favs_at);
+    } else if (page == PG_RECENT) {
+        if (stamp_fresh(&s_recent_at, SO_LISTS_MS)) {
+            return false;
+        }
+        int recent = 0;
+        const esp_err_t err = spotify_get_recent(s_recent, MT_MAX, &recent);
         if (err == SPOTIFY_ERR_SCOPE) {
-            list_note = "Logg inn p\xC3\xA5 Spotify p\xC3\xA5 nytt (oppsettsiden) for \xC3\xA5 se nylig spilt.";
+            msg = "Logg inn p\xC3\xA5 Spotify p\xC3\xA5 nytt (oppsettsiden) for \xC3\xA5 se nylig spilt.";
         } else if (err != ESP_OK) {
-            list_note = "Fikk ikke hentet det som er spilt nylig fra Spotify.";
+            msg = "Fikk ikke hentet det som er spilt nylig fra Spotify.";
+        } else if (recent == 0) {
+            msg = "Ingenting spilt nylig p\xC3\xA5 Spotify.";
         }
         spotify_name_playlists(s_recent, recent, SO_NAMES_PER_POLL);
         spotify_close(); /* asked again minutes from now: not kept open meanwhile */
+        s_recent_count = recent;
+        stamp_now(&s_recent_at);
+    } else if (page == PG_LISTS) {
+        if (stamp_fresh(&s_lists_at, SO_LISTS_MS)) {
+            return false;
+        }
+        int lists = 0;
+        const esp_err_t err = spotify_get_playlists(s_lists, MT_MAX, &lists);
+        if (err == SPOTIFY_ERR_SCOPE) {
+            msg = "Logg inn p\xC3\xA5 Spotify p\xC3\xA5 nytt (oppsettsiden) for \xC3\xA5 se spillelistene.";
+        } else if (err != ESP_OK) {
+            msg = "Fikk ikke hentet spillelistene fra Spotify.";
+        } else if (lists == 0) {
+            msg = "Ingen spillelister p\xC3\xA5 Spotify.";
+        }
+        spotify_close();
+        s_lists_count = lists;
+        stamp_now(&s_lists_at);
+    } else {
+        return false;
     }
-    if (favs == 0 && recent == 0 && list_note[0] == '\0') {
-        list_note = "Ingen favoritter i Sonos-appen, og ingenting spilt nylig p\xC3\xA5 Spotify.";
-    }
+    page_note(page, msg);
+    return true;
+}
+
+static void mark_playing(void);
+
+/* s_music as `page`'s tiles (favourites, recently played or playlists). */
+static void build_page(page_t page)
+{
     mgrid_tile_t *items = mgrid_items();
     if (items == NULL) {
         return; /* asked again next poll */
     }
     int n = 0;
-    for (int i = 0; i < favs && n < MT_MAX; i++, n++) {
-        mgrid_tile_t *t = &items[n];
-        memset(t, 0, sizeof(*t));
-        t->idx = i;
-        snprintf(t->title, sizeof(t->title), "%s", s_favs[i].title);
-        snprintf(t->art, sizeof(t->art), "%s", s_favs[i].art_url);
+    if (page == PG_FAV) {
+        for (int i = 0; i < s_fav_count && n < MT_MAX; i++, n++) {
+            items[n].idx = i;
+            snprintf(items[n].title, sizeof(items[n].title), "%s", s_favs[i].title);
+            snprintf(items[n].art, sizeof(items[n].art), "%s", s_favs[i].art_url);
+        }
+    } else {
+        const spotify_recent_t *src = page == PG_RECENT ? s_recent : s_lists;
+        const int count = page == PG_RECENT ? s_recent_count : s_lists_count;
+        for (int i = 0; i < count && n < MT_MAX; i++, n++) {
+            items[n].idx = -1;
+            items[n].dot = true;
+            snprintf(items[n].uri, sizeof(items[n].uri), "%.63s", src[i].uri);
+            snprintf(items[n].title, sizeof(items[n].title), "%s", src[i].name);
+            snprintf(items[n].art, sizeof(items[n].art), "%s", src[i].image_url);
+        }
     }
-    for (int i = 0; i < recent && n < MT_MAX; i++, n++) {
-        mgrid_tile_t *t = &items[n];
-        memset(t, 0, sizeof(*t));
-        t->idx = -1;
-        t->dot = true;
-        snprintf(t->uri, sizeof(t->uri), "%.63s", s_recent[i].uri);
-        snprintf(t->title, sizeof(t->title), "%s", s_recent[i].name);
-        snprintf(t->art, sizeof(t->art), "%s", s_recent[i].image_url);
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        mgrid_set(&s_music, items, n);
+        s_built = page;
+        mark_playing(); /* at once, not after the covers */
+        lv_obj_invalidate(s_canvas);
+        esp_lv_adapter_unlock();
     }
-    if (esp_lv_adapter_lock(-1) != ESP_OK) {
-        free(items);
+    free(items);
+}
+
+/* "Kø": the queue from the track playing, asked again as it changes. */
+static void fetch_queue(const sonos_room_t *room, const sonos_now_t *now)
+{
+    const int track = now->queue && now->track > 0 ? now->track : 1;
+    if (track == s_queue_track && stamp_fresh(&s_queue_at, SO_QUEUE_MS)) {
         return;
     }
-    mgrid_set(&s_music, items, n);
-    snprintf(s_list_note, sizeof(s_list_note), "%s", list_note);
-    lv_obj_invalidate(s_canvas);
-    esp_lv_adapter_unlock();
-    free(items);
-    stamp_now(&s_lists_at);
+    static EXT_RAM_BSS_ATTR sonos_track_t q[MT_LIST_MAX];
+    int n = 0, total = 0;
+    const esp_err_t err = sonos_get_queue(room, track, q, MT_LIST_MAX, &n, &total);
+    s_queue_track = track;
+    stamp_now(&s_queue_at);
+    if (esp_lv_adapter_lock(-1) == ESP_OK) {
+        if (err == ESP_OK) {
+            memcpy(s_queue, q, sizeof(q[0]) * (size_t)n);
+            s_queue_count = n;
+            s_queue_first = track;
+            s_queue_total = total;
+            s_queue_live = now->queue && now->track > 0;
+        }
+        snprintf(s_page_note[PG_QUEUE], sizeof(s_page_note[PG_QUEUE]), "%s",
+                 err != ESP_OK        ? "Fikk ikke hentet k\xC3\xB8" "en fra Sonos."
+                 : total == 0         ? "K\xC3\xB8" "en er tom."
+                 : !s_queue_live      ? "K\xC3\xB8" "en spilles ikke n\xC3\xA5. Trykk p\xC3\xA5 en sang for \xC3\xA5 spille fra den."
+                                      : "Trykk p\xC3\xA5 en sang for \xC3\xA5 hoppe dit.");
+        lv_obj_invalidate(s_canvas);
+        esp_lv_adapter_unlock();
+    }
+}
+
+/* The tiles of what plays ringed (adapter lock held; s_favs is the
+ * weather task's, which calls this). */
+static void mark_playing(void)
+{
+    const bool group = s_room >= 0 && strcmp(s_started_group, s_rooms[lead_of(s_room)].uuid) == 0;
+    const bool started = group && s_now.queue && !s_now.empty; /* still from what was started here */
+    bool changed = false;
+    for (int i = 0; i < s_music.count; i++) {
+        mgrid_tile_t *t = &s_music.t[i];
+        bool on;
+        if (t->uri[0]) {
+            on = started && strcmp(s_started, t->uri) == 0;
+        } else {
+            /* The favourite's own address, or a station of its name
+             * (NRK P3 started from the radio page, say). */
+            on = (s_favs && t->idx >= 0 && t->idx < s_fav_count && s_now.uri[0] &&
+                  strcmp(s_favs[t->idx].uri, s_now.uri) == 0) ||
+                 (s_now.stream && s_now.station[0] && strcmp(s_now.station, t->title) == 0) ||
+                 (started && strncmp(s_started, "fav:", 4) == 0 && strcmp(s_started + 4, t->title) == 0);
+        }
+        changed |= on != t->on;
+        t->on = on;
+    }
+    for (int i = 0; i < s_radio.count; i++) {
+        mgrid_tile_t *t = &s_radio.t[i];
+        const bool on = !s_now.empty && s_now.radio == t->idx;
+        changed |= on != t->on;
+        t->on = on;
+    }
+    if (changed && s_picker) {
+        lv_obj_invalidate(s_canvas);
+    }
 }
 
 void sonos_release(void)
@@ -964,7 +1252,9 @@ uint32_t sonos_poll(int for_view)
     /* The buttons pressed, in turn. */
     static EXT_RAM_BSS_ATTR cmd_t cmds[SO_CMDS];
     int ncmds = 0;
-    bool picker = false, radio_page = false;
+    bool picker = false;
+    page_t page = PG_FAV;
+    const bool spotify_ok = g_cfg->sp_client_id[0] != '\0' && spotify_login_state(NULL, 0) == SPOTIFY_CONNECTED;
     if (esp_lv_adapter_lock(-1) != ESP_OK) {
         return SO_IDLE_MS;
     }
@@ -994,6 +1284,9 @@ uint32_t sonos_poll(int for_view)
             }
             err = c->fav >= 0 && c->fav < count ? sonos_play_radio(&c->target, &radios[c->fav], art)
                                                 : ESP_ERR_INVALID_ARG;
+        } else if (c->kind == CMD_TRACK) {
+            err = sonos_play_track(&c->target, c->fav);
+            s_queue_track = -1; /* "Kø" asked again */
         } else if (c->kind == CMD_JOIN) {
             err = sonos_join(&c->zone, c->coord);
         } else if (c->kind == CMD_LEAVE) {
@@ -1004,6 +1297,10 @@ uint32_t sonos_poll(int for_view)
         if (err != ESP_OK) {
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 note(err_text(err));
+                if (c->kind != CMD_SONOS && s_pend.on) {
+                    pend_clear(); /* it didn't start: what plays, with why */
+                    sonos_show();
+                }
                 lv_obj_invalidate(s_canvas);
                 esp_lv_adapter_unlock();
             }
@@ -1028,8 +1325,12 @@ uint32_t sonos_poll(int for_view)
         return SO_IDLE_MS;
     }
     room = s_rooms[lead_of(s_room)];
+    if (spotify_ok != s_spotify_ok) {
+        s_spotify_ok = spotify_ok; /* its pages shown or not */
+        lv_obj_invalidate(s_canvas);
+    }
     picker = s_picker;
-    radio_page = s_radio_page;
+    page = cur_page();
     esp_lv_adapter_unlock();
 
     esp_err_t err = sonos_get_now(&room, &s_now_scratch);
@@ -1083,25 +1384,34 @@ uint32_t sonos_poll(int for_view)
         if (!s_picker && !s_picker_shut) {
             s_picker = opened = true;
         }
+        if (opened) {
+            s_touch_tick = lv_tick_get();
+        }
         picker = s_picker;
-        radio_page = s_radio_page;
+        page = cur_page();
         esp_lv_adapter_unlock();
     }
     bool more = false;
     if (picker) {
         drop_cover();
-        if (!stamp_fresh(&s_lists_at, SO_LISTS_MS)) {
-            fetch_lists(&room);
-        }
         /* One page's pictures at a time: both don't fit beside the rest. */
-        if (radio_page) {
+        if (page == PG_RADIO) {
             mgrid_release(&s_music);
             more = mgrid_fetch(&s_radio, MT_MAX); /* one sheet for all */
+        } else if (page == PG_QUEUE) {
+            mgrid_release(&s_music);
+            mgrid_release(&s_radio);
+            fetch_queue(&room, &s_now_scratch);
         } else {
             mgrid_release(&s_radio);
+            if (fetch_page(&room, page) || s_built != (int)page) {
+                build_page(page);
+            }
             more = mgrid_fetch(&s_music, 3);
         }
     } else {
+        /* The tiles' memory for the cover: they come again with the picker. */
+        mgrid_release(&s_music);
         mgrid_release(&s_radio);
         /* A radio of ours without a cover (its metadata lost): its logo. */
         char logo[SONOS_URL_MAX] = "";
@@ -1126,6 +1436,12 @@ uint32_t sonos_poll(int for_view)
             s_now = s_now_scratch;
             s_now_tick = lv_tick_get();
             s_have = true;
+            /* "Starter ...": till the speaker plays something else. */
+            if (s_pend.on && (strcmp(s_now.title, s_pend.before) != 0 || strcmp(s_now.station, s_pend.before_station) != 0)) {
+                pend_clear();
+                changed = true;
+            }
+            mark_playing();
         }
         esp_lv_adapter_unlock();
     }
@@ -1138,6 +1454,9 @@ uint32_t sonos_poll(int for_view)
     }
     if (more) {
         return 100; /* the rest of the covers */
+    }
+    if (s_pend.on) {
+        return SO_PEND_POLL_MS; /* what was tapped, as soon as it plays */
     }
     return s_now_scratch.state == SONOS_PLAYING ? SO_PLAYING_MS : SO_IDLE_MS;
 }
@@ -1231,7 +1550,9 @@ void sonos_enter(void)
 {
     big_clock_set(&s_clock, time(NULL));
     note("");
+    s_picker = false; /* what plays first (an empty room opens it again) */
     s_picker_shut = false;
+    s_touch_tick = lv_tick_get();
     lv_label_set_text(g_status_label, s_room_count == 0 ? "Leter etter Sonos-h\xC3\xB8yttalere..."
                                       : s_have        ? ""
                                                       : "Henter fra Sonos...");

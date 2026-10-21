@@ -701,6 +701,30 @@ esp_err_t spotify_get_playlists(spotify_recent_t *out, int max, int *count)
     return ESP_OK;
 }
 
+esp_err_t spotify_get_queue(spotify_track_t *out, int max, int *count)
+{
+    *count = 0;
+    esp_err_t err;
+    const int status = api(HTTP_METHOD_GET, "/me/player/queue", NULL, &err);
+    if (missing_scope(status)) {
+        return SPOTIFY_ERR_SCOPE;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (status == 204) {
+        return ESP_OK; /* nothing plays */
+    }
+    json_use_psram();
+    const int n = status == 200 && s_resp.buf ? spotify_parse_queue(s_resp.buf, out, max) : -1;
+    if (n < 0) {
+        ESP_LOGW(TAG, "Queue: HTTP %d %.200s", status, s_resp.buf ? s_resp.buf : "");
+        return ESP_FAIL;
+    }
+    *count = n;
+    return ESP_OK;
+}
+
 void spotify_name_playlists(spotify_recent_t *list, int n, int budget)
 {
     /* Names asked before (the weather task's). */

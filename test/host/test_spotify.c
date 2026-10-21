@@ -174,4 +174,25 @@ void test_spotify(void)
     CHECK_INT((int)strlen(pl[0].image_url), 187);
     CHECK(spotify_parse_playlist(big, pn, sizeof(pn), pi, sizeof(pi)));
     CHECK_STR(pi, "");
+
+    /* The context played from, and "Kø". */
+    CHECK(spotify_parse_player("{\"context\":{\"uri\":\"spotify:playlist:37i9dQZF1DX\"},\"is_playing\":true}", &p));
+    CHECK_STR(p.context, "spotify:playlist:37i9dQZF1DX");
+    CHECK(spotify_parse_player("{\"context\":{\"uri\":\"spotify:artist:0gxy\"}}", &p));
+    CHECK_STR(p.context, ""); /* only a playlist or album is a tile */
+    CHECK(spotify_parse_player(PLAYER, &p));
+    CHECK_STR(p.context, "");
+    spotify_track_t q[4];
+    CHECK_INT(spotify_parse_queue("{\"currently_playing\":{\"name\":\"Now\",\"artists\":[{\"name\":\"A\"},{\"name\":\"B\"}]},"
+                                  "\"queue\":[{\"name\":\"Next\",\"artists\":[{\"name\":\"C\"}]},"
+                                  "{\"name\":\"Ep\",\"show\":{\"name\":\"Podden\"}},{\"name\":\"X\"},{\"name\":\"Y\"}]}",
+                                  q, 4),
+              4);
+    CHECK_STR(q[0].title, "Now");
+    CHECK_STR(q[0].artist, "A, B");
+    CHECK_STR(q[1].artist, "C");
+    CHECK_STR(q[2].artist, "Podden");
+    CHECK_STR(q[3].title, "X"); /* no more than asked */
+    CHECK_INT(spotify_parse_queue("{\"currently_playing\":null,\"queue\":[]}", q, 4), 0);
+    CHECK_INT(spotify_parse_queue("{}", q, 4), -1);
 }

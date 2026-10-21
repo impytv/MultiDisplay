@@ -545,17 +545,25 @@ One screen for the whole display, after the clock: what the display's
 Spotify account is playing, with the cover, the title, the artists and
 the album, a progress bar, buttons for the previous track, play/pause and
 the next track, shuffle and repeat (off, the playlist or album, the track:
-"1"), the volume (- and +, in steps of 10 %) and the device it plays on;
+"1"), the volume (- and + in steps of 10 %, or a tap on the bar sets it there) and the device it plays on;
 a tap on the progress bar winds there (`/me/player/shuffle`, `/repeat`,
 `/seek`; greyed out where Spotify's `actions.disallows` says so, never for
 an ad). With nothing playing, a button for each of the account's
 devices starts playback there. **Velg musikk** beside the title swaps the
-player for a grid of up to 12 tiles: what the account played lately (6 at
-most, the playlist or album as on the Sonos screen), then its playlists
-(`/me/playlists`); a tap starts one (`PUT /me/player/play` with
-`context_uri`) on the device playing, or else the one that played last, or
-else the first that takes commands. The covers are held only while the
-grid is on show, and the player's cover is given back meanwhile. The grid
+player for tabs: **Nylig**, up to 12 tiles of what the account played
+lately (the playlist or album, as on the Sonos screen); **Lister**, its
+playlists (`/me/playlists`); and **Kø**, what plays and what comes
+(`/me/player/queue`), where a tap skips forward to that track (Spotify
+can't jump in the queue: `next` that many times). A tile starts its
+playlist or album (`PUT /me/player/play` with `context_uri`) on the device
+playing, or else the one that played last if it is still listed, or else
+the first that takes commands; the player shows its name and picture with
+"Starter på <device> …" at once, till Spotify plays it. The tile of the
+context playing is ringed. Each page's list is asked for when it is shown
+(again after 2 minutes); the picker closes by itself after 2 minutes
+without a touch, and on every visit. The covers are held only while the
+grid is on show, and the player's cover is given back meanwhile (and the
+tiles while the player shows). The grid
 is shared with the Sonos screen (`main/music_tiles.c`). The display plays nothing itself; it
 controls Spotify on a phone, speaker or computer through Spotify's Web
 API, and controlling needs **Spotify Premium**. Some devices (many TVs,
@@ -620,14 +628,25 @@ the group's coordinator), and a tap on a lit room takes it out and stops
 it there (`BecomeCoordinatorOfStandaloneGroup`; if it led, the others play
 on). A room playing something of its own has a dot, and a tap only shows
 it, so nobody's music is taken over; so does any tap while nothing plays,
-or in the grid. Playback and the volume go to the group. **Velg musikk** swaps the
-player for a grid of up to 12 tiles: the household's Sonos favourites,
-then what the display's Spotify account played lately, as the playlist or
+or in the grid. Playback and the volume go to the group (- and + a step of
+3 %, or a tap on the bar sets it there). **Velg musikk** swaps the
+player for tabs in place of the rooms (the room it plays in is shown in
+the title): **Favoritter**, the household's Sonos favourites; **Nylig**,
+what the display's Spotify account played lately, as the playlist or
 album each track was played from (from an artist, Liked Songs or a search,
-the track's album), each with a green dot. A tap starts it in the room,
-replacing the room's queue. A room with nothing to play opens the grid by
-itself. **Radio** beside it opens the grid on the radio channels chosen on
-the setup page (and, in the grid, swaps between them and the music): out
+the track's album); **Lister**, the account's playlists (those two with a
+green dot, and only while Spotify is connected); **Radio**; and **Kø**, the
+queue from the track playing (`Browse Q:0`), where a tap plays that track
+(`Seek TRACK_NR`, the queue started first if something else played). A
+tile starts it in the room, replacing the room's queue; the player shows
+its name and picture with "Starter …" at once, till the speaker reports
+something new. What plays is ringed: a radio channel, a favourite by its
+address or station name, or what was last started from here while its
+group plays from the queue. Each page's list is fetched when it is shown
+(again after 2 minutes). A room with nothing to play opens the picker by
+itself; it closes by itself after 2 minutes without a touch, and on every
+visit. **Radio** beside it opens the picker on the radio channels chosen on
+the setup page: out
 of 28, NRK's twelve and the sixteen other stations most listened to at
 [myTuner](https://mytuner-radio.com/no/radio/land/norway-stasjoner) (P4,
 Radio Norge, P5 Hits, P10 Country, P7 Klem, P11 Dance, NRJ, Radio Rock, P9

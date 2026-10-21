@@ -361,6 +361,44 @@ esp_err_t sonos_get_favorites(const sonos_room_t *room, sonos_fav_t *out, int ma
     return ESP_OK;
 }
 
+esp_err_t sonos_get_queue(const sonos_room_t *room, int start, sonos_track_t *out, int max, int *count,
+                          int *total)
+{
+    *count = *total = 0;
+    char args[320];
+    snprintf(args, sizeof(args),
+             "<ObjectID>Q:0</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag>"
+             "<Filter>dc:title,dc:creator</Filter><StartingIndex>%d</StartingIndex>"
+             "<RequestedCount>%d</RequestedCount><SortCriteria></SortCriteria>",
+             start > 1 ? start - 1 : 0, max);
+    const esp_err_t err = soap(room->ip, "ContentDirectory", "Browse", args);
+    if (err != ESP_OK) {
+        return err;
+    }
+    int first = 1;
+    const int n = sonos_parse_queue(s_resp.buf, out, max, &first, total);
+    if (n < 0) {
+        return ESP_FAIL;
+    }
+    *count = n;
+    return ESP_OK;
+}
+
+esp_err_t sonos_play_track(const sonos_room_t *room, int n)
+{
+    ESP_LOGI(TAG, "Playing the queue's track %d in %s", n, room->name);
+    char args[192];
+    /* The queue as what plays (it may play the radio), then the track. */
+    snprintf(args, sizeof(args), INSTANCE "<CurrentURI>x-rincon-queue:%s#0</CurrentURI><CurrentURIMetaData>"
+                                 "</CurrentURIMetaData>", room->uuid);
+    esp_err_t err = soap(room->ip, "AVTransport", "SetAVTransportURI", args);
+    if (err == ESP_OK) {
+        snprintf(args, sizeof(args), INSTANCE "<Unit>TRACK_NR</Unit><Target>%d</Target>", n > 0 ? n : 1);
+        err = soap(room->ip, "AVTransport", "Seek", args);
+    }
+    return err == ESP_OK ? soap(room->ip, "AVTransport", "Play", INSTANCE "<Speed>1</Speed>") : err;
+}
+
 /* `uri` with `meta` (neither escaped yet) as an action's arguments:
  * "<uri_tag>..</uri_tag><meta_tag>..</meta_tag>", after `before`, before
  * `after`. NULL without memory. */
