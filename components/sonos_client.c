@@ -484,17 +484,12 @@ esp_err_t sonos_play_spotify(const sonos_room_t *room, const char *spotify_uri)
  * Covers
  * ------------------------------------------------------------------------ */
 
-static bool image_chunk(const char *data, size_t len, void *ctx)
-{
-    return http_buf_append(ctx, data, len, TAG) == ESP_OK;
-}
-
 esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len)
 {
     http_buf_t b = { .max = SO_IMAGE_MAX };
     const bool https = strncmp(url, "https://", 8) == 0;
     const esp_err_t err =
-        http_get_stream(url, yr_client_user_agent(), SO_TIMEOUT_MS, SO_IMAGE_MAX, https, image_chunk, &b, TAG);
+        http_get_buf(url, yr_client_user_agent(), SO_TIMEOUT_MS, https, &b, TAG);
     if (err != ESP_OK || b.buf == NULL) {
         http_buf_free(&b);
         return err != ESP_OK ? err : ESP_FAIL;

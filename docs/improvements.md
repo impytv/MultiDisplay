@@ -764,6 +764,12 @@ work.
   only if it is still listed. Sonos asks the queue's play mode every 30 s
   (or after a change from the display) rather than every poll; a word
   tile isn't measured when it isn't drawn.
+- [x] **102. A cover that needs less memory, and comes back.** A picture
+  is collected into a buffer sized from the reply's Content-Length
+  (`http_get_buf`) instead of doubling: a speaker's 180 KB AirPlay cover
+  took 256 KB, and 384 KB for a moment, and failed with ~310 KB free. A
+  cover that failed is asked for again after 30 s rather than never for
+  that track (Sonos and Spotify).
 - [ ] **101. The radio logos kept between visits.** The radio page fetches
   `tiles.bin` (74 KB, HTTPS) each time it opens, so the logos take a
   moment; it could be kept (as JPEGs, not pixels) while the Sonos screen

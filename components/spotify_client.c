@@ -746,16 +746,11 @@ int spotify_retry_after_s(void)
     return s_retry_after_s > 0 ? s_retry_after_s : 30;
 }
 
-static bool image_chunk(const char *data, size_t len, void *ctx)
-{
-    return http_buf_append(ctx, data, len, TAG) == ESP_OK;
-}
-
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len)
 {
     http_buf_t b = { .max = SP_IMAGE_MAX };
     const esp_err_t err =
-        http_get_stream(url, yr_client_user_agent(), SP_TIMEOUT_MS, SP_IMAGE_MAX, true, image_chunk, &b, TAG);
+        http_get_buf(url, yr_client_user_agent(), SP_TIMEOUT_MS, true, &b, TAG);
     if (err != ESP_OK || b.buf == NULL) {
         http_buf_free(&b);
         return err != ESP_OK ? err : ESP_FAIL;

@@ -22,7 +22,6 @@ static const char *TAG = "music_tiles";
 #define MT_X         12
 #define MT_IMAGE_MAX (256 * 1024) /* a speaker's 640 px cover is ~90 KB */
 #define MT_TIMEOUT_MS 5000
-#define MT_SHEET_RESERVE (96 * 1024) /* the radio logos' sheet is 74 KB */
 
 void mgrid_init(mgrid_t *g, lv_obj_t *canvas, int top)
 {
@@ -226,11 +225,6 @@ static void free_tile(uint16_t *px)
     }
 }
 
-static bool image_chunk(const char *data, size_t len, void *ctx)
-{
-    return http_buf_append(ctx, data, len, TAG) == ESP_OK;
-}
-
 /* A sheet of logos (sonos_logo_find's format), fetched once for all the
  * tiles taken from it in one mgrid_fetch. */
 typedef struct {
@@ -262,15 +256,10 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
         const size_t n = (size_t)(hash - url);
         if (strncmp(sheet->url, url, n) != 0 || sheet->url[n] != '\0') {
             http_buf_free(&sheet->buf);
-            /* Room for it at once: grown by doubling, the 74 KB sheet
-             * would take 128 KB, and 192 KB for a moment as it grows. */
             sheet->buf = (http_buf_t){ .max = MT_IMAGE_MAX };
-            sheet->buf.buf = heap_caps_malloc(MT_SHEET_RESERVE, MALLOC_CAP_SPIRAM);
-            sheet->buf.cap = sheet->buf.buf ? MT_SHEET_RESERVE : 0;
             snprintf(sheet->url, sizeof(sheet->url), "%.*s", (int)n, url);
-            sheet->ok = http_get_stream(sheet->url, yr_client_user_agent(), MT_TIMEOUT_MS, MT_IMAGE_MAX,
-                                        strncmp(url, "https://", 8) == 0, image_chunk, &sheet->buf,
-                                        TAG) == ESP_OK &&
+            sheet->ok = http_get_buf(sheet->url, yr_client_user_agent(), MT_TIMEOUT_MS,
+                                     strncmp(url, "https://", 8) == 0, &sheet->buf, TAG) == ESP_OK &&
                         sheet->buf.len > 0;
         }
         const uint8_t *pic;
@@ -285,8 +274,7 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
     }
     http_buf_t b = { .max = MT_IMAGE_MAX };
     const bool https = strncmp(url, "https://", 8) == 0;
-    bool ok = http_get_stream(url, yr_client_user_agent(), MT_TIMEOUT_MS, MT_IMAGE_MAX, https, image_chunk, &b,
-                              TAG) == ESP_OK &&
+    bool ok = http_get_buf(url, yr_client_user_agent(), MT_TIMEOUT_MS, https, &b, TAG) == ESP_OK &&
               b.buf != NULL && tile_alloc(px) && draw_picture_square((const uint8_t *)b.buf, b.len, *px, MT_TILE);
     http_buf_free(&b);
     if (!ok) {

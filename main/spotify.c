@@ -21,6 +21,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -64,6 +65,7 @@ static const char *TAG = "spotify_screen";
 #define SP_SETTLE_MS  400     /* after a command, before asking what plays */
 #define SP_NOTE_MS    10000   /* a message under the cover stays this long */
 #define SP_TICK_MS    500
+#define SP_COVER_RETRY_MS 30000 /* a cover that failed, asked for again */
 #define SP_LISTS_MS   (2 * 60 * 1000) /* the picker's lists, asked again */
 #define SP_RECENT_TILES 6             /* of the picker's, at most; the playlists after them */
 #define SP_NAMES_PER_POLL 4
@@ -669,7 +671,12 @@ void spotify_release(void)
 /* The cover for `url`, if it isn't the one shown. */
 static void fetch_cover(const char *url)
 {
-    if (!cover_alloc() || strcmp(url, s_cover_url) == 0) {
+    /* A cover that failed is asked for again after a while (as on the
+     * Sonos screen). */
+    static int64_t tried_us;
+    if (!cover_alloc() || (strcmp(url, s_cover_url) == 0 &&
+                           (s_cover_ok || url[0] == '\0' ||
+                            esp_timer_get_time() - tried_us < SP_COVER_RETRY_MS * 1000LL))) {
         return;
     }
     bool ok = false;
@@ -687,6 +694,7 @@ static void fetch_cover(const char *url)
         }
         s_cover_ok = ok;
         snprintf(s_cover_url, sizeof(s_cover_url), "%s", url);
+        tried_us = esp_timer_get_time();
         lv_obj_invalidate(s_canvas);
         esp_lv_adapter_unlock();
     }

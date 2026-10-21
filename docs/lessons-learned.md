@@ -414,3 +414,27 @@ measured with `nm -S --size-sort build/multi_display.elf`.
 it on every failure path; a static array in PSRAM is PSRAM gone for good, so
 a buffer used for a moment is allocated for that moment. Check the biggest
 `b` symbols with `nm` after adding statics.
+
+### A buffer that doubles needs three times the body
+
+A song's cover over AirPlay (180 KB, from the speaker's `/getaa`) wasn't
+shown: the response buffer grew by doubling, to 256 KB, and the step from
+128 KB to 256 KB needs both at once - 384 KB, more than was free with the
+Sonos screen's other memory. The cover then stayed empty for the whole
+track, as a failed cover was never asked for again. It showed after a
+restart, with more memory free, which pointed at memory rather than the
+picture.
+*Lesson:* collect a body of known length into a buffer of that length
+(`http_get_buf` takes Content-Length); compare `/status`'s lowest free
+PSRAM before and after one fetch to see what it costs; let a failure that
+may be passing be tried again later.
+
+### Opening the USB serial port restarts the display
+
+Opening `/dev/ttyACM0` to read the log restarted the display (reason "USB"),
+even with DTR and RTS set low first: the ESP32-S3's USB serial resets the
+chip when a port is opened.
+*Lesson:* don't open the serial port of a display that is in use just to
+read its log; use `/status`, screenshots, and the speaker's or service's
+own replies, or say first that it will restart.
+

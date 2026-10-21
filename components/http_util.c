@@ -302,8 +302,11 @@ esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms,
 #define STREAM_PIECE     2048
 #define STREAM_REDIRECTS 5
 
-esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
-                          bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag)
+/* http_get_stream, with room in `reserve` (if not NULL) for the body its
+ * Content-Length says is coming. */
+static esp_err_t get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
+                            bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag,
+                            http_buf_t *reserve)
 {
     const esp_http_client_config_t config = {
         .url = url,
@@ -319,11 +322,12 @@ esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_m
     char *piece = heap_caps_malloc(STREAM_PIECE, MALLOC_CAP_SPIRAM);
     esp_err_t err = piece ? ESP_OK : ESP_ERR_NO_MEM;
     int status = 0;
+    int64_t length = 0;
     for (int hop = 0; err == ESP_OK && hop <= STREAM_REDIRECTS; hop++) {
         if ((err = esp_http_client_open(client, 0)) != ESP_OK) {
             break;
         }
-        esp_http_client_fetch_headers(client);
+        length = esp_http_client_fetch_headers(client);
         status = esp_http_client_get_status_code(client);
         if (status >= 301 && status <= 308 && status != 304 && hop < STREAM_REDIRECTS) {
             esp_http_client_set_redirection(client); /* the Location becomes the URL */
@@ -333,6 +337,14 @@ esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_m
         break;
     }
     size_t total = 0;
+    if (err == ESP_OK && status == 200 && reserve && length > 0 && (uint64_t)length < max &&
+        (size_t)length + 1 > reserve->cap) {
+        char *nb = heap_caps_realloc(reserve->buf, (size_t)length + 1, MALLOC_CAP_SPIRAM);
+        if (nb) { /* else grown as it comes, if it can be */
+            reserve->buf = nb;
+            reserve->cap = (size_t)length + 1;
+        }
+    }
     if (err == ESP_OK && status == 200) {
         for (;;) {
             const int n = esp_http_client_read(client, piece, STREAM_PIECE);
@@ -369,4 +381,28 @@ esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_m
     esp_http_client_cleanup(client);
     heap_caps_free(piece);
     return err;
+}
+
+esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
+                          bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag)
+{
+    return get_stream(url, user_agent, timeout_ms, max, verify, chunk, ctx, tag, NULL);
+}
+
+typedef struct {
+    http_buf_t *b;
+    const char *tag;
+} buf_ctx_t;
+
+static bool buf_chunk(const char *data, size_t len, void *ctx)
+{
+    const buf_ctx_t *c = ctx;
+    return http_buf_append(c->b, data, len, c->tag) == ESP_OK;
+}
+
+esp_err_t http_get_buf(const char *url, const char *user_agent, int timeout_ms, bool verify, http_buf_t *b,
+                       const char *tag)
+{
+    buf_ctx_t c = { b, tag };
+    return get_stream(url, user_agent, timeout_ms, b->max, verify, buf_chunk, &c, tag, b);
 }

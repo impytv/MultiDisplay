@@ -28,6 +28,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -69,6 +70,7 @@ static const char *TAG = "sonos_screen";
 #define SO_SETTLE_MS  500             /* after a command, before asking what plays */
 #define SO_NOTE_MS    10000
 #define SO_TICK_MS    500
+#define SO_COVER_RETRY_MS 30000       /* a cover that failed, asked for again */
 #define SO_NAMES_PER_POLL 4           /* playlists named, asking Spotify */
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_track, *s_artist, *s_album, *s_msg;
@@ -781,7 +783,11 @@ static void drop_cover(void)
  * straight into the shown pixels: drawn as a plain square meanwhile. */
 static void fetch_cover(const char *url)
 {
-    if (strcmp(url, s_cover_url) == 0) {
+    /* A cover that failed (memory short for a moment, say) is asked for
+     * again after a while, not left out for the rest of the track. */
+    static int64_t tried_us;
+    if (strcmp(url, s_cover_url) == 0 &&
+        (s_cover_ok || url[0] == '\0' || esp_timer_get_time() - tried_us < SO_COVER_RETRY_MS * 1000LL)) {
         return;
     }
     uint16_t *px = NULL;
@@ -797,6 +803,7 @@ static void fetch_cover(const char *url)
         s_cover_img.data = (const uint8_t *)px;
         s_cover_ok = ok && px != NULL;
         snprintf(s_cover_url, sizeof(s_cover_url), "%s", url);
+        tried_us = esp_timer_get_time();
         lv_obj_invalidate(s_canvas);
         esp_lv_adapter_unlock();
     } else {

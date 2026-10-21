@@ -44,6 +44,13 @@ esp_err_t http_get_body(const char *url, const char *user_agent, int timeout_ms,
 esp_err_t http_get_stream(const char *url, const char *user_agent, int timeout_ms, size_t max, bool verify,
                           bool (*chunk)(const char *data, size_t len, void *ctx), void *ctx, const char *tag);
 
+/* http_get_stream's body collected into `b` (up to b->max), for a picture:
+ * room for it is taken at once from the reply's Content-Length, rather
+ * than by doubling (a 180 KB cover would grow to 256 KB, and need 384 KB
+ * for a moment as it did). */
+esp_err_t http_get_buf(const char *url, const char *user_agent, int timeout_ms, bool verify, http_buf_t *b,
+                       const char *tag);
+
 /* MET's terms (api.met.no) ask clients to wait until a response's Expires
  * before asking again, and then to ask with If-Modified-Since. One of these
  * per resource and location, kept with the data it describes. */
