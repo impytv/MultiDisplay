@@ -7,6 +7,7 @@
 
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "lwip/inet.h"
@@ -225,6 +226,33 @@ int sonos_known_rooms(char (*names)[48], int max)
 
 #define INSTANCE "<InstanceID>0</InstanceID>"
 
+/* The queue's play mode, asked of the room at most every SO_MODE_US (it
+ * seldom changes, and the screen asks what plays every few seconds), or
+ * as soon as the room or a mode set here (s_mode_us = 0) changes it. The
+ * weather task's. */
+#define SO_MODE_US (30 * 1000000LL)
+static char s_mode_ip[16];
+static bool s_mode_shuffle;
+static int s_mode_repeat;
+static int64_t s_mode_us; /* when asked; 0 = ask */
+
+static bool play_mode(const sonos_room_t *room, bool *shuffle, int *repeat)
+{
+    const int64_t now = esp_timer_get_time();
+    if (s_mode_us == 0 || now - s_mode_us > SO_MODE_US || strcmp(s_mode_ip, room->ip) != 0) {
+        if (soap(room->ip, "AVTransport", "GetTransportSettings", INSTANCE) != ESP_OK ||
+            !sonos_parse_play_mode(s_resp.buf, &s_mode_shuffle, &s_mode_repeat)) {
+            s_mode_us = 0;
+            return false;
+        }
+        snprintf(s_mode_ip, sizeof(s_mode_ip), "%s", room->ip);
+        s_mode_us = now;
+    }
+    *shuffle = s_mode_shuffle;
+    *repeat = s_mode_repeat;
+    return true;
+}
+
 esp_err_t sonos_get_now(const sonos_room_t *room, sonos_now_t *out)
 {
     static const char *const ACTIONS[] = { "GetTransportInfo", "GetPositionInfo", "GetMediaInfo",
@@ -243,6 +271,8 @@ esp_err_t sonos_get_now(const sonos_room_t *room, sonos_now_t *out)
         if (!sonos_parse_now(r[0], r[1], r[2], r[3], room->ip, out)) {
             ESP_LOGW(TAG, "%s: not a reply", room->name);
             err = ESP_FAIL;
+        } else if (out->queue && !play_mode(room, &out->shuffle, &out->repeat)) {
+            out->queue = false; /* no buttons for a mode not known */
         }
     }
     for (int i = 0; i < 4; i++) {
@@ -295,6 +325,19 @@ esp_err_t sonos_command(const sonos_room_t *room, sonos_cmd_t cmd, int value)
         snprintf(args, sizeof(args), INSTANCE "<DesiredVolume>%d</DesiredVolume>",
                  value < 0 ? 0 : value > 100 ? 100 : value);
         return soap(room->ip, "GroupRenderingControl", "SetGroupVolume", args);
+    }
+    case SONOS_SEEK: {
+        const int t = value < 0 ? 0 : value;
+        char args[96];
+        snprintf(args, sizeof(args), INSTANCE "<Unit>REL_TIME</Unit><Target>%d:%02d:%02d</Target>", t / 3600,
+                 t / 60 % 60, t % 60);
+        return soap(room->ip, "AVTransport", "Seek", args);
+    }
+    case SONOS_MODE: {
+        char args[96];
+        snprintf(args, sizeof(args), INSTANCE "<NewPlayMode>%s</NewPlayMode>", sonos_play_mode(value & 1, value >> 1));
+        s_mode_us = 0; /* asked again with what plays next */
+        return soap(room->ip, "AVTransport", "SetPlayMode", args);
     }
     }
     return ESP_ERR_INVALID_ARG;
@@ -365,13 +408,10 @@ static esp_err_t play_queued(const sonos_room_t *room, const char *uri, const ch
     return soap(room->ip, "AVTransport", "Play", INSTANCE "<Speed>1</Speed>");
 }
 
-esp_err_t sonos_play_favorite(const sonos_room_t *room, const sonos_fav_t *fav)
+/* `uri` (a stream, not queued) played in the room. */
+static esp_err_t play_uri(const sonos_room_t *room, const char *uri, const char *meta)
 {
-    ESP_LOGI(TAG, "Playing favourite %s in %s", fav->title, room->name);
-    if (strncmp(fav->uri, "x-rincon-cpcontainer:", 21) == 0) {
-        return play_queued(room, fav->uri, fav->meta); /* a playlist or album */
-    }
-    char *args = uri_args(INSTANCE, "CurrentURI", fav->uri, "CurrentURIMetaData", fav->meta, "");
+    char *args = uri_args(INSTANCE, "CurrentURI", uri, "CurrentURIMetaData", meta, "");
     if (args == NULL) {
         return ESP_ERR_NO_MEM;
     }
@@ -380,6 +420,29 @@ esp_err_t sonos_play_favorite(const sonos_room_t *room, const sonos_fav_t *fav)
     if (err == ESP_OK) {
         err = soap(room->ip, "AVTransport", "Play", INSTANCE "<Speed>1</Speed>");
     }
+    return err;
+}
+
+esp_err_t sonos_play_favorite(const sonos_room_t *room, const sonos_fav_t *fav)
+{
+    ESP_LOGI(TAG, "Playing favourite %s in %s", fav->title, room->name);
+    if (strncmp(fav->uri, "x-rincon-cpcontainer:", 21) == 0) {
+        return play_queued(room, fav->uri, fav->meta); /* a playlist or album */
+    }
+    return play_uri(room, fav->uri, fav->meta);
+}
+
+esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art)
+{
+    ESP_LOGI(TAG, "Playing %s in %s", radio->name, room->name);
+    char uri[160];
+    char *meta = malloc(1024);
+    if (meta == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_err_t err = sonos_radio_share(radio, art, uri, sizeof(uri), meta, 1024) ? play_uri(room, uri, meta)
+                                                                                       : ESP_ERR_INVALID_ARG;
+    free(meta);
     return err;
 }
 

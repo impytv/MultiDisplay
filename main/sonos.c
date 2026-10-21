@@ -3,10 +3,13 @@
  * got - with buttons for the previous track, play/pause, the next track
  * and the volume. A row of buttons at the top picks the room; while it
  * plays, a tap on an idle room adds it to the group playing (as grouping in
- * the Sonos app), and a tap on a room in the group takes it out. "Velg
- * musikk" swaps the player for a grid of the household's Sonos favourites
- * and what the display's Spotify account played lately (the playlist or
- * album it was played from), and a tap starts one in the room.
+ * the Sonos app), and a tap on a room in the group takes it out. Shuffle
+ * and repeat beside the skip buttons, and a tap on the progress bar winds
+ * there, for what plays from the room's queue. "Velg musikk" swaps the
+ * player for a grid of the household's Sonos favourites and what the
+ * display's Spotify account played lately (the playlist or album it was
+ * played from), or of NRK's radio channels (the "Radio" page), and a tap
+ * starts one in the room.
  *
  * The speakers are asked directly (components/sonos_client.h): no login,
  * nor Sonos's cloud. "Recently played" needs the Spotify screen's login,
@@ -31,6 +34,7 @@
 #include "app.h"
 #include "diag.h"
 #include "draw.h"
+#include "music_tiles.h"
 #include "sonos.h"
 #include "sonos_client.h"
 #include "spotify_client.h"
@@ -52,12 +56,11 @@ static const char *TAG = "sonos_screen";
 #define SO_PLAY_R     38
 #define SO_SKIP_R     30
 #define SO_SKIP_DX    115
+#define SO_MODE_DX    200 /* shuffle and repeat, from the play button */
+#define SO_MODE_R     24
 #define SO_VOL_Y      438 /* the middle of the volume row */
 #define SO_VOL_R      22
 #define SO_VOL_STEP   3
-#define SO_TILE       104 /* the picker's covers (a multiple of 8, for the decoder) */
-#define SO_TILE_COLS  6
-#define SO_TILES      (2 * SO_TILE_COLS)
 #define SO_PLAYING_MS 3000
 #define SO_IDLE_MS    6000
 #define SO_RETRY_MS   15000
@@ -66,8 +69,7 @@ static const char *TAG = "sonos_screen";
 #define SO_SETTLE_MS  500             /* after a command, before asking what plays */
 #define SO_NOTE_MS    10000
 #define SO_TICK_MS    500
-#define SO_NAMES_MAX  24              /* playlists' names remembered */
-#define SO_NAMES_PER_POLL 4
+#define SO_NAMES_PER_POLL 4           /* playlists named, asking Spotify */
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_track, *s_artist, *s_album, *s_msg;
 static big_clock_t s_clock;
@@ -84,26 +86,15 @@ static uint32_t s_now_tick;      /* lv_tick_get() when it came */
 static bool s_woke_at_end;
 static bool s_picker;            /* the picker on show, not the player; set by taps */
 static bool s_picker_shut;       /* closed by a tap: not opened again for an empty room */
+static bool s_radio_page;        /* the picker shows the radio channels; set by taps */
 static char s_note[96];          /* a message for a while, "" = none */
 static uint32_t s_note_tick;
 static char s_list_note[160];    /* the picker's own, while it lasts */
 
-/* The picker's tiles. A favourite is played by its index in s_favs (the
- * weather task's), a Spotify item by its URI. The covers' pixels are the
- * weather task's to allocate and fill, with `ok` false meanwhile. */
-typedef struct {
-    bool fav;
-    int fav_idx;
-    char uri[64];
-    char title[64];
-    char art[SONOS_URL_MAX];
-    uint16_t *px;            /* SO_TILE square, RGB565, PSRAM; NULL = none yet */
-    char px_art[SONOS_URL_MAX]; /* the picture in px */
-    bool ok;
-    lv_image_dsc_t img;
-} tile_t;
-static EXT_RAM_BSS_ATTR tile_t s_tiles[SO_TILES];
-static int s_tile_count;
+/* The picker's pages. A favourite is played by its index in s_favs (the
+ * weather task's), a Spotify item by its URI, a radio channel by its index
+ * in sonos_radios(). */
+static EXT_RAM_BSS_ATTR mgrid_t s_music, s_radio;
 
 /* The player's cover, like the tiles'. */
 static uint16_t *s_cover_px;
@@ -114,7 +105,7 @@ static bool s_cover_ok;
 /* Buttons pressed, for the weather task to send in turn. A tap fills
  * s_cmd, and send() queues it with the group on show as its target, so a
  * room chosen next doesn't get it. */
-typedef enum { CMD_NONE, CMD_SONOS, CMD_FAV, CMD_SPOTIFY, CMD_JOIN, CMD_LEAVE } cmd_kind_t;
+typedef enum { CMD_NONE, CMD_SONOS, CMD_FAV, CMD_SPOTIFY, CMD_RADIO, CMD_JOIN, CMD_LEAVE } cmd_kind_t;
 typedef struct {
     cmd_kind_t kind;
     sonos_room_t target; /* the group's leader, for playback */
@@ -122,7 +113,7 @@ typedef struct {
     char coord[32];      /* the group it joins */
     sonos_cmd_t cmd;
     int value;
-    int fav;
+    int fav;             /* or the radio channel */
     char uri[64];
 } cmd_t;
 #define SO_CMDS 6
@@ -139,13 +130,6 @@ static EXT_RAM_BSS_ATTR spotify_recent_t s_recent[SPOTIFY_RECENT_MAX];
 static fetch_stamp_t s_rooms_at, s_lists_at;
 static bool s_rediscover;
 static backoff_t s_fail;
-static struct {
-    char uri[64];
-    char name[64];
-    char image[160];
-    bool missing; /* Spotify won't say (its own playlists) */
-} s_names[SO_NAMES_MAX] EXT_RAM_BSS_ATTR;
-static int s_names_next;
 
 static bool dark(void)
 {
@@ -205,7 +189,9 @@ static bool now_changed(const sonos_now_t *a, const sonos_now_t *b)
     return a->state != b->state || a->empty != b->empty || a->stream != b->stream ||
            a->duration_s != b->duration_s || (!moving && a->position_s != b->position_s) ||
            a->can_play != b->can_play || a->can_pause != b->can_pause || a->can_next != b->can_next ||
-           a->can_previous != b->can_previous || a->volume != b->volume || strcmp(a->source, b->source) != 0 ||
+           a->can_previous != b->can_previous || a->can_seek != b->can_seek || a->queue != b->queue ||
+           a->shuffle != b->shuffle || a->repeat != b->repeat || a->volume != b->volume ||
+           strcmp(a->source, b->source) != 0 || strcmp(a->station, b->station) != 0 ||
            strcmp(a->title, b->title) != 0 || strcmp(a->artist, b->artist) != 0 || strcmp(a->album, b->album) != 0;
 }
 
@@ -259,11 +245,38 @@ static void toggle_box(lv_area_t *a)
     a->y2 = SO_ROW_Y + SO_ROW_H - 1;
 }
 
+static const char *page_text(void)
+{
+    return s_picker && s_radio_page ? "Musikk" : "Radio";
+}
+
+/* The page button, with channels chosen: "Radio" opens the picker on
+ * them, and while picking it swaps between the pages. */
+static bool page_shown(void)
+{
+    return s_radio.count > 0;
+}
+
+/* The page button, left of the picker's button. */
+static void page_box(lv_area_t *a)
+{
+    lv_area_t t;
+    toggle_box(&t);
+    a->x2 = t.x1 - SO_CHIP_GAP - 1;
+    a->x1 = a->x2 - draw_text_w("Musikk") - 2 * SO_CHIP_PAD;
+    a->y1 = SO_ROW_Y;
+    a->y2 = SO_ROW_Y + SO_ROW_H - 1;
+}
+
 /* Room button i's box; false if it doesn't fit before the picker's. */
 static bool chip_box(int i, lv_area_t *a)
 {
     lv_area_t t;
-    toggle_box(&t);
+    if (page_shown()) {
+        page_box(&t);
+    } else {
+        toggle_box(&t);
+    }
     int x = SO_X;
     for (int k = 0; k <= i && k < s_room_count; k++) {
         const int w = draw_text_w(s_rooms[k].name) + 2 * SO_CHIP_PAD;
@@ -277,16 +290,6 @@ static bool chip_box(int i, lv_area_t *a)
         x += w + SO_CHIP_GAP;
     }
     return false;
-}
-
-static void tile_box(int i, lv_area_t *a)
-{
-    const int gap = (BOARD_LCD_H_RES - 2 * SO_X - SO_TILE_COLS * SO_TILE) / (SO_TILE_COLS - 1);
-    const int name_h = 2 * lv_font_get_line_height(g_font_body); /* two lines */
-    a->x1 = SO_X + (i % SO_TILE_COLS) * (SO_TILE + gap);
-    a->y1 = SO_TOP + (i / SO_TILE_COLS) * (SO_TILE + 6 + name_h + 6);
-    a->x2 = a->x1 + SO_TILE - 1;
-    a->y2 = a->y1 + SO_TILE + 6 + name_h - 1; /* with its name */
 }
 
 /* --------------------------------------------------------------------------
@@ -328,6 +331,10 @@ static void draw_row(lv_layer_t *layer)
         const int lh = lv_font_get_line_height(g_font_body);
         draw_text(layer, toggle_text(), a.x1, a.y1 + (SO_ROW_H - lh) / 2, a.x2 - a.x1 + 1, LV_TEXT_ALIGN_CENTER,
                   lv_color_hex(0x1B2631));
+        if (page_shown()) {
+            page_box(&a);
+            draw_chip(layer, &a, page_text(), false, c_card());
+        }
     }
 }
 
@@ -360,12 +367,20 @@ static void draw_skip_button(lv_layer_t *layer, int cx, int cy, int dir, bool lo
     draw_rect(layer, bx - 2, cy - 12, bx + 2, cy + 12, 1, ink);
 }
 
+/* A radio channel's tile, in the picker and as a stream's cover. */
+static lv_color_t c_radio(void)
+{
+    return lv_color_hex(0x1F3A5F);
+}
+
 static void draw_player(lv_layer_t *layer)
 {
     const sonos_now_t *n = &s_now;
     char buf[96];
     if (s_cover_ok) {
         draw_image(layer, &s_cover_img, SO_X, SO_TOP, SO_COVER);
+    } else if (n->stream && n->station[0]) {
+        mgrid_draw_word(layer, n->station, SO_X, SO_TOP, SO_COVER, c_radio());
     } else {
         draw_rect(layer, SO_X, SO_TOP, SO_X + SO_COVER - 1, SO_TOP + SO_COVER - 1, 8, c_card());
     }
@@ -389,8 +404,11 @@ static void draw_player(lv_layer_t *layer)
     if (n->duration_s > 0) {
         const int pos = position_now();
         draw_rect(layer, x1, SO_PROG_Y, x2, SO_PROG_Y + 5, 3, c_card());
-        draw_rect(layer, x1, SO_PROG_Y, x1 + (int)((int64_t)(x2 - x1) * pos / n->duration_s), SO_PROG_Y + 5, 3,
-                  c_txt());
+        const int px = x1 + (int)((int64_t)(x2 - x1) * pos / n->duration_s);
+        draw_rect(layer, x1, SO_PROG_Y, px, SO_PROG_Y + 5, 3, c_txt());
+        if (n->can_seek) { /* a knob: it can be wound */
+            draw_dot(layer, px, SO_PROG_Y + 2, 8, c_txt());
+        }
         mmss(buf, sizeof(buf), pos);
         draw_text(layer, buf, x1, SO_PROG_Y + 12, SO_COL_W, LV_TEXT_ALIGN_LEFT, c_dim());
         mmss(buf, sizeof(buf), n->duration_s);
@@ -405,6 +423,12 @@ static void draw_player(lv_layer_t *layer)
         draw_play_button(layer, cx, SO_CTRL_Y, playing(), !(playing() ? n->can_pause : n->can_play));
     }
     draw_skip_button(layer, cx + SO_SKIP_DX, SO_CTRL_Y, 1, !n->can_next);
+    if (n->queue) {
+        draw_mode_button(layer, LV_SYMBOL_SHUFFLE, cx - SO_MODE_DX, SO_CTRL_Y, SO_MODE_R, n->shuffle, false, false,
+                         c_card(), c_txt(), c_dim(), c_accent());
+        draw_mode_button(layer, LV_SYMBOL_LOOP, cx + SO_MODE_DX, SO_CTRL_Y, SO_MODE_R, n->repeat != SONOS_REPEAT_OFF,
+                         n->repeat == SONOS_REPEAT_ONE, false, c_card(), c_txt(), c_dim(), c_accent());
+    }
 
     if (n->volume >= 0) {
         const int mx = SO_COL_X + SO_VOL_R, plx = SO_COL_X + SO_COL_W - SO_VOL_R;
@@ -423,27 +447,10 @@ static void draw_player(lv_layer_t *layer)
 
 static void draw_picker(lv_layer_t *layer)
 {
-    for (int i = 0; i < s_tile_count; i++) {
-        const tile_t *t = &s_tiles[i];
-        lv_area_t a;
-        tile_box(i, &a);
-        if (!draw_visible(layer, a.x1, a.y1, a.x2, a.y2)) {
-            continue;
-        }
-        if (t->ok) {
-            draw_image(layer, &t->img, a.x1, a.y1, SO_TILE);
-        } else {
-            draw_rect(layer, a.x1, a.y1, a.x1 + SO_TILE - 1, a.y1 + SO_TILE - 1, 8, c_card());
-        }
-        if (!t->fav) { /* from Spotify: its green in a corner */
-            draw_dot(layer, a.x1 + SO_TILE - 13, a.y1 + 13, 9, c_bg());
-            draw_dot(layer, a.x1 + SO_TILE - 13, a.y1 + 13, 7, lv_color_hex(0x1DB954));
-        }
-        draw_text_wrap(layer, t->title[0] ? t->title : "Spilleliste", a.x1, a.y1 + SO_TILE + 6, SO_TILE, 2, c_txt());
-    }
+    mgrid_draw(layer, s_radio_page ? &s_radio : &s_music, c_card(), c_bg(), c_txt(), c_radio());
     /* A line at the bottom, below the second row. */
     const int lh = lv_font_get_line_height(g_font_body);
-    const char *msg = s_note[0] ? s_note : s_list_note;
+    const char *msg = s_note[0] ? s_note : s_radio_page ? "" : s_list_note;
     if (msg[0]) {
         draw_text_fit(layer, msg, SO_X, BOARD_LCD_V_RES - lh - 4, BOARD_LCD_H_RES - 2 * SO_X,
                       s_note[0] ? lv_palette_main(LV_PALETTE_RED) : c_dim());
@@ -515,10 +522,10 @@ static void sonos_tick_cb(lv_timer_t *t)
     }
     lv_area_t a;
     lv_obj_get_coords(s_canvas, &a);
-    a.x1 += SO_COL_X;
-    a.x2 = a.x1 + SO_COL_W;
-    a.y1 += SO_PROG_Y - 2;
-    a.y2 = a.y1 + 12 + lv_font_get_line_height(g_font_body) + 4;
+    a.x1 += SO_COL_X - 10;
+    a.x2 = a.x1 + SO_COL_W + 20;
+    a.y1 += SO_PROG_Y - 8; /* the knob too */
+    a.y2 = a.y1 + 18 + lv_font_get_line_height(g_font_body) + 4;
     lv_obj_invalidate_area(s_canvas, &a);
     if (!s_woke_at_end && s_now.position_s + (int)((lv_tick_get() - s_now_tick) / 1000) > s_now.duration_s + 1) {
         s_woke_at_end = true;
@@ -539,9 +546,9 @@ static void send(cmd_kind_t kind, sonos_cmd_t cmd, int value)
         s_cmd.target = s_rooms[lead_of(s_room)];
     }
     cmd_t *last = s_cmd_count ? &s_cmds[s_cmd_count - 1] : NULL;
-    if (last && kind == CMD_SONOS && cmd == SONOS_VOLUME && last->kind == CMD_SONOS && last->cmd == SONOS_VOLUME &&
-        strcmp(last->target.uuid, s_cmd.target.uuid) == 0) {
-        *last = s_cmd; /* only the newest volume */
+    if (last && kind == CMD_SONOS && (cmd == SONOS_VOLUME || cmd == SONOS_SEEK || cmd == SONOS_MODE) &&
+        last->kind == CMD_SONOS && last->cmd == cmd && strcmp(last->target.uuid, s_cmd.target.uuid) == 0) {
+        *last = s_cmd; /* only the newest volume, place or mode */
     } else {
         if (s_cmd_count == SO_CMDS) {
             memmove(s_cmds, s_cmds + 1, sizeof(s_cmds[0]) * (SO_CMDS - 1));
@@ -579,9 +586,28 @@ bool sonos_tap(int x, int y)
         a.y1 -= 6;
         a.y2 += 6;
         if (in_box(x, y, &a)) {
+            s_radio_page = false; /* "Velg musikk": the music */
             set_picker(!s_picker);
             app_wake_poll(); /* the lists, or the room */
             return true;
+        }
+        if (page_shown()) {
+            page_box(&a);
+            a.y1 -= 6;
+            a.y2 += 6;
+            if (in_box(x, y, &a)) {
+                if (!s_picker) {
+                    s_radio_page = true; /* straight to the channels */
+                    set_picker(true);
+                    app_wake_poll();
+                    return true;
+                }
+                s_radio_page = !s_radio_page;
+                note("");
+                lv_obj_invalidate(s_canvas);
+                app_wake_poll(); /* the page's pictures */
+                return true;
+            }
         }
         for (int i = 0; i < s_room_count; i++) {
             if (chip_box(i, &a) && x >= a.x1 && x <= a.x2) {
@@ -627,19 +653,17 @@ bool sonos_tap(int x, int y)
         return false;
     }
     if (s_picker) {
-        for (int i = 0; i < s_tile_count; i++) {
-            lv_area_t a;
-            tile_box(i, &a);
-            if (in_box(x, y, &a)) {
-                const tile_t *t = &s_tiles[i];
-                s_cmd.fav = t->fav_idx;
-                snprintf(s_cmd.uri, sizeof(s_cmd.uri), "%s", t->uri);
-                set_picker(false);
-                send(t->fav ? CMD_FAV : CMD_SPOTIFY, SONOS_PLAY, 0);
-                return true;
-            }
+        const mgrid_t *g = s_radio_page ? &s_radio : &s_music;
+        const int i = mgrid_hit(g, x, y);
+        if (i < 0) {
+            return false;
         }
-        return false;
+        const mgrid_tile_t *t = &g->t[i];
+        s_cmd.fav = t->idx;
+        snprintf(s_cmd.uri, sizeof(s_cmd.uri), "%s", t->uri);
+        set_picker(false);
+        send(s_radio_page ? CMD_RADIO : t->uri[0] ? CMD_SPOTIFY : CMD_FAV, SONOS_PLAY, 0);
+        return true;
     }
     if (!s_have || s_now.empty) {
         return false;
@@ -667,6 +691,24 @@ bool sonos_tap(int x, int y)
         if (s_now.can_next) {
             send(CMD_SONOS, SONOS_NEXT, 0);
         }
+        return true;
+    }
+    if (s_now.queue && near(x, y, cx - SO_MODE_DX, SO_CTRL_Y, SO_MODE_R + 14)) {
+        s_now.shuffle = !s_now.shuffle;
+        send(CMD_SONOS, SONOS_MODE, s_now.shuffle | s_now.repeat << 1);
+        return true;
+    }
+    if (s_now.queue && near(x, y, cx + SO_MODE_DX, SO_CTRL_Y, SO_MODE_R + 14)) {
+        s_now.repeat = (s_now.repeat + 1) % 3; /* off, all, one */
+        send(CMD_SONOS, SONOS_MODE, s_now.shuffle | s_now.repeat << 1);
+        return true;
+    }
+    const int x1 = SO_COL_X, x2 = SO_COL_X + SO_COL_W - 1;
+    if (s_now.can_seek && y >= SO_PROG_Y - 18 && y <= SO_PROG_Y + 24 && x >= x1 - 10 && x <= x2 + 10) {
+        const int px = x < x1 ? x1 : x > x2 ? x2 : x;
+        s_now.position_s = (int)((int64_t)s_now.duration_s * (px - x1) / (x2 - x1));
+        s_now_tick = lv_tick_get();
+        send(CMD_SONOS, SONOS_SEEK, s_now.position_s);
         return true;
     }
     if (s_now.volume >= 0 && y > SO_VOL_Y - SO_VOL_R - 14 && y < SO_VOL_Y + SO_VOL_R + 14 && x >= SO_COL_X) {
@@ -762,85 +804,6 @@ static void fetch_cover(const char *url)
     }
 }
 
-/* The tiles' covers still missing: up to `max` of them; true if more
- * remain. */
-static bool fetch_tiles(int max)
-{
-    for (int i = 0; i < SO_TILES && max > 0; i++) {
-        char art[SONOS_URL_MAX];
-        uint16_t *px = NULL;
-        bool want = false;
-        if (esp_lv_adapter_lock(-1) != ESP_OK) {
-            return false;
-        }
-        tile_t *t = &s_tiles[i];
-        if (i < s_tile_count && t->art[0] && strcmp(t->art, t->px_art) != 0) {
-            want = true;
-            snprintf(art, sizeof(art), "%s", t->art);
-            px = t->px;
-            t->px = NULL;
-            t->ok = false;
-        }
-        esp_lv_adapter_unlock();
-        if (!want) {
-            continue;
-        }
-        max--;
-        const bool ok = fetch_picture(art, &px, SO_TILE);
-        if (esp_lv_adapter_lock(-1) != ESP_OK) {
-            heap_caps_free(px);
-            return false;
-        }
-        t->px = px;
-        t->img.data = (const uint8_t *)px;
-        t->ok = ok && px != NULL;
-        snprintf(t->px_art, sizeof(t->px_art), "%s", art); /* not tried again if it failed */
-        lv_obj_invalidate(s_canvas);
-        esp_lv_adapter_unlock();
-    }
-    bool more = false;
-    if (esp_lv_adapter_lock(-1) == ESP_OK) {
-        for (int i = 0; i < s_tile_count && !more; i++) {
-            more = s_tiles[i].art[0] && strcmp(s_tiles[i].art, s_tiles[i].px_art) != 0;
-        }
-        esp_lv_adapter_unlock();
-    }
-    return more;
-}
-
-/* A playlist's name (and picture) from those remembered, or asked of
- * Spotify while `budget` lasts. */
-static void name_playlist(spotify_recent_t *r, int *budget)
-{
-    for (int i = 0; i < SO_NAMES_MAX; i++) {
-        if (strcmp(s_names[i].uri, r->uri) == 0) {
-            snprintf(r->name, sizeof(r->name), "%s", s_names[i].name);
-            if (s_names[i].image[0]) {
-                snprintf(r->image_url, sizeof(r->image_url), "%s", s_names[i].image);
-            }
-            return;
-        }
-    }
-    if (*budget <= 0) {
-        return;
-    }
-    (*budget)--;
-    char name[64] = "", image[160] = "";
-    const esp_err_t err = spotify_get_playlist(r->uri, name, sizeof(name), image, sizeof(image));
-    if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
-        return; /* asked again next time */
-    }
-    const int k = s_names_next++ % SO_NAMES_MAX;
-    snprintf(s_names[k].uri, sizeof(s_names[k].uri), "%s", r->uri);
-    snprintf(s_names[k].name, sizeof(s_names[k].name), "%s", name);
-    snprintf(s_names[k].image, sizeof(s_names[k].image), "%s", image);
-    s_names[k].missing = err == ESP_ERR_NOT_FOUND;
-    snprintf(r->name, sizeof(r->name), "%s", name);
-    if (image[0]) {
-        snprintf(r->image_url, sizeof(r->image_url), "%s", image);
-    }
-}
-
 /* The favourites and recently played, as the tiles; the note for the
  * picker. */
 static void fetch_lists(const sonos_room_t *room)
@@ -860,84 +823,51 @@ static void fetch_lists(const sonos_room_t *room)
     const char *list_note = "";
     if (g_cfg->sp_client_id[0] == '\0' || spotify_login_state(NULL, 0) != SPOTIFY_CONNECTED) {
         list_note = "Koble skjermen til Spotify p\xC3\xA5 oppsettsiden for \xC3\xA5 se det du har spilt nylig.";
-    } else {
-        const esp_err_t err = spotify_get_recent(s_recent, SPOTIFY_RECENT_MAX, &recent);
+    } else if (favs < MT_MAX) {
+        /* Only as many as get tiles after the favourites: each page more
+         * is a request more before the picker fills. */
+        const esp_err_t err = spotify_get_recent(s_recent, MT_MAX - favs, &recent);
         if (err == SPOTIFY_ERR_SCOPE) {
             list_note = "Logg inn p\xC3\xA5 Spotify p\xC3\xA5 nytt (oppsettsiden) for \xC3\xA5 se nylig spilt.";
         } else if (err != ESP_OK) {
             list_note = "Fikk ikke hentet det som er spilt nylig fra Spotify.";
         }
-        int budget = SO_NAMES_PER_POLL;
-        for (int i = 0; i < recent; i++) {
-            if (s_recent[i].name[0] == '\0') {
-                name_playlist(&s_recent[i], &budget);
-            }
-        }
+        spotify_name_playlists(s_recent, recent, SO_NAMES_PER_POLL);
         spotify_close(); /* asked again minutes from now: not kept open meanwhile */
     }
     if (favs == 0 && recent == 0 && list_note[0] == '\0') {
         list_note = "Ingen favoritter i Sonos-appen, og ingenting spilt nylig p\xC3\xA5 Spotify.";
     }
-    if (esp_lv_adapter_lock(-1) != ESP_OK) {
-        return;
+    mgrid_tile_t *items = mgrid_items();
+    if (items == NULL) {
+        return; /* asked again next poll */
     }
-    /* Covers already fetched stay with the picture they show. */
-    static EXT_RAM_BSS_ATTR tile_t old[SO_TILES];
-    memcpy(old, s_tiles, sizeof(old));
     int n = 0;
-    for (int i = 0; i < favs && n < SO_TILES; i++, n++) {
-        tile_t *t = &s_tiles[n];
-        t->fav = true;
-        t->fav_idx = i;
-        t->uri[0] = '\0';
+    for (int i = 0; i < favs && n < MT_MAX; i++, n++) {
+        mgrid_tile_t *t = &items[n];
+        memset(t, 0, sizeof(*t));
+        t->idx = i;
         snprintf(t->title, sizeof(t->title), "%s", s_favs[i].title);
         snprintf(t->art, sizeof(t->art), "%s", s_favs[i].art_url);
     }
-    for (int i = 0; i < recent && n < SO_TILES; i++, n++) {
-        tile_t *t = &s_tiles[n];
-        t->fav = false;
-        t->fav_idx = -1;
+    for (int i = 0; i < recent && n < MT_MAX; i++, n++) {
+        mgrid_tile_t *t = &items[n];
+        memset(t, 0, sizeof(*t));
+        t->idx = -1;
+        t->dot = true;
         snprintf(t->uri, sizeof(t->uri), "%.63s", s_recent[i].uri);
         snprintf(t->title, sizeof(t->title), "%s", s_recent[i].name);
         snprintf(t->art, sizeof(t->art), "%s", s_recent[i].image_url);
     }
-    /* The pixel buffers: one per tile, moved along with their picture. */
-    for (int i = 0; i < SO_TILES; i++) {
-        s_tiles[i].px = NULL;
-        s_tiles[i].px_art[0] = '\0';
-        s_tiles[i].ok = false;
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        free(items);
+        return;
     }
-    for (int i = 0; i < n; i++) {
-        for (int k = 0; k < SO_TILES; k++) {
-            if (old[k].px && old[k].px_art[0] && strcmp(old[k].px_art, s_tiles[i].art) == 0) {
-                s_tiles[i].px = old[k].px;
-                snprintf(s_tiles[i].px_art, sizeof(s_tiles[i].px_art), "%s", old[k].px_art);
-                s_tiles[i].ok = old[k].ok;
-                old[k].px = NULL;
-                break;
-            }
-        }
-    }
-    for (int i = 0, k = 0; i < SO_TILES; i++) {
-        if (s_tiles[i].px == NULL) {
-            /* An unused buffer, if any, for the next picture. */
-            while (k < SO_TILES && old[k].px == NULL) {
-                k++;
-            }
-            if (k < SO_TILES) {
-                s_tiles[i].px = old[k].px;
-                old[k++].px = NULL;
-            }
-        }
-        s_tiles[i].img.data = (const uint8_t *)s_tiles[i].px;
-    }
-    for (int k = 0; k < SO_TILES; k++) {
-        heap_caps_free(old[k].px); /* any not needed now */
-    }
-    s_tile_count = n;
+    mgrid_set(&s_music, items, n);
     snprintf(s_list_note, sizeof(s_list_note), "%s", list_note);
     lv_obj_invalidate(s_canvas);
     esp_lv_adapter_unlock();
+    free(items);
     stamp_now(&s_lists_at);
 }
 
@@ -945,22 +875,8 @@ void sonos_release(void)
 {
     sonos_client_release();
     drop_cover();
-    /* The pointers are only set by this task: nothing to do, no lock. */
-    bool any = false;
-    for (int i = 0; i < SO_TILES; i++) {
-        any |= s_tiles[i].px != NULL;
-    }
-    if (!any || esp_lv_adapter_lock(-1) != ESP_OK) {
-        return;
-    }
-    for (int i = 0; i < SO_TILES; i++) {
-        heap_caps_free(s_tiles[i].px);
-        s_tiles[i].px = NULL;
-        s_tiles[i].img.data = NULL;
-        s_tiles[i].ok = false;
-        s_tiles[i].px_art[0] = '\0';
-    }
-    esp_lv_adapter_unlock();
+    mgrid_release(&s_music);
+    mgrid_release(&s_radio);
 }
 
 /* The room to show from those found: the one chosen, else the setup
@@ -1041,7 +957,7 @@ uint32_t sonos_poll(int for_view)
     /* The buttons pressed, in turn. */
     static EXT_RAM_BSS_ATTR cmd_t cmds[SO_CMDS];
     int ncmds = 0;
-    bool picker = false;
+    bool picker = false, radio_page = false;
     if (esp_lv_adapter_lock(-1) != ESP_OK) {
         return SO_IDLE_MS;
     }
@@ -1061,6 +977,16 @@ uint32_t sonos_poll(int for_view)
                                                       : ESP_ERR_INVALID_ARG;
         } else if (c->kind == CMD_SPOTIFY) {
             err = sonos_play_spotify(&c->target, c->uri);
+        } else if (c->kind == CMD_RADIO) {
+            int count = 0;
+            const sonos_radio_t *radios = sonos_radios(&count);
+            char art[SONOS_URL_MAX] = "", file[24];
+            if (c->fav >= 0 && c->fav < count) {
+                snprintf(file, sizeof(file), "%s.jpg", radios[c->fav].key);
+                app_config_radio_url(g_cfg->ota_url, file, art, sizeof(art));
+            }
+            err = c->fav >= 0 && c->fav < count ? sonos_play_radio(&c->target, &radios[c->fav], art)
+                                                : ESP_ERR_INVALID_ARG;
         } else if (c->kind == CMD_JOIN) {
             err = sonos_join(&c->zone, c->coord);
         } else if (c->kind == CMD_LEAVE) {
@@ -1096,6 +1022,7 @@ uint32_t sonos_poll(int for_view)
     }
     room = s_rooms[lead_of(s_room)];
     picker = s_picker;
+    radio_page = s_radio_page;
     esp_lv_adapter_unlock();
 
     esp_err_t err = sonos_get_now(&room, &s_now_scratch);
@@ -1150,6 +1077,7 @@ uint32_t sonos_poll(int for_view)
             s_picker = opened = true;
         }
         picker = s_picker;
+        radio_page = s_radio_page;
         esp_lv_adapter_unlock();
     }
     bool more = false;
@@ -1158,9 +1086,27 @@ uint32_t sonos_poll(int for_view)
         if (!stamp_fresh(&s_lists_at, SO_LISTS_MS)) {
             fetch_lists(&room);
         }
-        more = fetch_tiles(3);
+        /* One page's pictures at a time: both don't fit beside the rest. */
+        if (radio_page) {
+            mgrid_release(&s_music);
+            more = mgrid_fetch(&s_radio, MT_MAX); /* one sheet for all */
+        } else {
+            mgrid_release(&s_radio);
+            more = mgrid_fetch(&s_music, 3);
+        }
     } else {
-        fetch_cover(s_now_scratch.art_url);
+        mgrid_release(&s_radio);
+        /* A radio of ours without a cover (its metadata lost): its logo. */
+        char logo[SONOS_URL_MAX] = "";
+        int count = 0;
+        const sonos_radio_t *radios = sonos_radios(&count);
+        if (s_now_scratch.stream && s_now_scratch.art_url[0] == '\0' && s_now_scratch.radio >= 0 &&
+            s_now_scratch.radio < count) {
+            char file[24];
+            snprintf(file, sizeof(file), "%s.jpg", radios[s_now_scratch.radio].key);
+            app_config_radio_url(g_cfg->ota_url, file, logo, sizeof(logo));
+        }
+        fetch_cover(logo[0] ? logo : s_now_scratch.art_url);
     }
 
     bool changed = opened;
@@ -1245,13 +1191,31 @@ lv_obj_t *sonos_build(lv_obj_t *screen)
                     .stride = SO_COVER * 2 },
         .data_size = SO_COVER * SO_COVER * 2,
     };
-    for (int i = 0; i < SO_TILES; i++) {
-        s_tiles[i].img = (lv_image_dsc_t){
-            .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565, .w = SO_TILE, .h = SO_TILE,
-                        .stride = SO_TILE * 2 },
-            .data_size = SO_TILE * SO_TILE * 2,
-        };
+    mgrid_init(&s_music, s_canvas, SO_TOP);
+    mgrid_init(&s_radio, s_canvas, SO_TOP);
+    /* The radio page: the channels chosen on the setup page (a save
+     * restarts), each with its logo from the update site. */
+    int count = 0;
+    const sonos_radio_t *radios = sonos_radios(&count);
+    mgrid_tile_t *items = mgrid_items();
+    char sheet[MT_URL_MAX - 20];
+    app_config_radio_url(g_cfg->ota_url, "tiles.bin", sheet, sizeof(sheet));
+    int shown = 0;
+    for (int i = 0; items && i < count && shown < MT_MAX; i++) {
+        if (!sonos_radio_chosen(g_cfg->so_radios, radios[i].key)) {
+            continue;
+        }
+        mgrid_tile_t *t = &items[shown++];
+        memset(t, 0, sizeof(*t));
+        t->idx = i;
+        snprintf(t->title, sizeof(t->title), "%s", radios[i].name);
+        snprintf(t->label, sizeof(t->label), "%s", radios[i].short_name); /* till the logo comes */
+        if (sheet[0]) {
+            snprintf(t->art, sizeof(t->art), "%s#%s", sheet, radios[i].key);
+        }
     }
+    mgrid_set(&s_radio, items, shown);
+    free(items);
     lv_timer_create(sonos_tick_cb, SO_TICK_MS, NULL);
     return s_root;
 }

@@ -27,6 +27,12 @@ void draw_triangle(lv_layer_t *layer, const int pts[3][2], lv_color_t color);
 void draw_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv_color_t color);
 /* A filled circle of radius r around cx, cy. */
 void draw_dot(lv_layer_t *layer, int cx, int cy, int r, lv_color_t color);
+/* One of LVGL's symbols (LV_SYMBOL_*) in its 24 px font, centred on cx, cy. */
+void draw_symbol(lv_layer_t *layer, const char *sym, int cx, int cy, lv_color_t color);
+/* A shuffle or repeat button: `sym` on a disc of radius r, in `on` if on (a
+ * dot under it), and a "1" beside it for repeating one track. */
+void draw_mode_button(lv_layer_t *layer, const char *sym, int cx, int cy, int r, bool on, bool one, bool locked,
+                      lv_color_t disc, lv_color_t ink, lv_color_t dim, lv_color_t on_colour);
 
 /* A JPEG's or PNG's middle square at `side` x `side` px, as RGB565 into
  * out (16-byte aligned, side * side pixels). A JPEG is scaled down while

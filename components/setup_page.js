@@ -114,4 +114,8 @@ let ss=F.querySelector('[name=ssid]');if(!ss.value.trim())bad.push(X(ss,'Skriv i
 F.querySelectorAll('[name^=lat],[name^=lon],[name^=shiplat],[name^=shiplon]').forEach(x=>x.value=x.value.replace(',','.'));
 if(bad.length){e.preventDefault();let d=bad[0].closest('details');while(d){d.open=true;d=d.parentNode.closest('details')}
 bad[0].scrollIntoView({block:'center'});bad[0].focus();return}dirty=false});
-
+/* At most data-max of a group's boxes ticked (the radio channels): the
+   others are greyed out meanwhile; the count shown in data-count. */
+document.querySelectorAll('[data-max]').forEach(g=>{let b=[...g.querySelectorAll('input[type=checkbox]')],m=+g.dataset.max,
+L=()=>{let n=b.filter(x=>x.checked).length;b.forEach(x=>x.disabled=!x.checked&&n>=m);document.getElementById(g.dataset.count).textContent=n};
+b.forEach(x=>x.addEventListener('change',L));L()});

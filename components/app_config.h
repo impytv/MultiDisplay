@@ -47,6 +47,12 @@
 #define APP_CONFIG_SPOTIFY_ID_MAX 33
 /* A Sonos room's name, and the NUL. */
 #define APP_CONFIG_SONOS_ROOM_MAX 48
+/* The radio channels chosen for the Sonos picker: keys of sonos_radios(),
+ * comma separated, at most APP_CONFIG_SONOS_RADIOS_SHOWN (its tiles). */
+#define APP_CONFIG_SONOS_RADIOS_MAX   200
+#define APP_CONFIG_SONOS_RADIOS_SHOWN 12
+#define APP_CONFIG_SONOS_RADIOS_DEFAULT \
+    "nrk_p1,nrk_p2,nrk_p3,nrk_mp3,nrk_nyheter,p4,radionorge,p5,p10,p7,nrj,radiorock"
 #define APP_CONFIG_SAT_ZOOM_DEFAULT 3
 
 /* Public transport departures: which stops and lines a location shows, as
@@ -272,12 +278,14 @@ typedef struct {
     char sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX];
     /* The Sonos screen (main/sonos.c): shown, in the rotation, the rotation
      * may start from it, dark whatever the theme - as for Spotify - and the
-     * room it shows first ("" = the first that plays). */
+     * room it shows first ("" = the first that plays). so_radios: the
+     * channels on the picker's radio page. */
     uint8_t so_show;
     uint8_t so_rotate;
     uint8_t so_start;
     uint8_t so_dark;
     char so_room[APP_CONFIG_SONOS_ROOM_MAX];
+    char so_radios[APP_CONFIG_SONOS_RADIOS_MAX];
 } app_config_t;
 
 /**
@@ -318,6 +326,11 @@ void app_config_hostname(const char *in, char *out, size_t out_len);
  * `ota_url` (an http:// or https:// manifest address) is on, next to the
  * manifest. "" for anything else. */
 void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
+
+/* A radio logo's address: `file` in the folder "bruk/radio/" next to the
+ * manifest (scripts/build_radio_logos.py), as for the guide. "" if
+ * `ota_url` gives none or it doesn't fit. */
+void app_config_radio_url(const char *ota_url, const char *file, char *out, size_t out_len);
 
 /* Where Spotify sends the browser back after a login (server/spotify/):
  * the folder "spotify/" next to the manifest, if `ota_url` is https://

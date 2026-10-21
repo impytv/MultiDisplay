@@ -32,6 +32,7 @@ void test_config(void)
     CHECK_INT(a.so_start, 1);   /* likewise for Sonos */
     CHECK_INT(a.so_show, 0);
     CHECK_STR(a.so_room, "");
+    CHECK_STR(a.so_radios, APP_CONFIG_SONOS_RADIOS_DEFAULT);
     CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
     CHECK_INT(a.mon_cal, 0);    /* off unless ticked */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
@@ -83,6 +84,7 @@ void test_config(void)
     a.so_show = 1;
     a.so_start = 0;
     snprintf(a.so_room, sizeof(a.so_room), "Stua + Kj\xC3\xB8kken");
+    snprintf(a.so_radios, sizeof(a.so_radios), "p4,nrk_p3");
     snprintf(a.sp_client_id, sizeof(a.sp_client_id), "0123456789abcdef0123456789abcdef");
     a.temp_offset_dc = -183;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
@@ -142,6 +144,7 @@ void test_config(void)
     CHECK(!c.sp_start && c.sp_dark);
     CHECK(c.so_show && !c.so_rotate && !c.so_start && !c.so_dark);
     CHECK_STR(c.so_room, "Stua + Kj\xC3\xB8kken");
+    CHECK_STR(c.so_radios, "p4,nrk_p3");
     CHECK_STR(c.sp_client_id, "0123456789abcdef0123456789abcdef");
     CHECK_INT(c.temp_offset_dc, 25);                /* this board's calibration stays */
     {
@@ -240,6 +243,16 @@ void test_config(void)
     CHECK_STR(guide, "");
     app_config_guide_url("http:///manifest.json", guide, sizeof(guide));
     CHECK_STR(guide, "");
+    /* The radio logos, beside the guide. */
+    char logo[96];
+    app_config_radio_url("https://example.no/md/manifest.json", "p4.jpg", logo, sizeof(logo));
+    CHECK_STR(logo, "https://example.no/md/bruk/radio/p4.jpg");
+    app_config_radio_url("ftp://example.no/manifest.json", "p4.jpg", logo, sizeof(logo));
+    CHECK_STR(logo, "");
+    app_config_radio_url("https://example.no/manifest.json", "p4.jpg", logo, 36); /* just too short */
+    CHECK_STR(logo, "");
+    app_config_radio_url("https://example.no/manifest.json", "p4.jpg", logo, 37);
+    CHECK_STR(logo, "https://example.no/bruk/radio/p4.jpg");
     /* Spotify's return page: https only. */
     app_config_spotify_redirect("https://multidisplay.example.no/manifest.json", guide, sizeof(guide));
     CHECK_STR(guide, "https://multidisplay.example.no/spotify/");

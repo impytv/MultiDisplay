@@ -357,3 +357,60 @@ is said by the page (`data-chip=''`), not by an attribute's absence.
 *Lesson:* send a page built from live state `no-store`; and let a script
 treat what the page doesn't say as "unknown, leave it to the server" -
 the display may have updated under an open tab.
+
+### Cover addresses cut short
+
+Spotify's playlist covers made of four albums ("mosaic") have addresses of
+~190 characters; they were kept in 160, cut, and every one answered 404, so
+those tiles stayed empty. Seen only on the device, from the log.
+*Lesson:* size an address for the longest real one, and never cut it:
+keep it whole or not at all (`copy_url` in `spotify_parse.c`), as a cut
+address fails somewhere else, later.
+
+### A stream address that works in curl
+
+NRK's lyd.nrk.no addresses played in curl and a browser, so the radio
+presets were made with them, and only checked as far as the speaker taking
+the address. Sonos took it, but answered Play with UPnP error 701: the
+address sends on through a relative redirect (`Location: /icecast/...`),
+which Sonos doesn't follow. The stream server's own addresses play.
+*Lesson:* a preset is checked by playing it on the speaker (muted, if
+need be), not by fetching it from a computer; and give a speaker the
+address that answers 200 itself.
+
+### State copied in one branch of two
+
+The Sonos poll copies what it needs from the screen under the lock in two
+places: always, and again when the room has nothing to play. The radio
+page's flag was added only to the second, so with music playing the poll
+never saw the page open and the logos never came. Found from a screenshot.
+*Lesson:* when a task copies several fields of shared state, add a new one
+everywhere the others are copied (search for one of its neighbours).
+
+### The firmware's size is PSRAM
+
+The radio logos (200 KB) were first built into the firmware. Free PSRAM fell
+by just as much, as `CONFIG_SPIRAM_XIP_FROM_PSRAM` copies the whole image
+into PSRAM at start-up, and with the music picker's tiles open it stayed
+under the memory watchdog's 300 KB: a restart every minute. The watchdog's
+own comment still said ~1.3 MB was free; it is ~600 KB now, the rest gone to
+the firmware's growth over time.
+*Lesson:* data that isn't needed all the time doesn't go into the firmware
+(fetch it, as the logos now are from the update site); look at free PSRAM
+(`/status`) before and after a change that adds to the image, and leave a
+screen open past the watchdog's minute when it holds memory. Memory a
+screen holds on purpose is told to the watchdog (`wd_psram_held`).
+
+### Memory held for a picture that never came
+
+The music pickers allocated a tile's 21 KB pixel buffer before fetching its
+picture, and kept it when the fetch failed: with the update site down, the
+radio page's 12 tiles would hold ~260 KB for drawing their names - memory
+the watchdog counts as free, as `wd_psram_held` told it. Three 10 KB static
+arrays only used to stage the tiles for a moment, and a 320-byte address
+copy per tile, cost another 48 KB of PSRAM for good. Found by a review, and
+measured with `nm -S --size-sort build/multi_display.elf`.
+*Lesson:* allocate a buffer once there is something to put in it, and free
+it on every failure path; a static array in PSRAM is PSRAM gone for good, so
+a buffer used for a moment is allocated for that moment. Check the biggest
+`b` symbols with `nm` after adding statics.

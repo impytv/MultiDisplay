@@ -682,3 +682,93 @@ checks, and the escaping on the setup and navigation pages hold.
   and aren't shown until the next poll, up to 5 minutes later. Wake the poll
   (`app_wake_poll`) when the first day shown changes, as the buttons do.
   *Done (1.22.1).*
+
+## Music: what Sonos and Spotify could do next (October 2026, 1.27.4)
+
+Ideas for the Sonos and Spotify screens, from a look at what the two APIs
+offer that the screens don't use yet. Roughly in order of value for the
+work.
+
+- [ ] **83. Sonos sleep timer.** "Slå av om 15/30/60 min" on the Sonos
+  screen: `AVTransport ConfigureSleepTimer`, run by the speaker itself, so
+  it works with the display off or on another screen.
+- [x] **84. Shuffle, repeat and seeking.** Buttons for shuffle and repeat
+  (off, all, one) beside the skip buttons, and a tap on the progress bar
+  to jump there, on both screens: Sonos `SetPlayMode` and `Seek
+  REL_TIME` (a queue only: not radio, TV or AirPlay), Spotify
+  `/me/player/shuffle`, `/repeat` and `/seek`. *Done: shuffle left of the
+  skip buttons, repeat right (a "1" for one track), lit with a dot under;
+  a knob on the progress bar where it can be wound. Tested on the device
+  with a queue loaded silently and the play mode and place set from
+  outside; host tests for the play mode, `can_seek` and Spotify's
+  `disallows`.*
+- [ ] **85. The music screen when music starts.** Jump to the Sonos or
+  Spotify screen when playback starts, stay there while it plays, and go
+  back to the rotation when it stops (or after a while paused). A setting,
+  off by default; the Sonos screen would need to look at the rooms while
+  not on show.
+- [ ] **86. Volume per room in a Sonos group.** A row of - and + per room
+  (`RenderingControl SetVolume` on each member) besides the group's.
+- [x] **87. Radio in the Sonos picker.** NRK's channels as a page of the
+  "Velg musikk" grid, started as plain streams (`x-rincon-mp3radio:` with
+  the addresses on NRK's stream server), so they need no Sonos favourite or radio
+  service. *Done: "Radio" beside "Velg musikk" opens the picker on the
+  channels chosen on the setup page (Sonos, "Radiokanaler i Velg musikk"; up
+  to 12 of 28: NRK's, the 15 most listened to others at myTuner, and
+  P24-7 Juleradioen), each
+  with its logo from the update site (bruk/radio/), also shown as the cover
+  while it plays.*
+- [x] **88. "Velg musikk" on the Spotify screen.** The account's playlists
+  and what it played lately as a grid, as on the Sonos screen, started on
+  the device playing (`PUT /me/player/play` with `context_uri`), or else
+  the one that played last. *Done: up to 6 played lately, then the
+  playlists; the grid is shared with the Sonos screen
+  (`main/music_tiles.c`), and the playlists' names remembered for both in
+  `spotify_client.c`.*
+- [ ] **89. Mute.** `SetGroupMute` on Sonos; on Spotify the volume to 0 and
+  back.
+- [ ] **90. Sonos playlists in the picker.** The household's Sonos
+  playlists (`SQ:`) after the favourites.
+- [ ] **91. "Kommer nå".** The next tracks in the queue (Sonos `Browse
+  Q:0`, a tap jumps there with `Seek TRACK_NR`; Spotify
+  `/me/player/queue`).
+- [ ] **92. Move Spotify to another device while it plays.** The device
+  buttons are only shown while nothing plays.
+- [ ] **93. Like a Spotify track.** A heart for the track playing; needs
+  the `user-library-modify` permission, so everyone logs in again.
+- [ ] **94. Soundbar settings.** Night sound and speech enhancement for a
+  Sonos soundbar (`RenderingControl SetEQ` NightMode / DialogLevel), only
+  for a room that has them.
+- [ ] **95. The next Sonos alarm on the clock screen** (`AlarmClock
+  ListAlarms`).
+- [ ] **96. "Grupper alle"** on the Sonos screen: every room into the group
+  playing in one tap.
+- [ ] **97. Events instead of polling.** Sonos speakers push changes to a
+  subscriber (UPnP GENA): instant updates and less traffic than asking
+  every 3 s, but subscriptions must be renewed and made again when an
+  address changes.
+- [ ] **98. "Spiller nå" on the other screens.** A thin bar with the title
+  playing, a tap opens the player; optional, as it costs drawing on every
+  screen.
+- [ ] **99. Home Assistant's media players** (Chromecast, AirPlay and the
+  rest) through Home Assistant rather than each protocol, with item 40.
+- [x] **100. The music pickers' memory and speed** (review of 2026-10-21).
+  A picture that fails holds no tile buffer (12 failed radio logos held
+  ~260 KB the watchdog counted as free); the tiles' staging arrays are
+  allocated only while used and a tile keeps a hash of its picture's
+  address, not a copy (48 KB less PSRAM for good); the radio logos' sheet
+  gets its 96 KB at once instead of doubling to 128 KB (192 KB for a
+  moment); a shorter list frees the buffers it no longer needs. Spotify's
+  picker asks only as many "spilt nylig" pages as get tiles, says "Henter
+  musikken …" till they come, and starts on the device that played last
+  only if it is still listed. Sonos asks the queue's play mode every 30 s
+  (or after a change from the display) rather than every poll; a word
+  tile isn't measured when it isn't drawn.
+- [ ] **101. The radio logos kept between visits.** The radio page fetches
+  `tiles.bin` (74 KB, HTTPS) each time it opens, so the logos take a
+  moment; it could be kept (as JPEGs, not pixels) while the Sonos screen
+  shows, at that much PSRAM.
+
+Not possible: lyrics, and Spotify's audio features and recommendations,
+which Spotify has closed to new apps; Chromecast and AirPlay directly are
+too heavy for the chip.

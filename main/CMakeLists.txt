@@ -19,6 +19,7 @@ idf_component_register(
         "clockscreen.c"
         "spotify.c"
         "sonos.c"
+        "music_tiles.c"
         "satellite.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
@@ -70,6 +71,7 @@ idf_component_register(
         "../components/nav_page.js"
     PRIV_REQUIRES
         esp_wifi
+        esp_psram
         esp_netif
         esp_event
         nvs_flash

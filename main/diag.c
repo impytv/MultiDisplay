@@ -28,6 +28,7 @@
 #include "esp_log.h"
 #include "esp_memory_utils.h"
 #include "esp_partition.h"
+#include "esp_psram.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -391,6 +392,10 @@ static esp_err_t h_status(httpd_req_t *req)
     cJSON_AddNumberToObject(mem, "intern_ledig", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(mem, "intern_lavest", heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
     cJSON_AddNumberToObject(mem, "intern_storste_blokk", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    /* The chip's size, and what of it the heap got: the rest holds the
+     * firmware's code and constants (XIP from PSRAM). */
+    cJSON_AddNumberToObject(mem, "psram_brikke", esp_psram_get_size());
+    cJSON_AddNumberToObject(mem, "psram_heap", heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(mem, "psram_ledig", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(mem, "psram_lavest", heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
     cJSON_AddNumberToObject(mem, "psram_storste_blokk", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));

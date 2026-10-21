@@ -40,6 +40,12 @@ static void copy(char *dst, size_t len, const char *src)
     }
 }
 
+/* An address: whole or not at all, as a cut one leads nowhere. */
+static void copy_url(char *dst, size_t len, const char *src)
+{
+    snprintf(dst, len, "%s", strlen(src) < len ? src : "");
+}
+
 static void parse_device(const cJSON *d, spotify_device_t *out)
 {
     memset(out, 0, sizeof(*out));
@@ -85,8 +91,17 @@ bool spotify_parse_player(const char *json, spotify_player_t *out)
     out->active = true;
     out->playing = bool_at(root, "is_playing");
     out->shuffle = bool_at(root, "shuffle_state");
+    const char *rep = str_at(root, "repeat_state");
+    out->repeat = strcmp(rep, "context") == 0 ? SPOTIFY_REPEAT_CONTEXT
+                  : strcmp(rep, "track") == 0 ? SPOTIFY_REPEAT_TRACK
+                                              : SPOTIFY_REPEAT_OFF;
     out->progress_ms = int_at(root, "progress_ms", 0);
     copy(out->kind, sizeof(out->kind), str_at(root, "currently_playing_type"));
+    /* What can't be done now (an ad, a podcast), as "true". */
+    const cJSON *dis = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(root, "actions"), "disallows");
+    out->can_shuffle = !bool_at(dis, "toggling_shuffle");
+    out->can_repeat = !bool_at(dis, "toggling_repeat_context");
+    out->can_seek = !bool_at(dis, "seeking");
 
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, "item");
     if (cJSON_IsObject(item)) {
@@ -108,15 +123,18 @@ bool spotify_parse_player(const char *json, spotify_player_t *out)
                 p += n;
             }
             copy(out->album, sizeof(out->album), str_at(album, "name"));
-            copy(out->image_url, sizeof(out->image_url), pick_image(cJSON_GetObjectItemCaseSensitive(album, "images")));
+            copy_url(out->image_url, sizeof(out->image_url), pick_image(cJSON_GetObjectItemCaseSensitive(album, "images")));
         } else if (cJSON_IsObject(show)) {
             /* A podcast episode: the show for the artist. */
             copy(out->artist, sizeof(out->artist), str_at(show, "name"));
             copy(out->album, sizeof(out->album), str_at(show, "publisher"));
             const char *im = pick_image(cJSON_GetObjectItemCaseSensitive(item, "images"));
-            copy(out->image_url, sizeof(out->image_url),
-                 *im ? im : pick_image(cJSON_GetObjectItemCaseSensitive(show, "images")));
+            copy_url(out->image_url, sizeof(out->image_url),
+                     *im ? im : pick_image(cJSON_GetObjectItemCaseSensitive(show, "images")));
         }
+    }
+    if (out->duration_ms <= 0 || strcmp(out->kind, "ad") == 0) {
+        out->can_seek = false;
     }
     cJSON_Delete(root);
     return true;
@@ -186,7 +204,7 @@ int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max
             context_uri(str_at(album, "uri"), r.uri, sizeof(r.uri));
             copy(r.name, sizeof(r.name), str_at(album, "name"));
         }
-        copy(r.image_url, sizeof(r.image_url), pick_image(cJSON_GetObjectItemCaseSensitive(album, "images")));
+        copy_url(r.image_url, sizeof(r.image_url), pick_image(cJSON_GetObjectItemCaseSensitive(album, "images")));
         bool seen = r.uri[0] == '\0';
         for (int i = 0; i < n && !seen; i++) {
             seen = strcmp(out[i].uri, r.uri) == 0;
@@ -203,6 +221,35 @@ int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max
     return n;
 }
 
+int spotify_parse_playlists(const char *json, spotify_recent_t *out, int max)
+{
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *items = cJSON_GetObjectItemCaseSensitive(root, "items");
+    if (!cJSON_IsArray(items)) {
+        cJSON_Delete(root);
+        return -1;
+    }
+    int n = 0;
+    const cJSON *it;
+    cJSON_ArrayForEach(it, items)
+    {
+        if (n >= max) {
+            break;
+        }
+        spotify_recent_t r;
+        memset(&r, 0, sizeof(r));
+        context_uri(str_at(it, "uri"), r.uri, sizeof(r.uri));
+        if (strncmp(r.uri, "spotify:playlist:", 17) != 0 || strlen(str_at(it, "uri")) >= sizeof(r.uri)) {
+            continue; /* not one, or too long to start */
+        }
+        copy(r.name, sizeof(r.name), str_at(it, "name"));
+        copy_url(r.image_url, sizeof(r.image_url), pick_image(cJSON_GetObjectItemCaseSensitive(it, "images")));
+        out[n++] = r;
+    }
+    cJSON_Delete(root);
+    return n;
+}
+
 bool spotify_parse_playlist(const char *json, char *name, size_t name_len, char *image_url, size_t image_len)
 {
     cJSON *root = cJSON_Parse(json);
@@ -210,7 +257,7 @@ bool spotify_parse_playlist(const char *json, char *name, size_t name_len, char 
     const bool ok = *nm != '\0';
     if (ok) {
         copy(name, name_len, nm);
-        copy(image_url, image_len, pick_image(cJSON_GetObjectItemCaseSensitive(root, "images")));
+        copy_url(image_url, image_len, pick_image(cJSON_GetObjectItemCaseSensitive(root, "images")));
     }
     cJSON_Delete(root);
     return ok;

@@ -164,6 +164,7 @@ static void sanitize_view_settings(app_config_t *c)
     c->so_start = c->so_start ? 1 : 0;
     c->so_dark = c->so_dark ? 1 : 0;
     c->so_room[APP_CONFIG_SONOS_ROOM_MAX - 1] = '\0';
+    c->so_radios[APP_CONFIG_SONOS_RADIOS_MAX - 1] = '\0';
     c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
     if (!app_config_spotify_id_valid(c->sp_client_id)) {
         c->sp_client_id[0] = '\0';
@@ -206,6 +207,7 @@ static void seed_defaults(app_config_t *out)
     out->mon_astro = 1;
     out->sp_start = 1;
     out->so_start = 1;
+    snprintf(out->so_radios, sizeof(out->so_radios), "%s", APP_CONFIG_SONOS_RADIOS_DEFAULT);
     out->clk_out = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
@@ -355,6 +357,7 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "sostart", &out->so_start); /* the rotation may start from it if never saved */
     nvs_get_u8(h, "sodark", &out->so_dark);
     load_str(h, "soroom", out->so_room, sizeof(out->so_room));
+    load_str(h, "soradios", out->so_radios, sizeof(out->so_radios)); /* the default if never saved */
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     if (!clkin_saved) {
@@ -401,9 +404,9 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "Spotify: %s%s%s%s, client ID %s", out->sp_show ? "shown" : "not shown",
              out->sp_rotate ? ", in the rotation" : "", out->sp_start ? "" : ", the rotation not started from it",
              out->sp_dark ? ", dark" : "", out->sp_client_id[0] ? "set" : "not set");
-    ESP_LOGI(TAG, "Sonos: %s%s%s%s, room '%s'", out->so_show ? "shown" : "not shown",
+    ESP_LOGI(TAG, "Sonos: %s%s%s%s, room '%s', radio '%s'", out->so_show ? "shown" : "not shown",
              out->so_rotate ? ", in the rotation" : "", out->so_start ? "" : ", the rotation not started from it",
-             out->so_dark ? ", dark" : "", out->so_room);
+             out->so_dark ? ", dark" : "", out->so_room, out->so_radios);
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -504,6 +507,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "sostart", cfg->so_start ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "sodark", cfg->so_dark ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "soroom", cfg->so_room);
+    if (err == ESP_OK) err = nvs_set_str(h, "soradios", cfg->so_radios);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -632,6 +636,17 @@ static void site_url(const char *ota_url, bool https, const char *sub, char *out
 void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
 {
     site_url(ota_url, false, "bruk/", out, out_len);
+}
+
+void app_config_radio_url(const char *ota_url, const char *file, char *out, size_t out_len)
+{
+    site_url(ota_url, false, "bruk/radio/", out, out_len);
+    const size_t n = strlen(out);
+    if (n > 0 && n + strlen(file) < out_len) {
+        memcpy(out + n, file, strlen(file) + 1);
+    } else {
+        out[0] = '\0';
+    }
 }
 
 void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len)

@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include "check.h"
 #include "../../components/sonos_parse.c"
+#include "../../components/app_config.h"
 
 /* Replies from a household's speakers (data/sonos/): a stereo pair "Stua"
  * playing AirPlay, "Soverom" and "Badet" alone; NRK P3 and an album from
@@ -86,6 +87,7 @@ void test_sonos(void)
     CHECK_INT(now.position_s, 129);
     CHECK_INT(now.duration_s, 345);
     CHECK(now.can_play && now.can_pause && now.can_next && now.can_previous && !now.stream && !now.empty);
+    CHECK(!now.queue && !now.can_seek); /* AirPlay: no shuffle, no winding */
     CHECK_INT(now.volume, 14);
     free(tr);
     free(pos);
@@ -111,6 +113,7 @@ void test_sonos(void)
     CHECK_STR(now.art_url, "https://gfx.nrk.no/F4h3WlHK4YUujwYdbFsM5QORv-xqxofMsvznIYSiBGsw");
     CHECK_INT(now.duration_s, -1);
     CHECK(now.can_play && !now.can_pause && !now.can_next && !now.can_previous);
+    CHECK(!now.queue && !now.can_seek);
     free(pos);
     free(act);
     /* What the station says it plays, Sonos's way and as fields. */
@@ -149,6 +152,10 @@ void test_sonos(void)
     CHECK(strncmp(now.art_url, "http://192.168.0.123:1400/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack", 72) == 0);
     CHECK_INT(now.duration_s, 213);
     CHECK(now.can_next);
+    CHECK(now.queue && now.can_seek); /* the queue: shuffle, repeat and winding */
+    CHECK(sonos_parse_now(tr, pos, media, "<Actions>Set, Stop, Pause, Play, X_DLNA_SeekTime, Next</Actions>",
+                          "192.168.0.123", &now));
+    CHECK(now.can_seek && !now.can_previous);
     free(tr);
     free(pos);
     free(media);
@@ -158,6 +165,151 @@ void test_sonos(void)
                           "<CurrentURI>x-rincon-queue:RINCON_X#0</CurrentURI>", NULL, "1.2.3.4", &now));
     CHECK(now.empty);
     CHECK_INT(now.duration_s, -1);
+    CHECK(now.queue && !now.can_seek); /* nothing to wind */
+
+    /* The queue's play mode, both ways. */
+    bool shuffle = false;
+    int repeat = -1;
+    CHECK(sonos_parse_play_mode("<PlayMode>SHUFFLE</PlayMode><RecQualityMode>X</RecQualityMode>", &shuffle, &repeat));
+    CHECK(shuffle);
+    CHECK_INT(repeat, SONOS_REPEAT_ALL);
+    CHECK(sonos_parse_play_mode("<PlayMode>REPEAT_ONE</PlayMode>", &shuffle, &repeat));
+    CHECK(!shuffle);
+    CHECK_INT(repeat, SONOS_REPEAT_ONE);
+    CHECK(sonos_parse_play_mode("<PlayMode>NEW_MODE</PlayMode>", &shuffle, &repeat)); /* unknown: plain */
+    CHECK(!shuffle && repeat == SONOS_REPEAT_OFF);
+    CHECK(!sonos_parse_play_mode("<x/>", &shuffle, &repeat));
+    CHECK_STR(sonos_play_mode(false, SONOS_REPEAT_OFF), "NORMAL");
+    CHECK_STR(sonos_play_mode(true, SONOS_REPEAT_OFF), "SHUFFLE_NOREPEAT");
+    CHECK_STR(sonos_play_mode(true, SONOS_REPEAT_ONE), "SHUFFLE_REPEAT_ONE");
+    CHECK_STR(sonos_play_mode(false, SONOS_REPEAT_ALL), "REPEAT_ALL");
+    CHECK_STR(sonos_play_mode(false, 7), "NORMAL");
+    for (int sh = 0; sh < 2; sh++) {
+        for (int r = 0; r < 3; r++) {
+            char m[64];
+            snprintf(m, sizeof(m), "<PlayMode>%s</PlayMode>", sonos_play_mode(sh, r));
+            CHECK(sonos_parse_play_mode(m, &shuffle, &repeat) && shuffle == sh && repeat == r);
+        }
+    }
+
+    /* NRK's channels, as plain streams. */
+    int nradio = 0;
+    const sonos_radio_t *radios = sonos_radios(&nradio);
+    CHECK_INT(nradio, 28);
+    /* Each key once, each with its logo in the update site's tiles.bin. */
+    FILE *lf = fopen("../../server/bruk/radio/tiles.bin", "rb");
+    CHECK(lf != NULL);
+    static uint8_t logos[400000];
+    const size_t nlogos = lf ? fread(logos, 1, sizeof(logos), lf) : 0;
+    if (lf) {
+        fclose(lf);
+    }
+    CHECK(nlogos > 8 && nlogos < sizeof(logos));
+    for (int i = 0; i < nradio; i++) {
+        const uint8_t *pic = NULL;
+        size_t plen = 0;
+        CHECK(sonos_logo_find(logos, nlogos, radios[i].key, &pic, &plen));
+        CHECK(plen > 1000 && pic[0] == 0xFF && pic[1] == 0xD8); /* a JPEG */
+        for (int k = 0; k < i; k++) {
+            CHECK(strcmp(radios[i].key, radios[k].key) != 0);
+        }
+    }
+    const uint8_t *pic = NULL;
+    size_t plen = 0;
+    CHECK(!sonos_logo_find(logos, nlogos, "nope", &pic, &plen));
+    CHECK(!sonos_logo_find(logos, 100, "p4", &pic, &plen)); /* cut short */
+    CHECK(!sonos_logo_find((const uint8_t *)"XXXX\1\0\0\0", 8, "p4", &pic, &plen));
+    /* The chosen ones: whole keys only. */
+    CHECK(sonos_radio_chosen("nrk_p1,p4", "p4"));
+    CHECK(sonos_radio_chosen("nrk_p1,p4", "nrk_p1"));
+    CHECK(!sonos_radio_chosen("nrk_p1,p4", "p"));
+    CHECK(!sonos_radio_chosen("nrk_p1,p4", "nrk_p1pluss"));
+    CHECK(!sonos_radio_chosen("nrk_p1pluss", "nrk_p1"));
+    CHECK(!sonos_radio_chosen("", "p4"));
+    CHECK(!sonos_radio_chosen("p4", ""));
+    /* The setup page's default: real keys, no more than the tiles. */
+    int defaults = 0;
+    for (int i = 0; i < nradio; i++) {
+        defaults += sonos_radio_chosen(APP_CONFIG_SONOS_RADIOS_DEFAULT, radios[i].key);
+    }
+    int keys = 1;
+    for (const char *c = APP_CONFIG_SONOS_RADIOS_DEFAULT; *c; c++) {
+        keys += *c == ',';
+    }
+    CHECK_INT(defaults, keys);
+    CHECK(defaults <= APP_CONFIG_SONOS_RADIOS_SHOWN);
+    char ruri[160], rmeta[1024];
+    CHECK(sonos_radio_share(&radios[0], "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+    CHECK_STR(ruri, "x-rincon-mp3radio://cdn0-47115-liveicecast0.dna.contentdelivery.net/p1_mp3_h");
+    CHECK(strstr(rmeta, "<dc:title>NRK P1</dc:title>") != NULL);
+    CHECK(strstr(rmeta, "object.item.audioItem.audioBroadcast") != NULL);
+    for (int i = 0; i < nradio; i++) {
+        CHECK(sonos_radio_share(&radios[i], "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+        CHECK(strlen(radios[i].short_name) < 24); /* a tile's label */
+    }
+    CHECK(!sonos_radio_share(&radios[0], "", ruri, 30, rmeta, sizeof(rmeta)));
+    const sonos_radio_t https = { "x", "X", "X", "https://example.com/x", false };
+    CHECK(!sonos_radio_share(&https, "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+    /* Playing one: a radio, named and pictured from the metadata sent. */
+    CHECK(sonos_radio_share(&radios[0], "https://example.no/bruk/radio/nrk_p1.jpg?a&b", ruri, sizeof(ruri), rmeta,
+                            sizeof(rmeta)));
+    CHECK(strstr(rmeta, "<upnp:albumArtURI>https://example.no/bruk/radio/nrk_p1.jpg?a&amp;b</upnp:albumArtURI>"));
+    char media_r[1600], esc[1200];
+    CHECK(sonos_xml_escape(rmeta, esc, sizeof(esc)));
+    snprintf(media_r, sizeof(media_r), "<CurrentURI>%s</CurrentURI><CurrentURIMetaData>%s</CurrentURIMetaData>", ruri,
+             esc);
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>",
+                          "<TrackDuration>0:00:00</TrackDuration><TrackMetaData></TrackMetaData>", media_r, NULL,
+                          "1.2.3.4", &now));
+    CHECK(now.stream && !now.queue && !now.can_seek);
+    CHECK_INT(now.radio, 0); /* NRK P1, from its address */
+    CHECK_STR(now.art_url, "https://example.no/bruk/radio/nrk_p1.jpg?a&b");
+    CHECK_STR(now.source, "Radio");
+    CHECK_STR(now.title, "NRK P1");
+    /* As Sonos says it: the title is the address's file name, and the
+     * programme comes as streamContent. */
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>",
+                          "<TrackDuration>0:00:00</TrackDuration><TrackURI>x-rincon-mp3radio://http://"
+                          "cdn0-47115-liveicecast0.dna.contentdelivery.net/p1_mp3_h</TrackURI><TrackMetaData>"
+                          "&lt;DIDL-Lite&gt;&lt;item&gt;&lt;r:streamContent&gt;Nyhetsmorgen&lt;/r:streamContent&gt;"
+                          "&lt;dc:title&gt;p1_mp3_h&lt;/dc:title&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>",
+                          media_r, NULL, "1.2.3.4", &now));
+    CHECK_STR(now.title, "Nyhetsmorgen");
+    CHECK_STR(now.artist, "NRK P1");
+    CHECK_STR(now.station, "NRK P1");
+    /* While it starts: Sonos' word, in Norwegian. */
+    const char *const zp[][2] = { { "ZPSTR_BUFFERING", "Laster \xE2\x80\xA6" },
+                                  { "ZPSTR_CONNECTING", "Kobler til \xE2\x80\xA6" },
+                                  { "ZPSTR_SOMETHING_ELSE", "NRK P1" } };
+    for (size_t i = 0; i < sizeof(zp) / sizeof(zp[0]); i++) {
+        char pos[512];
+        snprintf(pos, sizeof(pos),
+                 "<TrackURI>x-rincon-mp3radio://http://h/p1_mp3_h</TrackURI><TrackMetaData>&lt;DIDL-Lite&gt;"
+                 "&lt;item&gt;&lt;r:streamContent&gt;%s&lt;/r:streamContent&gt;&lt;dc:title&gt;p1_mp3_h"
+                 "&lt;/dc:title&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>",
+                 zp[i][0]);
+        CHECK(sonos_parse_now("<CurrentTransportState>TRANSITIONING</CurrentTransportState>", pos, media_r, NULL,
+                              "1.2.3.4", &now));
+        CHECK_STR(now.title, zp[i][1]);
+    }
+    CHECK_STR(now.station, "NRK P1");
+    /* No programme: the station's name. */
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>",
+                          "<TrackURI>x-rincon-mp3radio://http://h/p1_mp3_h</TrackURI><TrackMetaData>"
+                          "&lt;DIDL-Lite&gt;&lt;item&gt;&lt;dc:title&gt;p1_mp3_h&lt;/dc:title&gt;"
+                          "&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>",
+                          media_r, NULL, "1.2.3.4", &now));
+    CHECK_STR(now.title, "NRK P1");
+    /* Started without its metadata: named from the address. */
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>",
+                          "<TrackURI>x-rincon-mp3radio://http://cdn0-47115-liveicecast0.dna.contentdelivery.net/"
+                          "nyheter_mp3_h</TrackURI><TrackMetaData>&lt;DIDL-Lite&gt;&lt;item&gt;&lt;dc:title&gt;"
+                          "nyheter_mp3_h&lt;/dc:title&gt;&lt;/item&gt;&lt;/DIDL-Lite&gt;</TrackMetaData>",
+                          "<CurrentURI>x-rincon-mp3radio://cdn0-47115-liveicecast0.dna.contentdelivery.net/"
+                          "nyheter_mp3_h</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>",
+                          NULL, "1.2.3.4", &now));
+    CHECK_STR(now.title, "NRK Nyheter");
+    CHECK(now.radio >= 0 && strcmp(radios[now.radio].key, "nrk_nyheter") == 0);
 
     char *v = slurp("data/sonos/volume.xml");
     CHECK_INT(sonos_parse_volume(v), 14);

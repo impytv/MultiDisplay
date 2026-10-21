@@ -107,6 +107,7 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddBoolToObject(so, "start_rotation", c->so_start);
     cJSON_AddBoolToObject(so, "dark", c->so_dark);
     cJSON_AddStringToObject(so, "room", c->so_room);
+    cJSON_AddStringToObject(so, "radios", c->so_radios);
 
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
@@ -294,6 +295,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(so, "start_rotation", &c->so_start);
     get_bool(so, "dark", &c->so_dark);
     ok &= get_str(so, "room", c->so_room, sizeof(c->so_room));
+    ok &= get_str(so, "radios", c->so_radios, sizeof(c->so_radios));
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

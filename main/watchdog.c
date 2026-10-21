@@ -9,6 +9,7 @@
  * fail in odd ways until the nightly restart - and the memory figures are
  * logged every hour, so a slow leak shows in the log long before that. */
 
+#include <stdatomic.h>
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -32,8 +33,10 @@ static const char *TAG = "watchdog";
 /* Low memory, for WD_LOW_MEM_S on end: a fetch dips internal DRAM to about
  * 36 KB for a moment at worst, and WiFi's buffers start failing below a few
  * KB, or when no block of ~1.6 KB is left. PSRAM holds a few hundred KB of
- * cached screens beyond its steady ~1.3 MB free; a forecast parse needs
- * ~350 KB of it. */
+ * cached screens beyond what is free with none (~600 KB now: the firmware
+ * is run from PSRAM, so it costs as much as it grows); a forecast parse
+ * needs ~350 KB of it. Memory a screen holds on purpose (wd_psram_held)
+ * counts as free: it is given back before another screen's fetches. */
 #define WD_LOW_INTERNAL     (16 * 1024)
 #define WD_LOW_INTERNAL_BLK (4 * 1024)
 #define WD_LOW_PSRAM        (300 * 1024)
@@ -99,12 +102,20 @@ static void log_memory(const char *what)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
 }
 
+static atomic_int s_psram_held;
+
+void wd_psram_held(int delta)
+{
+    atomic_fetch_add(&s_psram_held, delta);
+}
+
 /* Whether memory is low right now. */
 static bool memory_low(void)
 {
+    const int held = atomic_load(&s_psram_held);
     return heap_caps_get_free_size(MALLOC_CAP_INTERNAL) < WD_LOW_INTERNAL ||
            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) < WD_LOW_INTERNAL_BLK ||
-           heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < WD_LOW_PSRAM;
+           heap_caps_get_free_size(MALLOC_CAP_SPIRAM) + (held > 0 ? (size_t)held : 0) < WD_LOW_PSRAM;
 }
 
 static void wd_check_cb(void *arg)

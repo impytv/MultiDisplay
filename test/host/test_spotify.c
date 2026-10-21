@@ -14,7 +14,8 @@ static const char PLAYER[] =
     "{\"url\":\"https://i.scdn.co/64\",\"width\":64,\"height\":64}]}}}";
 
 static const char EPISODE[] =
-    "{\"device\":{\"id\":\"p1\",\"is_active\":true,\"name\":\"Telefon\",\"type\":\"Smartphone\","
+    "{\"actions\":{\"disallows\":{\"toggling_shuffle\":true,\"resuming\":true}},\"repeat_state\":\"track\","
+    "\"device\":{\"id\":\"p1\",\"is_active\":true,\"name\":\"Telefon\",\"type\":\"Smartphone\","
     "\"volume_percent\":null,\"supports_volume\":false},\"is_playing\":false,\"progress_ms\":5,"
     "\"currently_playing_type\":\"episode\",\"item\":{\"type\":\"episode\",\"id\":\"ep\",\"name\":\"Episode 1\","
     "\"duration_ms\":3600000,\"images\":[{\"url\":\"https://i.scdn.co/ep640\",\"width\":640,\"height\":640}],"
@@ -72,6 +73,8 @@ void test_spotify(void)
     CHECK_INT(p.duration_ms, 215000);
     CHECK_STR(p.device.name, "Stue");
     CHECK(p.device.has_volume && p.device.volume == 45 && p.device.active);
+    CHECK_INT(p.repeat, SPOTIFY_REPEAT_OFF);
+    CHECK(p.can_shuffle && p.can_repeat && p.can_seek); /* nothing disallowed */
 
     CHECK(spotify_parse_player(EPISODE, &p));
     CHECK(!p.playing);
@@ -79,6 +82,13 @@ void test_spotify(void)
     CHECK_STR(p.album, "NRK");
     CHECK_STR(p.image_url, "https://i.scdn.co/ep640"); /* the episode's own; the show has none */
     CHECK(!p.device.has_volume && p.device.volume == -1);
+    CHECK_INT(p.repeat, SPOTIFY_REPEAT_TRACK);
+    CHECK(!p.can_shuffle && p.can_repeat && p.can_seek);
+    CHECK(spotify_parse_player("{\"repeat_state\":\"context\",\"currently_playing_type\":\"ad\","
+                               "\"actions\":{\"disallows\":{\"seeking\":false}},\"item\":{\"duration_ms\":30000}}",
+                               &p));
+    CHECK_INT(p.repeat, SPOTIFY_REPEAT_CONTEXT);
+    CHECK(!p.can_seek); /* an ad: never */
     CHECK(!spotify_parse_player("<html>", &p));
 
     spotify_device_t d[SPOTIFY_DEVICES_MAX];
@@ -140,4 +150,28 @@ void test_spotify(void)
     CHECK_STR(pn, "Kos");
     CHECK_STR(pi, "https://mosaic");
     CHECK(!spotify_parse_playlist("{\"error\":{}}", pn, sizeof(pn), pi, sizeof(pi)));
+
+    /* The account's playlists: one without an address, and one that isn't a
+     * playlist, left out; null items too. */
+    spotify_recent_t pl[4];
+    CHECK_INT(spotify_parse_playlists(
+                  "{\"items\":[{\"uri\":\"spotify:playlist:aa\",\"name\":\"Kos\",\"images\":[{\"url\":\"https://m\","
+                  "\"width\":640},{\"url\":\"https://s\",\"width\":300}]},null,{\"name\":\"Uten\"},"
+                  "{\"uri\":\"spotify:album:x\",\"name\":\"A\"},{\"uri\":\"spotify:playlist:bb\",\"name\":\"Trening\","
+                  "\"images\":null},{\"uri\":\"spotify:playlist:cc\",\"name\":\"C\"}],\"next\":null}",
+                  pl, 2),
+              2);
+    CHECK_STR(pl[0].uri, "spotify:playlist:aa");
+    CHECK_STR(pl[0].name, "Kos");
+    CHECK_STR(pl[0].image_url, "https://s");
+    CHECK_STR(pl[1].uri, "spotify:playlist:bb");
+    CHECK_STR(pl[1].image_url, "");
+    CHECK_INT(spotify_parse_playlists("{}", pl, 2), -1);
+    /* A mosaic's address, longer than most, kept whole; one too long left out. */
+    char big[600];
+    snprintf(big, sizeof(big), "{\"name\":\"M\",\"images\":[{\"url\":\"https://mosaic.scdn.co/300/%0160d\"}]}", 0);
+    CHECK(spotify_parse_playlist(big, pn, sizeof(pn), pl[0].image_url, sizeof(pl[0].image_url)));
+    CHECK_INT((int)strlen(pl[0].image_url), 187);
+    CHECK(spotify_parse_playlist(big, pn, sizeof(pn), pi, sizeof(pi)));
+    CHECK_STR(pi, "");
 }

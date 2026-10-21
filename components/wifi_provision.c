@@ -417,9 +417,32 @@ static char *build_sonos(char *p, char *end, const app_config_t *cfg)
         p = html_escape_append(p, end, rooms[i]);
         p = buf_append(p, end, "'>");
     }
+    p = buf_append(p, end,
+                   "</datalist><small>Tomt: det f&oslash;rste rommet som spiller. Rommene foresl&aring;s "
+                   "n&aring;r Sonos-skjermen har vist seg &eacute;n gang.</small>"
+                   "<label>Radiokanaler i <i>Velg musikk</i> (<span id=sorn></span> av %d valgt)</label>"
+                   "<input type=hidden name=sorads value=1><div data-max=%d data-count=sorn>",
+                   APP_CONFIG_SONOS_RADIOS_SHOWN, APP_CONFIG_SONOS_RADIOS_SHOWN);
+    int count = 0;
+    const sonos_radio_t *radios = sonos_radios(&count);
+    for (int nrk = 1; nrk >= 0; nrk--) {
+        p = buf_append(p, end, "<small>%s</small><div class=chk>", nrk ? "NRK" : "Andre");
+        for (int i = 0; i < count; i++) {
+            if (radios[i].nrk != (nrk == 1)) {
+                continue;
+            }
+            p = buf_append(p, end, "<label><input type=checkbox name=sr_%s value=1%s>", radios[i].key,
+                           sonos_radio_chosen(cfg->so_radios, radios[i].key) ? " checked" : "");
+            p = html_escape_append(p, end, radios[i].name);
+            p = buf_append(p, end, "</label>");
+        }
+        p = buf_append(p, end, "</div>");
+    }
     return buf_append(p, end,
-                      "</datalist><small>Tomt: det f&oslash;rste rommet som spiller. Rommene foresl&aring;s "
-                      "n&aring;r Sonos-skjermen har vist seg &eacute;n gang.</small></details>");
+                      "</div><small>Kanalene som vises under <i>Radio</i> i <i>Velg musikk</i>, med logoen "
+                      "sin, i den rekkef&oslash;lgen de st&aring;r her. Opptil %d f&aring;r plass.</small>"
+                      "</details>",
+                      APP_CONFIG_SONOS_RADIOS_SHOWN);
 }
 
 static char *build_calendar(char *p, char *end, const app_config_t *cfg)
@@ -456,7 +479,7 @@ static char *build_calendar(char *p, char *end, const app_config_t *cfg)
  * first; everything else is in collapsed sections. */
 static char *build_page(const app_config_t *cfg)
 {
-    const size_t cap = 48 * 1024; /* PSRAM (over CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL); the page is ~32 KB */
+    const size_t cap = 64 * 1024; /* PSRAM (over CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL); the page is ~42 KB */
     char *buf = malloc(cap);
     if (!buf) {
         return NULL;
@@ -1373,6 +1396,24 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
             memmove(r, r + lead, strlen(r + lead) + 1);
             for (size_t n = strlen(r); n > 0 && r[n - 1] == ' '; n--) {
                 r[n - 1] = '\0';
+            }
+        }
+        if (form_field(body, "sorads", val, sizeof(val))) {
+            /* Only from a page that had the channels: the ticked ones, in
+             * the list's order, as many as the picker has tiles for. */
+            int count = 0, chosen = 0;
+            const sonos_radio_t *radios = sonos_radios(&count);
+            char *r = cfg->so_radios;
+            r[0] = '\0';
+            for (int i = 0; i < count && chosen < APP_CONFIG_SONOS_RADIOS_SHOWN; i++) {
+                char key[24];
+                snprintf(key, sizeof(key), "sr_%s", radios[i].key);
+                const size_t used = strlen(r);
+                if (form_field(body, key, val, sizeof(val)) &&
+                    used + strlen(radios[i].key) + 2 <= sizeof(cfg->so_radios)) {
+                    snprintf(r + used, sizeof(cfg->so_radios) - used, "%s%s", used ? "," : "", radios[i].key);
+                    chosen++;
+                }
             }
         }
         char spid[48];

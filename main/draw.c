@@ -196,6 +196,47 @@ void draw_text_wrap(lv_layer_t *layer, const char *txt, int x, int y, int w, int
     }
 }
 
+void draw_symbol(lv_layer_t *layer, const char *sym, int cx, int cy, lv_color_t color)
+{
+    const lv_font_t *font = &lv_font_montserrat_24;
+    const int h = lv_font_get_line_height(font);
+    if (!draw_visible(layer, cx - 20, cy - h / 2, cx + 20, cy + h / 2)) {
+        return;
+    }
+    lv_draw_label_dsc_t d;
+    lv_draw_label_dsc_init(&d);
+    d.font = font;
+    d.color = color;
+    d.text = sym;
+    d.text_local = 1;
+    d.align = LV_TEXT_ALIGN_CENTER;
+    lv_area_t a = { cx - 20, cy - h / 2, cx + 20, cy - h / 2 + h - 1 };
+    lv_draw_label(layer, &d, &a);
+}
+
+void draw_mode_button(lv_layer_t *layer, const char *sym, int cx, int cy, int r, bool on, bool one, bool locked,
+                      lv_color_t disc, lv_color_t ink, lv_color_t dim, lv_color_t on_colour)
+{
+    draw_dot(layer, cx, cy, r, disc);
+    const lv_color_t c = locked ? dim : on ? on_colour : ink;
+    draw_symbol(layer, sym, cx, cy - (on ? 2 : 0), c);
+    if (on && !locked) {
+        draw_dot(layer, cx, cy + r - 7, 2, c);
+    }
+    if (one) {
+        draw_dot(layer, cx + r - 5, cy - r + 5, 8, c);
+        lv_draw_label_dsc_t d;
+        lv_draw_label_dsc_init(&d);
+        d.font = &lv_font_montserrat_14;
+        d.color = disc;
+        d.text = "1";
+        d.align = LV_TEXT_ALIGN_CENTER;
+        const int h = lv_font_get_line_height(d.font);
+        lv_area_t a = { cx + r - 13, cy - r + 5 - h / 2, cx + r + 3, cy - r + 5 - h / 2 + h - 1 };
+        lv_draw_label(layer, &d, &a);
+    }
+}
+
 int draw_text_w(const char *txt)
 {
     lv_point_t sz;

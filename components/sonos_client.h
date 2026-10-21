@@ -50,14 +50,24 @@ typedef struct {
     bool empty;         /* nothing to play: an empty queue, no source */
     bool stream;        /* radio and the like: no length, no skipping */
     char source[24];    /* "Spotify", "AirPlay", "Radio", "TV", "" */
+    char station[SONOS_TEXT_MAX]; /* a stream's name, "" if not one or unknown */
+    int radio;                    /* which of sonos_radios() plays, -1 = none */
     char title[SONOS_TEXT_MAX];
     char artist[SONOS_TEXT_MAX];
     char album[SONOS_TEXT_MAX];
     char art_url[SONOS_URL_MAX]; /* absolute, "" = none */
     int position_s, duration_s;  /* -1 if unknown */
     bool can_play, can_pause, can_next, can_previous;
+    bool can_seek;
+    bool queue;                  /* plays the room's queue: shuffle and repeat work */
+    bool shuffle;                /* the queue's play mode, if `queue` */
+    int repeat;                  /* SONOS_REPEAT_* */
     int volume;                  /* the room's, percent; -1 if unknown */
 } sonos_now_t;
+
+#define SONOS_REPEAT_OFF 0
+#define SONOS_REPEAT_ALL 1
+#define SONOS_REPEAT_ONE 2
 
 typedef struct {
     char title[64];
@@ -88,6 +98,13 @@ int sonos_parse_rooms(const char *reply, sonos_room_t *out, int max);
  * volume is left as it is. False if `transport` isn't a reply. */
 bool sonos_parse_now(const char *transport, const char *position, const char *media, const char *actions,
                      const char *ip, sonos_now_t *out);
+
+/* GetTransportSettings' play mode into *shuffle and *repeat; false if it
+ * isn't a reply. */
+bool sonos_parse_play_mode(const char *reply, bool *shuffle, int *repeat);
+
+/* The play mode for SetPlayMode ("NORMAL", "SHUFFLE", ...). */
+const char *sonos_play_mode(bool shuffle, int repeat);
 
 /* Only the state from GetTransportInfo's reply; false if it isn't one. */
 bool sonos_parse_state(const char *transport, sonos_state_t *out);
@@ -138,6 +155,8 @@ typedef enum {
     SONOS_NEXT,
     SONOS_PREVIOUS,
     SONOS_VOLUME, /* to `value` percent */
+    SONOS_SEEK,   /* to `value` seconds into the track */
+    SONOS_MODE,   /* the queue's play mode: shuffle if `value` & 1, repeat `value` >> 1 */
 } sonos_cmd_t;
 
 esp_err_t sonos_command(const sonos_room_t *room, sonos_cmd_t cmd, int value);
@@ -148,6 +167,37 @@ esp_err_t sonos_get_favorites(const sonos_room_t *room, sonos_fav_t *out, int ma
 
 /* Start a favourite in `room`. */
 esp_err_t sonos_play_favorite(const sonos_room_t *room, const sonos_fav_t *fav);
+
+/* A radio station anyone can listen to, started as a plain stream: no
+ * favourite or radio service needed in the Sonos app. */
+typedef struct {
+    const char *key;   /* "nrk_p1": kept by the setup page, names its logo */
+    const char *name;  /* "NRK P1" */
+    const char *short_name; /* "P1": on its tile without a logo */
+    const char *url;   /* http://, an MP3 stream */
+    bool nrk;          /* NRK's, else a commercial station */
+} sonos_radio_t;
+
+/* Norway's most listened to channels (NRK's, then the others by
+ * popularity); their count into *count. */
+const sonos_radio_t *sonos_radios(int *count);
+
+/* Whether `key` is in `list`, keys separated by commas ("nrk_p1,p4"). */
+bool sonos_radio_chosen(const char *list, const char *key);
+
+/* The logo of radio `key` in the update site's bruk/radio/tiles.bin
+ * (`blob`, `len` bytes; see scripts/build_radio_logos.py), a JPEG; false
+ * if it has none. */
+bool sonos_logo_find(const uint8_t *blob, size_t len, const char *key, const uint8_t **data, size_t *data_len);
+
+/* What to play for `radio`: its address and metadata (DIDL-Lite, not yet
+ * escaped), with `art` (its logo's address, "" = none) as the album art.
+ * False if it doesn't fit. */
+bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, size_t uri_len, char *meta,
+                       size_t meta_len);
+
+/* Start `radio` in `room`, with its logo at `art` ("" = none). */
+esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art);
 
 /* Errors besides the transport's. */
 #define SONOS_ERR_NO_SPOTIFY 0x7f30 /* Sonos took neither of Spotify's services: not added in the Sonos app */

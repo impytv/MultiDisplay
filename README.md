@@ -544,9 +544,19 @@ degree or so.
 One screen for the whole display, after the clock: what the display's
 Spotify account is playing, with the cover, the title, the artists and
 the album, a progress bar, buttons for the previous track, play/pause and
-the next track, the volume (- and +, in steps of 10 %) and the device it
-plays on. With nothing playing, a button for each of the account's
-devices starts playback there. The display plays nothing itself; it
+the next track, shuffle and repeat (off, the playlist or album, the track:
+"1"), the volume (- and +, in steps of 10 %) and the device it plays on;
+a tap on the progress bar winds there (`/me/player/shuffle`, `/repeat`,
+`/seek`; greyed out where Spotify's `actions.disallows` says so, never for
+an ad). With nothing playing, a button for each of the account's
+devices starts playback there. **Velg musikk** beside the title swaps the
+player for a grid of up to 12 tiles: what the account played lately (6 at
+most, the playlist or album as on the Sonos screen), then its playlists
+(`/me/playlists`); a tap starts one (`PUT /me/player/play` with
+`context_uri`) on the device playing, or else the one that played last, or
+else the first that takes commands. The covers are held only while the
+grid is on show, and the player's cover is given back meanwhile. The grid
+is shared with the Sonos screen (`main/music_tiles.c`). The display plays nothing itself; it
 controls Spotify on a phone, speaker or computer through Spotify's Web
 API, and controlling needs **Spotify Premium**. Some devices (many TVs,
 amplifiers and Cast speakers) are *restricted*: Spotify refuses commands
@@ -599,7 +609,10 @@ One screen for the whole display, after Spotify: what plays in a room of
 Sonos speakers on the local network, with the cover, the title, the
 artist and the album, a progress bar, buttons for the previous track,
 play/pause (stop for a radio, which can't pause) and the next track, and
-the volume (- and +, in steps of 3 %). A row of buttons at the top has a
+the volume (- and +, in steps of 3 %). Playing from the room's queue (not
+a radio, TV, line-in or AirPlay), there are shuffle and repeat buttons too
+(`SetPlayMode`, read with `GetTransportSettings`), and a tap on the
+progress bar winds there (`Seek REL_TIME`). A row of buttons at the top has a
 button per room (a stereo pair or a sub isn't a room of its own); the rooms
 playing together, as grouped in the Sonos app, are lit. While something
 plays, a tap on an idle room adds it to the group, in sync (`x-rincon:` to
@@ -613,7 +626,26 @@ then what the display's Spotify account played lately, as the playlist or
 album each track was played from (from an artist, Liked Songs or a search,
 the track's album), each with a green dot. A tap starts it in the room,
 replacing the room's queue. A room with nothing to play opens the grid by
-itself.
+itself. **Radio** beside it opens the grid on the radio channels chosen on
+the setup page (and, in the grid, swaps between them and the music): out
+of 28, NRK's twelve and the sixteen other stations most listened to at
+[myTuner](https://mytuner-radio.com/no/radio/land/norway-stasjoner) (P4,
+Radio Norge, P5 Hits, P10 Country, P7 Klem, P11 Dance, NRJ, Radio Rock, P9
+Retro, Radio Vinyl, P8 Pop, P6 Rock, Topp 40, P12 Hitmix, P24-7 Mix, and
+P24-7 Juleradioen's Christmas music). They
+start as plain MP3 streams (`x-rincon-mp3radio://`, addresses from
+[radio-browser.info](https://www.radio-browser.info/); NRK's at its stream
+server, as lyd.nrk.no's send on to them through a relative redirect, which
+Sonos doesn't follow), so they need no favourite or radio service in the
+Sonos app. Each has its logo on its tile and as the cover while it plays
+(also in the Sonos app, as the stream's album art), fetched from the update
+site's `bruk/radio/` beside the guide: `tiles.bin`, all of them at tile
+size in one file for one request, and `KEY.jpg` at 240 px for the cover.
+`scripts/build_radio_logos.py` makes them from each station's myTuner page.
+They aren't built into the firmware: it runs from PSRAM, so its every byte
+costs as much of that. Without the update site, the tiles have the
+channel's name instead, as has any other radio without a cover of its own
+in the cover square.
 
 No login and no cloud: the speakers are found with an SSDP search, and
 asked through the UPnP control they answer on port 1400 - as Home
@@ -645,9 +677,15 @@ Under **Andre skjermer → Sonos** on the setup page: **Vis Sonos** (and
 **i automatisk bytte**), **Automatisk bytte kan starte herfra** and
 **Alltid mørkt** as for Spotify, and **Rom som vises først** (empty: the
 first room that plays, else the first by name; the rooms found are offered
-once the screen has looked). The display must be on the same network as the
-speakers. In backups as `sonos.show`, `sonos.rotate`,
-`sonos.start_rotation`, `sonos.dark` and `sonos.room`.
+once the screen has looked), and **Radiokanaler i Velg musikk**, a box per
+channel, NRK's and the others, for the picker's radio page: at most 12 (its
+tiles), shown in the setup page's order (at first NRK P1, P2, P3, mP3 and
+Nyheter, P4, Radio Norge, P5 Hits, P10 Country, P7 Klem, NRJ and Radio
+Rock; with none, the picker has no **Radio** button). The display must be on
+the same network as the speakers. In backups as `sonos.show`,
+`sonos.rotate`, `sonos.start_rotation`, `sonos.dark`, `sonos.room` and
+`sonos.radios` (the chosen channels' keys, comma separated, as in
+`RADIOS` in `components/sonos_parse.c`).
 
 ### Satellite
 

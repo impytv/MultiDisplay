@@ -1,8 +1,11 @@
 /* The Spotify screen: what the display's Spotify account is playing - the
  * cover, the title, the artists and the album, how far it has got - with
- * buttons for the previous track, play/pause, the next track and the
- * volume, and the device it plays on. With nothing playing, a button per
- * device of the account starts playback there. The display plays nothing
+ * buttons for the previous track, play/pause, the next track, shuffle,
+ * repeat and the volume, and the device it plays on; a tap on the progress
+ * bar winds there. With nothing playing, a button per device of the
+ * account starts playback there. "Velg musikk" swaps the player for a grid
+ * of what the account played lately and its playlists, and a tap starts
+ * one on the device playing (or the one that played last). The display plays nothing
  * itself: it controls Spotify on a phone, speaker or computer, which needs
  * Spotify Premium. Logging in is on the setup page (spotify_client.h).
  *
@@ -25,6 +28,7 @@
 #include "diag.h"
 #include "draw.h"
 #include "form_util.h"
+#include "music_tiles.h"
 #include "spotify.h"
 #include "spotify_client.h"
 #include "waveshare_rgb_lcd_port.h"
@@ -42,6 +46,11 @@ static const char *TAG = "spotify_screen";
 #define SP_PLAY_R     38
 #define SP_SKIP_R     30
 #define SP_SKIP_DX    115 /* from the play button to the others */
+#define SP_MODE_DX    190 /* shuffle and repeat */
+#define SP_MODE_R     22
+#define SP_PICK_Y     8   /* "Velg musikk", beside the title */
+#define SP_PICK_H     44
+#define SP_PICK_PAD   18
 #define SP_VOL_Y      416 /* the middle of the volume row */
 #define SP_VOL_R      24
 #define SP_VOL_STEP   10
@@ -55,6 +64,9 @@ static const char *TAG = "spotify_screen";
 #define SP_SETTLE_MS  400     /* after a command, before asking what plays */
 #define SP_NOTE_MS    10000   /* a message under the cover stays this long */
 #define SP_TICK_MS    500
+#define SP_LISTS_MS   (2 * 60 * 1000) /* the picker's lists, asked again */
+#define SP_RECENT_TILES 6             /* of the picker's, at most; the playlists after them */
+#define SP_NAMES_PER_POLL 4
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_track, *s_artist, *s_album, *s_msg;
 static big_clock_t s_clock;
@@ -72,6 +84,11 @@ static bool s_woke_at_end;     /* the poll woken as the track ended */
 /* A device that refused a command as restricted, though Spotify didn't
  * mark it so: its controls are greyed out too. */
 static char s_refused[48];
+static char s_last_device[48]; /* the one that played last, for the picker */
+static bool s_picker;          /* the picker on show, not the player; set by taps */
+static char s_list_note[160];  /* the picker's own message */
+/* The picker: what was played lately and the playlists, by URI. */
+static EXT_RAM_BSS_ATTR mgrid_t s_grid;
 
 /* The cover, SP_COVER square, RGB565 (PSRAM, only while the screen is on
  * show); s_cover_url is the one in it. The weather task decodes into the
@@ -87,11 +104,14 @@ static struct {
     spotify_cmd_t cmd;
     int value;
     char device[48];
+    char uri[64]; /* a tile: started instead of cmd */
 } s_cmd;
 
 static spotify_player_t s_scratch; /* the weather task's */
 static spotify_device_t s_dev_scratch[SPOTIFY_DEVICES_MAX];
 static backoff_t s_fail;
+static fetch_stamp_t s_lists_at;
+static EXT_RAM_BSS_ATTR spotify_recent_t s_recent[SP_RECENT_TILES], s_lists[MT_MAX];
 
 static bool dark(void)
 {
@@ -137,7 +157,23 @@ static int progress_now(void)
 
 static bool showing_player(void)
 {
-    return s_have && s_player.active;
+    return s_have && s_player.active && !s_picker;
+}
+
+static const char *pick_text(void)
+{
+    return s_picker ? "Spiller n\xC3\xA5" : "Velg musikk";
+}
+
+/* "Velg musikk", beside the title. */
+static void pick_box(lv_area_t *a)
+{
+    lv_point_t sz;
+    lv_text_get_size(&sz, "Spotify", g_font_large, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    a->x1 = SP_X + sz.x + 24;
+    a->x2 = a->x1 + draw_text_w("Velg musikk") + 2 * SP_PICK_PAD - 1;
+    a->y1 = SP_PICK_Y;
+    a->y2 = SP_PICK_Y + SP_PICK_H - 1;
 }
 
 /* The device buttons with nothing playing: button i's box. */
@@ -225,6 +261,9 @@ static void draw_player(lv_layer_t *layer)
     if (p->duration_ms > 0) {
         const int px = x1 + (int)((int64_t)(x2 - x1) * pos / p->duration_ms);
         draw_rect(layer, x1, SP_PROG_Y, px, SP_PROG_Y + 5, 3, c_txt());
+        if (p->can_seek && !locked) { /* a knob: it can be wound */
+            draw_dot(layer, px, SP_PROG_Y + 2, 8, c_txt());
+        }
         mmss(buf, sizeof(buf), pos);
         draw_text(layer, buf, x1, SP_PROG_Y + 12, SP_COL_W, LV_TEXT_ALIGN_LEFT, c_dim());
         mmss(buf, sizeof(buf), p->duration_ms);
@@ -235,6 +274,11 @@ static void draw_player(lv_layer_t *layer)
     draw_skip_button(layer, cx - SP_SKIP_DX, SP_CTRL_Y, -1, locked);
     draw_play_button(layer, cx, SP_CTRL_Y, p->playing, locked);
     draw_skip_button(layer, cx + SP_SKIP_DX, SP_CTRL_Y, 1, locked);
+    draw_mode_button(layer, LV_SYMBOL_SHUFFLE, cx - SP_MODE_DX, SP_CTRL_Y, SP_MODE_R, p->shuffle, false,
+                     locked || !p->can_shuffle, c_card(), c_txt(), c_dim(), c_green());
+    draw_mode_button(layer, LV_SYMBOL_LOOP, cx + SP_MODE_DX, SP_CTRL_Y, SP_MODE_R, p->repeat != SPOTIFY_REPEAT_OFF,
+                     p->repeat == SPOTIFY_REPEAT_TRACK, locked || !p->can_repeat, c_card(), c_txt(), c_dim(),
+                     c_green());
 
     /* Volume: - [bar] +, the percent under the bar. */
     if (p->device.has_volume && p->device.volume >= 0 && !locked) {
@@ -276,13 +320,37 @@ static void draw_devices(lv_layer_t *layer)
     }
 }
 
+static void draw_picker(lv_layer_t *layer)
+{
+    mgrid_draw(layer, &s_grid, c_card(), dark() ? lv_color_hex(0x15171A) : lv_color_white(), c_txt(), c_card());
+    const int lh = lv_font_get_line_height(g_font_body);
+    const char *msg = s_note[0]        ? s_note
+                      : s_list_note[0]   ? s_list_note
+                      : s_grid.count == 0 ? "Henter musikken \xE2\x80\xA6" /* till the lists come */
+                                          : "";
+    if (msg[0]) {
+        draw_text_fit(layer, msg, SP_X, BOARD_LCD_V_RES - lh - 4, BOARD_LCD_H_RES - 2 * SP_X,
+                      s_note[0] ? lv_palette_main(LV_PALETTE_RED) : c_dim());
+    }
+}
+
 static void spotify_draw_cb(lv_event_t *e)
 {
     if (s_note[0] && lv_tick_get() - s_note_tick > SP_NOTE_MS) {
         s_note[0] = '\0';
     }
     lv_layer_t *layer = lv_event_get_layer(e);
-    if (showing_player()) {
+    if (s_have) {
+        lv_area_t a;
+        pick_box(&a);
+        draw_rect(layer, a.x1, a.y1, a.x2, a.y2, SP_PICK_H / 2, c_green());
+        const int lh = lv_font_get_line_height(g_font_body);
+        draw_text(layer, pick_text(), a.x1, a.y1 + (SP_PICK_H - lh) / 2, a.x2 - a.x1 + 1, LV_TEXT_ALIGN_CENTER,
+                  lv_color_hex(0x101820));
+    }
+    if (s_picker) {
+        draw_picker(layer);
+    } else if (showing_player()) {
         draw_player(layer);
     } else if (s_have) {
         draw_devices(layer);
@@ -315,7 +383,7 @@ static void spotify_show(void)
         lv_obj_set_height(s_track, h);
         lv_obj_set_y(s_artist, SP_TOP + h + 8);
         lv_obj_set_y(s_album, SP_TOP + h + 12 + lv_font_get_line_height(g_font_body));
-    } else if (s_have) {
+    } else if (s_have && !s_picker) {
         lv_obj_clear_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_msg, s_dev_count > 0
                                      ? "Ingenting spilles n\xC3\xA5. Trykk for \xC3\xA5 spille p\xC3\xA5:"
@@ -353,6 +421,7 @@ static void show_login_status(void)
     lv_label_set_text(g_status_label, msg);
     if (s_have && (g_cfg->sp_client_id[0] == '\0' || spotify_login_state(NULL, 0) != SPOTIFY_CONNECTED)) {
         s_have = false; /* nothing of a login that's gone */
+        s_picker = false;
         spotify_show();
     }
 }
@@ -372,10 +441,10 @@ static void spotify_tick_cb(lv_timer_t *t)
     if (s_player.playing) {
         lv_area_t a;
         lv_obj_get_coords(s_canvas, &a);
-        a.x1 += SP_COL_X;
-        a.x2 = a.x1 + SP_COL_W;
-        a.y1 += SP_PROG_Y - 2;
-        a.y2 = a.y1 + 12 + lv_font_get_line_height(g_font_body) + 4;
+        a.x1 += SP_COL_X - 10;
+        a.x2 = a.x1 + SP_COL_W + 20;
+        a.y1 += SP_PROG_Y - 8; /* the knob too */
+        a.y2 = a.y1 + 18 + lv_font_get_line_height(g_font_body) + 4;
         lv_obj_invalidate_area(s_canvas, &a);
         if (!s_woke_at_end && s_player.duration_ms > 0 &&
             s_player.progress_ms + (int)(lv_tick_get() - s_player_tick) > s_player.duration_ms + 1000) {
@@ -404,8 +473,38 @@ static void send(spotify_cmd_t cmd, int value, const char *device)
     s_cmd.cmd = cmd;
     s_cmd.value = value;
     snprintf(s_cmd.device, sizeof(s_cmd.device), "%s", device ? device : "");
+    s_cmd.uri[0] = '\0';
     lv_obj_invalidate(s_canvas);
     app_wake_poll();
+}
+
+/* Where a tile starts: the device playing (""), else the one that played
+ * last if it is still listed (a phone switched off since isn't), else the
+ * first that takes commands. */
+static const char *play_device(void)
+{
+    if (s_player.active) {
+        return "";
+    }
+    for (int i = 0; i < s_dev_count && s_last_device[0]; i++) {
+        if (strcmp(s_devices[i].id, s_last_device) == 0 && !s_devices[i].restricted) {
+            return s_last_device; /* if it is still there */
+        }
+    }
+    for (int i = 0; i < s_dev_count; i++) {
+        if (!s_devices[i].restricted) {
+            return s_devices[i].id;
+        }
+    }
+    return "";
+}
+
+static void set_picker(bool on)
+{
+    s_picker = on;
+    note("");
+    spotify_show();
+    app_wake_poll(); /* the lists, or the cover */
 }
 
 static bool near(int x, int y, int cx, int cy, int r)
@@ -415,6 +514,24 @@ static bool near(int x, int y, int cx, int cy, int r)
 
 bool spotify_tap(int x, int y)
 {
+    if (s_have) {
+        lv_area_t a;
+        pick_box(&a);
+        if (x >= a.x1 - 6 && x <= a.x2 + 6 && y >= a.y1 - 8 && y <= a.y2 + 8) {
+            set_picker(!s_picker);
+            return true;
+        }
+    }
+    if (s_picker) {
+        const int i = mgrid_hit(&s_grid, x, y);
+        if (i < 0) {
+            return false;
+        }
+        send(SPOTIFY_PLAY, 0, play_device());
+        snprintf(s_cmd.uri, sizeof(s_cmd.uri), "%s", s_grid.t[i].uri);
+        set_picker(false);
+        return true;
+    }
     if (showing_player()) {
         const int cx = SP_COL_X + SP_COL_W / 2;
         if (device_locked()) {
@@ -435,6 +552,28 @@ bool spotify_tap(int x, int y)
         }
         if (near(x, y, cx + SP_SKIP_DX, SP_CTRL_Y, SP_SKIP_R + 16)) {
             send(SPOTIFY_NEXT, 0, NULL);
+            return true;
+        }
+        if (near(x, y, cx - SP_MODE_DX, SP_CTRL_Y, SP_MODE_R + 14)) {
+            if (s_player.can_shuffle) {
+                s_player.shuffle = !s_player.shuffle;
+                send(SPOTIFY_SHUFFLE, s_player.shuffle, NULL);
+            }
+            return true;
+        }
+        if (near(x, y, cx + SP_MODE_DX, SP_CTRL_Y, SP_MODE_R + 14)) {
+            if (s_player.can_repeat) {
+                s_player.repeat = (s_player.repeat + 1) % 3; /* off, the list, the track */
+                send(SPOTIFY_REPEAT, s_player.repeat, NULL);
+            }
+            return true;
+        }
+        const int x1 = SP_COL_X, x2 = SP_COL_X + SP_COL_W - 1;
+        if (s_player.can_seek && y >= SP_PROG_Y - 18 && y <= SP_PROG_Y + 24 && x >= x1 - 10 && x <= x2 + 10) {
+            const int px = x < x1 ? x1 : x > x2 ? x2 : x;
+            s_player.progress_ms = (int)((int64_t)s_player.duration_ms * (px - x1) / (x2 - x1));
+            s_player_tick = lv_tick_get();
+            send(SPOTIFY_SEEK, s_player.progress_ms, NULL);
             return true;
         }
         if (s_player.device.has_volume && s_player.device.volume >= 0 && y > SP_VOL_Y - SP_VOL_R - 14 &&
@@ -505,7 +644,9 @@ static bool cover_alloc(void)
     return true;
 }
 
-void spotify_release(void)
+/* The cover's memory given back: on another screen, or under the picker,
+ * whose tiles need it. */
+static void drop_cover(void)
 {
     if (s_cover_px == NULL || esp_lv_adapter_lock(-1) != ESP_OK) {
         return;
@@ -517,6 +658,12 @@ void spotify_release(void)
     s_cover_ok = false;
     s_cover_url[0] = '\0';
     esp_lv_adapter_unlock();
+}
+
+void spotify_release(void)
+{
+    drop_cover();
+    mgrid_release(&s_grid);
 }
 
 /* The cover for `url`, if it isn't the one shown. */
@@ -543,6 +690,68 @@ static void fetch_cover(const char *url)
         lv_obj_invalidate(s_canvas);
         esp_lv_adapter_unlock();
     }
+}
+
+/* What was played lately, then the playlists, as the picker's tiles; and
+ * its message. */
+static void fetch_lists(void)
+{
+    int recent = 0, lists = 0;
+    const char *list_note = "";
+    /* Only as many played lately as get tiles: each page more is a request
+     * more before the picker fills. */
+    esp_err_t err = spotify_get_recent(s_recent, SP_RECENT_TILES, &recent);
+    const esp_err_t err2 = spotify_get_playlists(s_lists, MT_MAX, &lists);
+    if (err == SPOTIFY_ERR_SCOPE || err2 == SPOTIFY_ERR_SCOPE) {
+        list_note = "Logg inn p\xC3\xA5 Spotify p\xC3\xA5 nytt (oppsettsiden) for \xC3\xA5 se alt her.";
+    } else if (err != ESP_OK || err2 != ESP_OK) {
+        list_note = "Fikk ikke hentet alt fra Spotify. Pr\xC3\xB8ver igjen om litt.";
+    }
+    /* A playlist played lately is named from the account's own, if there. */
+    for (int i = 0; i < recent; i++) {
+        for (int k = 0; k < lists && s_recent[i].name[0] == '\0'; k++) {
+            if (strcmp(s_recent[i].uri, s_lists[k].uri) == 0) {
+                s_recent[i] = s_lists[k];
+            }
+        }
+    }
+    spotify_name_playlists(s_recent, recent, SP_NAMES_PER_POLL);
+    if (recent == 0 && lists == 0 && list_note[0] == '\0') {
+        list_note = "Ingenting spilt nylig, og ingen spillelister.";
+    }
+    mgrid_tile_t *items = mgrid_items();
+    if (items == NULL) {
+        return; /* asked again next poll */
+    }
+    int n = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        const spotify_recent_t *src = pass == 0 ? s_recent : s_lists;
+        const int count = pass == 0 ? recent : lists;
+        for (int i = 0; i < count && n < MT_MAX; i++) {
+            bool seen = false;
+            for (int k = 0; k < n && !seen; k++) {
+                seen = strcmp(items[k].uri, src[i].uri) == 0;
+            }
+            if (seen) {
+                continue;
+            }
+            mgrid_tile_t *t = &items[n++];
+            memset(t, 0, sizeof(*t));
+            snprintf(t->uri, sizeof(t->uri), "%.63s", src[i].uri);
+            snprintf(t->title, sizeof(t->title), "%s", src[i].name);
+            snprintf(t->art, sizeof(t->art), "%s", src[i].image_url);
+        }
+    }
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        free(items);
+        return;
+    }
+    mgrid_set(&s_grid, items, n);
+    snprintf(s_list_note, sizeof(s_list_note), "%s", list_note);
+    lv_obj_invalidate(s_canvas);
+    esp_lv_adapter_unlock();
+    free(items);
+    stamp_now(&s_lists_at);
 }
 
 /* A failed command or fetch, as the note under the cover. */
@@ -582,24 +791,26 @@ uint32_t spotify_poll(int for_view)
     }
 
     /* A button pressed: send it first. */
-    bool cmd = false;
+    bool cmd = false, picker = false;
     spotify_cmd_t c = SPOTIFY_PLAY;
     int value = 0;
-    char device[48] = "";
+    char device[48] = "", uri[64] = "";
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         cmd = s_cmd.pending;
         c = s_cmd.cmd;
         value = s_cmd.value;
         snprintf(device, sizeof(device), "%s", s_cmd.device);
+        snprintf(uri, sizeof(uri), "%s", s_cmd.uri);
         s_cmd.pending = false;
+        picker = s_picker;
         esp_lv_adapter_unlock();
     }
     if (!cmd && backoff_waiting(&s_fail, SP_RETRY_MS)) {
         return backoff_ms(&s_fail, SP_RETRY_MS);
     }
     if (cmd) {
-        const esp_err_t err = spotify_command(c, value, device);
-        if (err == SPOTIFY_ERR_RESTRICTED && c != SPOTIFY_TRANSFER) {
+        const esp_err_t err = uri[0] ? spotify_play_context(uri, device) : spotify_command(c, value, device);
+        if (err == SPOTIFY_ERR_RESTRICTED && c != SPOTIFY_TRANSFER && !uri[0]) {
             /* For good: the playing device's controls greyed out. */
             if (esp_lv_adapter_lock(-1) == ESP_OK) {
                 snprintf(s_refused, sizeof(s_refused), "%s", s_player.device.id);
@@ -611,7 +822,7 @@ uint32_t spotify_poll(int for_view)
                 esp_lv_adapter_unlock();
             }
         } else {
-            vTaskDelay(pdMS_TO_TICKS(c == SPOTIFY_TRANSFER ? 4 * SP_SETTLE_MS : SP_SETTLE_MS));
+            vTaskDelay(pdMS_TO_TICKS(c == SPOTIFY_TRANSFER || uri[0] ? 4 * SP_SETTLE_MS : SP_SETTLE_MS));
         }
     }
 
@@ -641,7 +852,14 @@ uint32_t spotify_poll(int for_view)
     }
     diag_ok(DIAG_SPOTIFY);
     backoff_ok(&s_fail);
-    if (s_scratch.active) {
+    bool more = false;
+    if (picker) {
+        drop_cover();
+        if (!stamp_fresh(&s_lists_at, SP_LISTS_MS)) {
+            fetch_lists();
+        }
+        more = mgrid_fetch(&s_grid, 3);
+    } else if (s_scratch.active) {
         fetch_cover(s_scratch.image_url);
     }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -654,6 +872,9 @@ uint32_t spotify_poll(int for_view)
         }
         s_player = s_scratch;
         s_player_tick = lv_tick_get();
+        if (s_player.active && s_player.device.id[0]) {
+            snprintf(s_last_device, sizeof(s_last_device), "%s", s_player.device.id);
+        }
         memcpy(s_devices, s_dev_scratch, sizeof(s_devices));
         s_dev_count = dev_count;
         s_have = true;
@@ -663,6 +884,9 @@ uint32_t spotify_poll(int for_view)
         show_login_status();
         spotify_show();
         esp_lv_adapter_unlock();
+    }
+    if (more) {
+        return 100; /* the rest of the covers */
     }
     return s_scratch.active && s_scratch.playing ? SP_PLAYING_MS : SP_PAUSED_MS;
 }
@@ -717,6 +941,7 @@ lv_obj_t *spotify_build(lv_obj_t *screen)
     lv_label_set_long_mode(s_msg, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
 
+    mgrid_init(&s_grid, s_canvas, SP_TOP);
     /* The pixels come with the first cover (cover_alloc). */
     s_cover_img = (lv_image_dsc_t){
         .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_RGB565, .w = SP_COVER, .h = SP_COVER,
@@ -731,6 +956,7 @@ void spotify_enter(void)
 {
     big_clock_set(&s_clock, time(NULL));
     note("");
+    s_picker = false; /* the player first */
     show_login_status();
     spotify_show();
 }

@@ -294,6 +294,8 @@ static void art_url(const char *art, const char *ip, char *out, size_t out_len)
     }
 }
 
+static int radio_find(const char *uri);
+
 /* A field of a radio's "TYPE=SNG|TITLE x|ARTIST y|ALBUM z" into out. */
 static void radio_field(const char *s, const char *key, char *out, size_t out_len)
 {
@@ -328,6 +330,7 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     memset(out, 0, sizeof(*out));
     out->volume = volume;
     out->position_s = out->duration_s = -1;
+    out->radio = -1;
     if (!sonos_parse_state(transport, &out->state)) {
         return false;
     }
@@ -341,6 +344,11 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     sonos_xml_text(mmeta, "dc:title", station, sizeof(station));
     sonos_xml_text(mmeta, "upnp:albumArtURI", station_art, sizeof(station_art));
     free(mmeta);
+    out->radio = radio_find(uri);
+    if (station[0] == '\0' && out->radio >= 0) {
+        int n = 0;
+        snprintf(station, sizeof(station), "%s", sonos_radios(&n)[out->radio].name);
+    }
     if (starts(uri, "x-sonos-vli:")) {
         snprintf(out->source, sizeof(out->source), "%s",
                  strstr(uri, "airplay")   ? "AirPlay"
@@ -357,6 +365,7 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     } else if (starts(track_uri, "x-sonos-spotify:")) {
         snprintf(out->source, sizeof(out->source), "Spotify");
     }
+    out->queue = starts(uri, "x-rincon-queue:");
 
     /* The track (GetPositionInfo). */
     char *tmeta = xml_text_dup(position, "TrackMetaData");
@@ -375,6 +384,7 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
         out->stream = true;
     }
     if (out->stream) {
+        snprintf(out->station, sizeof(out->station), "%s", station);
         /* A radio: what it plays if it says, under the station's name. */
         if (starts(stream, "TYPE=")) {
             /* Each cut to whole characters, so "artist - title" fits. */
@@ -383,7 +393,19 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
             radio_field(stream, "ARTIST", a, sizeof(a));
             snprintf(stream, sizeof(stream), "%s%s%s", a, a[0] && t[0] ? " - " : "", t);
         }
-        if (out->title[0] == '\0' || starts(out->title, "x-") || strchr(out->title, '?')) {
+        /* Sonos' own word while it starts the stream: said in Norwegian,
+         * under the station's name. */
+        if (starts(stream, "ZPSTR_")) {
+            snprintf(stream, sizeof(stream), "%s",
+                     strstr(stream, "CONNECT")  ? "Kobler til \xE2\x80\xA6"
+                     : strstr(stream, "BUFFER") ? "Laster \xE2\x80\xA6"
+                                                : "");
+        }
+        /* No title, an address, or the address's file name ("p3_mp3_h"):
+         * the station's name instead. */
+        const char *file = strrchr(track_uri, '/');
+        if (out->title[0] == '\0' || starts(out->title, "x-") || strchr(out->title, '?') ||
+            (file && strcmp(out->title, file + 1) == 0)) {
             snprintf(out->title, sizeof(out->title), "%s", station);
         }
         if (stream[0]) {
@@ -409,13 +431,47 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
         out->can_pause = strstr(list, " Pause,") != NULL;
         out->can_next = strstr(list, " Next,") != NULL;
         out->can_previous = strstr(list, " Previous,") != NULL;
+        out->can_seek = strstr(list, " Seek,") != NULL || strstr(list, " X_DLNA_SeekTime,") != NULL;
     } else {
         out->can_play = out->can_pause = out->can_next = out->can_previous = true;
     }
+    /* A track of the queue can always be wound; a stream never. */
+    out->can_seek = out->duration_s > 0 && (out->can_seek || out->queue);
     if (out->stream) {
-        out->can_next = out->can_previous = false;
+        out->can_next = out->can_previous = out->can_seek = out->queue = false;
     }
     return true;
+}
+
+/* SetPlayMode's names, by shuffle and SONOS_REPEAT_*. */
+static const char *const PLAY_MODES[2][3] = {
+    { "NORMAL", "REPEAT_ALL", "REPEAT_ONE" },
+    { "SHUFFLE_NOREPEAT", "SHUFFLE", "SHUFFLE_REPEAT_ONE" },
+};
+
+bool sonos_parse_play_mode(const char *reply, bool *shuffle, int *repeat)
+{
+    char mode[32];
+    if (reply == NULL || !sonos_xml_text(reply, "PlayMode", mode, sizeof(mode))) {
+        return false;
+    }
+    for (int s = 0; s < 2; s++) {
+        for (int r = 0; r < 3; r++) {
+            if (strcmp(mode, PLAY_MODES[s][r]) == 0) {
+                *shuffle = s;
+                *repeat = r;
+                return true;
+            }
+        }
+    }
+    *shuffle = false;
+    *repeat = SONOS_REPEAT_OFF;
+    return true;
+}
+
+const char *sonos_play_mode(bool shuffle, int repeat)
+{
+    return PLAY_MODES[shuffle ? 1 : 0][repeat >= SONOS_REPEAT_OFF && repeat <= SONOS_REPEAT_ONE ? repeat : 0];
 }
 
 int sonos_parse_volume(const char *reply)
@@ -507,6 +563,151 @@ bool sonos_spotify_share(const char *spotify_uri, int service, char *uri, size_t
                                "SA_RINCON%d_X_#Svc%d-0-Token</desc></item></DIDL-Lite>",
                                KINDS[i].key, enc, KINDS[i].cls, service, service);
         return u > 0 && (size_t)u < uri_len && m > 0 && (size_t)m < meta_len;
+    }
+    return false;
+}
+
+/* --------------------------------------------------------------------------
+ * Radio
+ * ------------------------------------------------------------------------ */
+
+/* MP3 streams, plain http (which Sonos plays), each checked on a speaker.
+ * NRK's are at its stream server itself: lyd.nrk.no's addresses send on to
+ * them, but through a relative redirect Sonos doesn't follow (Play fails
+ * with UPnP error 701). The others are the most listened to at myTuner
+ * (mytuner-radio.com, Norway), their addresses from radio-browser.info.
+ * The setup page keeps the chosen ones by key: a key isn't reused for
+ * another station. */
+#define NRK_CDN "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/"
+#define P4_MP3(ch, mount) "http://" ch ".p4groupaudio.com/" mount
+#define BAUER "http://live-bauerno.sharp-stream.com/"
+static const sonos_radio_t RADIOS[] = {
+    { "nrk_p1", "NRK P1", "P1", NRK_CDN "p1_mp3_h", true },
+    { "nrk_p1pluss", "NRK P1+", "P1+", NRK_CDN "p1pluss_mp3_h", true },
+    { "nrk_p2", "NRK P2", "P2", NRK_CDN "p2_mp3_h", true },
+    { "nrk_p3", "NRK P3", "P3", NRK_CDN "p3_mp3_h", true },
+    { "nrk_p3musikk", "NRK P3 Musikk", "P3 Musikk", NRK_CDN "p3musikk_mp3_h", true },
+    { "nrk_mp3", "NRK mP3", "mP3", NRK_CDN "mp3_mp3_h", true },
+    { "nrk_nyheter", "NRK Nyheter", "Nyheter", NRK_CDN "nyheter_mp3_h", true },
+    { "nrk_klassisk", "NRK Klassisk", "Klassisk", NRK_CDN "klassisk_mp3_h", true },
+    { "nrk_jazz", "NRK Jazz", "Jazz", NRK_CDN "jazz_mp3_h", true },
+    { "nrk_folkemusikk", "NRK Folkemusikk", "Folke-musikk", NRK_CDN "folkemusikk_mp3_h", true },
+    { "nrk_sport", "NRK Sport", "Sport", NRK_CDN "sport_mp3_h", true },
+    { "nrk_super", "NRK Super", "Super", NRK_CDN "radio_super_mp3_h", true },
+    { "p4", "P4 Norge", "P4", P4_MP3("p4", "P04_MM"), false },
+    { "radionorge", "Radio Norge", "Radio Norge", BAUER "radionorge_no_mp3", false },
+    { "p5", "P5 Hits", "P5 Hits", P4_MP3("p5", "P05_MM"), false },
+    { "p10", "P10 Country", "P10 Country", P4_MP3("p10", "P10_MM"), false },
+    { "p7", "P7 Klem", "P7 Klem", P4_MP3("p7", "P07_MM"), false },
+    { "p11", "P11 Dance", "P11 Dance", P4_MP3("p11", "P11_MM"), false },
+    { "nrj", "NRJ", "NRJ", BAUER "kiss_no_mp3", false }, /* Bauer's since 2024, on KISS' stream */
+    { "radiorock", "Radio Rock", "Radio Rock", BAUER "radiorock_no_mp3", false },
+    { "p9", "P9 Retro", "P9 Retro", P4_MP3("p9", "P09_MM"), false },
+    { "vinyl", "Radio Vinyl", "Radio Vinyl", BAUER "vinyl_no_mp3", false },
+    { "p8", "P8 Pop", "P8 Pop", P4_MP3("p8", "P08_MM"), false },
+    { "p6", "P6 Rock", "P6 Rock", P4_MP3("p6", "P06_MM"), false },
+    { "top40", "Topp 40", "Topp 40", BAUER "top40_no_mp3", false },
+    { "p12", "P12 Hitmix", "P12 Hitmix", P4_MP3("nrj", "NRJ_MM"), false }, /* NRJ's stream till 2024 */
+    { "p247mix", "P24-7 Mix", "P24-7 Mix", BAUER "p247mix_no_mp3", false },
+    { "juleradioen", "P24-7 Juleradioen", "Jule-radioen", BAUER "station17_no_mp3", false }, /* Christmas music */
+};
+
+/* Which of RADIOS `uri` (x-rincon-mp3radio:) plays, -1 if none: it is
+ * named and shown with its logo even if started without the metadata
+ * naming it (by another app, say). */
+static int radio_find(const char *uri)
+{
+    if (!starts(uri, "x-rincon-mp3radio://")) {
+        return -1;
+    }
+    uri += strlen("x-rincon-mp3radio://");
+    if (starts(uri, "http://")) {
+        uri += 7;
+    }
+    for (size_t i = 0; i < sizeof(RADIOS) / sizeof(RADIOS[0]); i++) {
+        if (strcmp(uri, RADIOS[i].url + 7) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+const sonos_radio_t *sonos_radios(int *count)
+{
+    *count = (int)(sizeof(RADIOS) / sizeof(RADIOS[0]));
+    return RADIOS;
+}
+
+bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, size_t uri_len, char *meta,
+                       size_t meta_len)
+{
+    if (strncmp(radio->url, "http://", 7) != 0) {
+        return false;
+    }
+    char title[64], art_esc[SONOS_URL_MAX + 32], art_xml[sizeof(art_esc) + 40] = "";
+    if (!sonos_xml_escape(radio->name, title, sizeof(title))) {
+        return false;
+    }
+    if (art[0]) {
+        if (!sonos_xml_escape(art, art_esc, sizeof(art_esc))) {
+            return false;
+        }
+        snprintf(art_xml, sizeof(art_xml), "<upnp:albumArtURI>%s</upnp:albumArtURI>", art_esc);
+    }
+    /* As SoCo starts a stream: a broadcast item of TuneIn's kind. */
+    const int u = snprintf(uri, uri_len, "x-rincon-mp3radio://%s", radio->url + 7);
+    const int m = snprintf(meta, meta_len,
+                           "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
+                           "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" "
+                           "xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" "
+                           "xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">"
+                           "<item id=\"R:0/0/0\" parentID=\"R:0/0\" restricted=\"true\"><dc:title>%s</dc:title>%s"
+                           "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
+                           "<desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">"
+                           "SA_RINCON65031_</desc></item></DIDL-Lite>",
+                           title, art_xml);
+    return u > 0 && (size_t)u < uri_len && m > 0 && (size_t)m < meta_len;
+}
+
+bool sonos_radio_chosen(const char *list, const char *key)
+{
+    const size_t n = strlen(key);
+    for (const char *p = list; n > 0 && p && *p;) {
+        const char *comma = strchr(p, ',');
+        const size_t len = comma ? (size_t)(comma - p) : strlen(p);
+        if (len == n && strncmp(p, key, n) == 0) {
+            return true;
+        }
+        p = comma ? comma + 1 : NULL;
+    }
+    return false;
+}
+
+static uint32_t le32(const uint8_t *p)
+{
+    return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+bool sonos_logo_find(const uint8_t *blob, size_t len, const char *key, const uint8_t **data, size_t *data_len)
+{
+    if (blob == NULL || len < 8 || memcmp(blob, "RLG1", 4) != 0) {
+        return false;
+    }
+    const uint32_t count = le32(blob + 4);
+    if (count > (len - 8) / 24) {
+        return false;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *e = blob + 8 + 24 * i;
+        if (strnlen((const char *)e, 16) < 16 && strcmp((const char *)e, key) == 0) {
+            const uint32_t off = le32(e + 16), n = le32(e + 20);
+            if (off > len || n > len - off || n == 0) {
+                return false;
+            }
+            *data = blob + off;
+            *data_len = n;
+            return true;
+        }
     }
     return false;
 }

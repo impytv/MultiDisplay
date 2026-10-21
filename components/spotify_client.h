@@ -40,6 +40,8 @@ typedef struct {
     bool active;         /* a device is playing or paused; false = nothing (HTTP 204) */
     bool playing;
     bool shuffle;
+    int repeat;          /* SPOTIFY_REPEAT_* */
+    bool can_shuffle, can_repeat, can_seek; /* what Spotify allows now */
     char kind[12];       /* "track", "episode", "ad", "unknown" */
     char item_id[48];    /* tells one track from the next */
     char title[SPOTIFY_TEXT_MAX];
@@ -49,6 +51,10 @@ typedef struct {
     int progress_ms, duration_ms;
     spotify_device_t device;
 } spotify_player_t;
+
+#define SPOTIFY_REPEAT_OFF     0
+#define SPOTIFY_REPEAT_CONTEXT 1 /* the playlist or album */
+#define SPOTIFY_REPEAT_TRACK   2
 
 /* The cover size asked for (Spotify has 640, 300 and 64). */
 #define SPOTIFY_COVER_PX 300
@@ -64,13 +70,18 @@ bool spotify_parse_player(const char *json, spotify_player_t *out);
 typedef struct {
     char uri[64]; /* "spotify:playlist:ID" or "spotify:album:ID" */
     char name[SPOTIFY_TEXT_MAX];
-    char image_url[160];
+    char image_url[256]; /* a playlist's mosaic is ~190 characters */
 } spotify_recent_t;
 
 /* A page of GET /v1/me/player/recently-played: what it adds to out[0..n)
  * (each once), up to `max` in all; the new count, or -1 if it isn't one.
  * `before` gets the cursor of the page before it, "" if this is the last. */
 int spotify_parse_recent(const char *json, spotify_recent_t *out, int n, int max, char *before, size_t before_len);
+
+/* A page of GET /v1/me/playlists: the playlists, at most `max`, as
+ * something to start (`uri`, `name`, the picture nearest SPOTIFY_COVER_PX);
+ * -1 if it isn't one. */
+int spotify_parse_playlists(const char *json, spotify_recent_t *out, int max);
 
 /* GET /v1/playlists/ID?fields=name,images's body: the name, and the
  * picture nearest SPOTIFY_COVER_PX ("" if none). False without a name. */
@@ -148,9 +159,24 @@ typedef enum {
     SPOTIFY_PREVIOUS,
     SPOTIFY_VOLUME,   /* to `value` percent */
     SPOTIFY_TRANSFER, /* playing on `device_id` */
+    SPOTIFY_SHUFFLE,  /* on if `value` */
+    SPOTIFY_REPEAT,   /* to `value`, SPOTIFY_REPEAT_* */
+    SPOTIFY_SEEK,     /* to `value` ms into the track */
 } spotify_cmd_t;
 
 esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id);
+
+/* Start the playlist or album `uri` ("spotify:playlist:ID") on the device
+ * playing, or on `device_id` if not "". */
+esp_err_t spotify_play_context(const char *uri, const char *device_id);
+
+/* The account's own and followed playlists, at most max. */
+esp_err_t spotify_get_playlists(spotify_recent_t *out, int max, int *count);
+
+/* Names for the playlists of list[0..n) without one: from those asked
+ * before (remembered), or asked of Spotify, at most `budget` of them now.
+ * Spotify's own playlists stay "" (see spotify_get_playlist). */
+void spotify_name_playlists(spotify_recent_t *list, int n, int budget);
 
 /* What was played lately (see spotify_recent_t), at most max. */
 esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count);

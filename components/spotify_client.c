@@ -42,6 +42,7 @@ static const char *TAG = "spotify";
  * tree about twice that - 50 at once (~150 KB) was over SP_REPLY_MAX. */
 #define SP_RECENT_PAGE  10
 #define SP_RECENT_PAGES 4
+#define SP_NAMES_MAX    24 /* playlists' names remembered */
 #define SP_EARLY_US    (60 * 1000000LL) /* renew the access token this long before it runs out */
 
 /* The login: shared between the web server (logging in, the setup page)
@@ -527,6 +528,30 @@ esp_err_t spotify_get_devices(spotify_device_t *out, int max, int *count)
     return ESP_OK;
 }
 
+/* A playback command sent, and Spotify's answer as an error. */
+static esp_err_t command(esp_http_client_method_t m, const char *path, const char *body)
+{
+    esp_err_t err;
+    const int status = api(m, path, body, &err);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (status == 200 || status == 202 || status == 204) {
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "%s: HTTP %d %.200s", path, status, s_resp.buf ? s_resp.buf : "");
+    if (status == 403 && s_resp.buf && strstr(s_resp.buf, "PREMIUM_REQUIRED")) {
+        return SPOTIFY_ERR_PREMIUM;
+    }
+    if (status == 403 && s_resp.buf && strstr(s_resp.buf, "Restricted device")) {
+        return SPOTIFY_ERR_RESTRICTED;
+    }
+    if (status == 404) {
+        return SPOTIFY_ERR_NO_DEVICE;
+    }
+    return ESP_FAIL;
+}
+
 esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id)
 {
     char path[96];
@@ -556,28 +581,35 @@ esp_err_t spotify_command(spotify_cmd_t cmd, int value, const char *device_id)
         snprintf(body, sizeof(body), "{\"device_ids\":[\"%.48s\"],\"play\":true}", device_id ? device_id : "");
         b = body;
         break;
+    case SPOTIFY_SHUFFLE:
+        snprintf(path, sizeof(path), "/me/player/shuffle?state=%s", value ? "true" : "false");
+        break;
+    case SPOTIFY_REPEAT:
+        snprintf(path, sizeof(path), "/me/player/repeat?state=%s",
+                 value == SPOTIFY_REPEAT_CONTEXT ? "context"
+                 : value == SPOTIFY_REPEAT_TRACK ? "track"
+                                                 : "off");
+        break;
+    case SPOTIFY_SEEK:
+        snprintf(path, sizeof(path), "/me/player/seek?position_ms=%d", value < 0 ? 0 : value);
+        break;
     default:
         return ESP_ERR_INVALID_ARG;
     }
-    esp_err_t err;
-    const int status = api(m, path, b, &err);
-    if (err != ESP_OK) {
-        return err;
+    return command(m, path, b);
+}
+
+esp_err_t spotify_play_context(const char *uri, const char *device_id)
+{
+    if (strncmp(uri, "spotify:", 8) != 0 || strlen(uri) > 64 || strpbrk(uri, "\"\\") != NULL) {
+        return ESP_ERR_INVALID_ARG;
     }
-    if (status == 200 || status == 202 || status == 204) {
-        return ESP_OK;
-    }
-    ESP_LOGW(TAG, "%s: HTTP %d %.200s", path, status, s_resp.buf ? s_resp.buf : "");
-    if (status == 403 && s_resp.buf && strstr(s_resp.buf, "PREMIUM_REQUIRED")) {
-        return SPOTIFY_ERR_PREMIUM;
-    }
-    if (status == 403 && s_resp.buf && strstr(s_resp.buf, "Restricted device")) {
-        return SPOTIFY_ERR_RESTRICTED;
-    }
-    if (status == 404) {
-        return SPOTIFY_ERR_NO_DEVICE;
-    }
-    return ESP_FAIL;
+    char path[96], body[96];
+    snprintf(path, sizeof(path), "/me/player/play%s%.48s", device_id && device_id[0] ? "?device_id=" : "",
+             device_id ? device_id : "");
+    snprintf(body, sizeof(body), "{\"context_uri\":\"%s\"}", uri);
+    ESP_LOGI(TAG, "Playing %s%s%s", uri, device_id && device_id[0] ? " on " : "", device_id ? device_id : "");
+    return command(HTTP_METHOD_PUT, path, body);
 }
 
 /* A 401 or 403 for a permission the login lacks. */
@@ -644,6 +676,69 @@ esp_err_t spotify_get_playlist(const char *uri, char *name, size_t name_len, cha
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+esp_err_t spotify_get_playlists(spotify_recent_t *out, int max, int *count)
+{
+    *count = 0;
+    char path[64];
+    snprintf(path, sizeof(path), "/me/playlists?limit=%d", max < 1 ? 1 : max > 50 ? 50 : max);
+    esp_err_t err;
+    const int status = api(HTTP_METHOD_GET, path, NULL, &err);
+    if (missing_scope(status)) {
+        return SPOTIFY_ERR_SCOPE;
+    }
+    if (err != ESP_OK) {
+        return err;
+    }
+    json_use_psram();
+    const int n = status == 200 && s_resp.buf ? spotify_parse_playlists(s_resp.buf, out, max) : -1;
+    if (n < 0) {
+        ESP_LOGW(TAG, "Playlists: HTTP %d %.200s", status, s_resp.buf ? s_resp.buf : "");
+        return ESP_FAIL;
+    }
+    *count = n;
+    return ESP_OK;
+}
+
+void spotify_name_playlists(spotify_recent_t *list, int n, int budget)
+{
+    /* Names asked before (the weather task's). */
+    static struct {
+        char uri[64];
+        char name[64];
+        char image[256];
+    } names[SP_NAMES_MAX] EXT_RAM_BSS_ATTR;
+    static int next;
+    for (int i = 0; i < n; i++) {
+        spotify_recent_t *r = &list[i];
+        if (r->name[0] || strncmp(r->uri, "spotify:playlist:", 17) != 0) {
+            continue;
+        }
+        int k = 0;
+        while (k < SP_NAMES_MAX && strcmp(names[k].uri, r->uri) != 0) {
+            k++;
+        }
+        if (k == SP_NAMES_MAX) {
+            if (budget <= 0) {
+                continue;
+            }
+            budget--;
+            char name[64] = "", image[256] = "";
+            const esp_err_t err = spotify_get_playlist(r->uri, name, sizeof(name), image, sizeof(image));
+            if (err != ESP_OK && err != ESP_ERR_NOT_FOUND) {
+                continue; /* asked again next time */
+            }
+            k = next++ % SP_NAMES_MAX;
+            snprintf(names[k].uri, sizeof(names[k].uri), "%s", r->uri);
+            snprintf(names[k].name, sizeof(names[k].name), "%s", name); /* "" for Spotify's own */
+            snprintf(names[k].image, sizeof(names[k].image), "%s", image);
+        }
+        snprintf(r->name, sizeof(r->name), "%s", names[k].name);
+        if (names[k].image[0]) {
+            snprintf(r->image_url, sizeof(r->image_url), "%s", names[k].image);
+        }
+    }
 }
 
 int spotify_retry_after_s(void)
