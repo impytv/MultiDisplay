@@ -3,9 +3,10 @@
  * the ground it can be seen from (above the horizon) as a ring around it,
  * day and night on the map, and the location chosen on the setup page.
  *
- * The orbit comes from the station's two-line elements (TLE) at Celestrak,
- * fetched every 6 hours while the screen is on show, and is worked out on
- * the device (components/sgp4.c): no service is asked where it is. The map
+ * The orbit comes from the station's two-line elements (TLE) at Celestrak
+ * (or ARISS, if Celestrak doesn't answer), fetched every 6 hours while the
+ * screen is on show and kept in NVS, so a restart doesn't need them again
+ * and the screen shows at once; it is worked out on the device (components/sgp4.c): no service is asked where it is. The map
  * (components/world.bin, scripts/build_world.py) is shaded for the sun's
  * position every few minutes into a 16-colour image of 800 x 400 - 160 KB,
  * held only while the screen is on show (and so counted as free by the
@@ -22,6 +23,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "nvs.h"
 
 #include "app.h"
 #include "diag.h"
@@ -35,10 +37,11 @@
 
 static const char *TAG = "iss";
 
-#define ISS_URL      "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE"
 #define ISS_TLE_MAX  1024
-#define ISS_TIMEOUT_MS 15000
-#define ISS_TLE_MS   (6 * 60 * 60 * 1000) /* the elements are fetched again after this */
+#define ISS_TIMEOUT_MS 30000              /* Celestrak sometimes takes 10-20 s to answer */
+#define ISS_TLE_S    (6 * 60 * 60)        /* the elements are fetched again after this */
+#define ISS_NVS      "iss"
+#define ISS_KEEP_MAX 256                  /* the text kept in NVS: the name and two lines */
 #define ISS_OLD_S    (3 * 24 * 3600)      /* elements older than this are said to be */
 #define ISS_RETRY_MS 60000
 #define ISS_POLL_MS  5000                 /* it moves about a pixel in this time */
@@ -71,7 +74,14 @@ static const lv_font_t *s_small;
 /* Held under the adapter lock, set by the weather task. */
 static sgp4_t s_tle;
 static bool s_have_tle;
-static fetch_stamp_t s_tle_at;
+static time_t s_tle_at; /* when the elements held were fetched (wall clock), 0 = never */
+
+/* Where the elements come from: Celestrak, else ARISS's copy (the same
+ * elements, from the amateur radio on the station). */
+static const char *const TLE_URLS[] = {
+    "https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE",
+    "https://live.ariss.org/iss.txt",
+};
 static backoff_t s_fail;
 static uint8_t *s_map;           /* palette, then 4-bit pixels; NULL while not on show */
 static lv_image_dsc_t s_map_img;
@@ -475,32 +485,79 @@ static int work_out_track(double now, double *t0)
     return n;
 }
 
-/* Fetch the elements; false if that failed. */
-static bool fetch_tle(void)
+/* Take `text` (a TLE) as the elements held; false if it isn't one. */
+static bool take_tle(const char *text, time_t fetched)
 {
-    char *body = NULL;
-    esp_err_t err = http_get_body(ISS_URL, yr_client_user_agent(), ISS_TIMEOUT_MS, ISS_TLE_MAX, &body, TAG);
     sgp4_t tle;
-    const bool ok = err == ESP_OK && sgp4_parse_text(body, &tle);
-    free(body);
-    if (!ok) {
-        ESP_LOGW(TAG, "No elements for the ISS: %s", err == ESP_OK ? "not a TLE" : esp_err_to_name(err));
-        diag_fail(DIAG_ISS, err == ESP_OK ? ESP_ERR_INVALID_RESPONSE : err);
-        backoff_fail(&s_fail);
+    if (!sgp4_parse_text(text, &tle)) {
         return false;
     }
-    diag_ok(DIAG_ISS);
-    backoff_ok(&s_fail);
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         s_tle = tle;
         s_have_tle = true;
         s_period_s = 2.0 * M_PI / tle.no_unkozai * 60.0;
         s_track_t0 = 0; /* worked out again from these */
-        stamp_now(&s_tle_at);
+        s_tle_at = fetched;
         esp_lv_adapter_unlock();
     }
     ESP_LOGI(TAG, "Elements from %.0f, %.1f minutes round", tle.epoch, s_period_s / 60.0);
     return true;
+}
+
+/* The elements kept from the last fetch, if any (once, at the first poll). */
+static void load_tle(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(ISS_NVS, NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    char text[ISS_KEEP_MAX];
+    size_t len = sizeof(text);
+    int64_t at = 0;
+    if (nvs_get_str(h, "tle", text, &len) == ESP_OK && nvs_get_i64(h, "at", &at) == ESP_OK) {
+        take_tle(text, (time_t)at);
+    }
+    nvs_close(h);
+}
+
+static void save_tle(const char *text, time_t fetched)
+{
+    nvs_handle_t h;
+    if (strlen(text) >= ISS_KEEP_MAX || nvs_open(ISS_NVS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_str(h, "tle", text) != ESP_OK || nvs_set_i64(h, "at", (int64_t)fetched) != ESP_OK ||
+        nvs_commit(h) != ESP_OK) {
+        ESP_LOGW(TAG, "Couldn't keep the elements");
+    }
+    nvs_close(h);
+}
+
+/* Fetch the elements, from the first source that gives them; false if
+ * none did. */
+static bool fetch_tle(void)
+{
+    esp_err_t err = ESP_FAIL;
+    for (size_t k = 0; k < sizeof(TLE_URLS) / sizeof(TLE_URLS[0]); k++) {
+        char *body = NULL;
+        err = http_get_body(TLE_URLS[k], yr_client_user_agent(), ISS_TIMEOUT_MS, ISS_TLE_MAX, &body, TAG);
+        const time_t now = time(NULL);
+        if (err == ESP_OK && take_tle(body, now)) {
+            save_tle(body, now);
+            free(body);
+            diag_ok(DIAG_ISS);
+            backoff_ok(&s_fail);
+            return true;
+        }
+        free(body);
+        if (err == ESP_OK) {
+            err = ESP_ERR_INVALID_RESPONSE;
+        }
+        ESP_LOGW(TAG, "No elements for the ISS from %s: %s", TLE_URLS[k], esp_err_to_name(err));
+    }
+    diag_fail(DIAG_ISS, err);
+    backoff_fail(&s_fail);
+    return false;
 }
 
 uint32_t iss_poll(int for_view)
@@ -509,7 +566,13 @@ uint32_t iss_poll(int for_view)
     if (now_s <= PLAUSIBLE_EPOCH_S) {
         return ISS_RETRY_MS / 6; /* where it is needs the clock */
     }
-    if ((!s_tle_at.valid || !stamp_fresh(&s_tle_at, ISS_TLE_MS)) && !backoff_waiting(&s_fail, ISS_RETRY_MS)) {
+    static bool loaded;
+    if (!loaded) {
+        loaded = true;
+        load_tle();
+    }
+    if ((s_tle_at == 0 || now_s - s_tle_at >= ISS_TLE_S || now_s < s_tle_at) &&
+        !backoff_waiting(&s_fail, ISS_RETRY_MS)) {
         fetch_tle();
     }
     if (!s_have_tle) {

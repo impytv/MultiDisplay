@@ -69,6 +69,12 @@ void test_sgp4(void)
     CHECK(sgp4_parse_text(text, &t));
     CHECK(t.epoch == s.epoch && t.no_kozai == s.no_kozai);
     CHECK(!sgp4_parse_text("No GP data found", &t));
+    /* As ARISS sends it: \n only, its own way of writing a zero. */
+    CHECK(sgp4_parse_text("ISS (ZARYA)\n"
+                          "1 25544U 98067A   26296.69304404  .00008515  00000-0  16237-3 0  9996\n"
+                          "2 25544  51.6336  24.1765 0006871 300.7285  59.3026 15.49021515591674\n\n",
+                          &t));
+    CHECK(t.epoch == s.epoch && t.no_kozai == s.no_kozai);
     snprintf(text, sizeof(text), "%s\n%s\n", L2, L1);
     CHECK(!sgp4_parse_text(text, &t));
 

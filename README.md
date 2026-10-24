@@ -752,8 +752,11 @@ satellite image. On it:
 
 The orbit is the station's two-line elements (TLE) from
 [Celestrak](https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE),
-fetched every 6 hours while the screen is on show (a failure is tried again
-after a minute, then every 5), and worked out on the display with SGP4
+or, if Celestrak doesn't answer within 30 s (it sometimes takes 10-20),
+ARISS's copy ([live.ariss.org](https://live.ariss.org/iss.txt)); fetched
+every 6 hours while the screen is on show (a failure is tried again after a
+minute, then every 5) and kept in NVS, so after a restart the screen shows
+the orbit at once without fetching it again. It is worked out on the display with SGP4
 (`components/sgp4.c`, the near-earth part of Vallado's revision; the host
 tests check it against python-sgp4 to the metre). The station moves about a
 pixel in 5 seconds, so it is moved on that often. The map is Natural Earth's

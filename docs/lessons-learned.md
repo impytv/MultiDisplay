@@ -502,3 +502,13 @@ shows, so it is reported with `wd_psram_held`, as the music tiles are.
 *Lesson:* a new screen's buffer that is held while it shows is checked
 against `WD_LOW_PSRAM` on the device, and counted as held if it is given
 back.
+
+### A source that is fast from here and slow from the display
+
+The ISS screen said it couldn't fetch the orbit: Celestrak, which answered
+in 0.7 s from the development machine, sometimes took 10-20 s, past the
+display's 15 s timeout (`ESP_ERR_HTTP_EAGAIN`: no reply in time). Timing a
+few requests in a row, at different times, showed it.
+*Lesson:* time a new source several times, not once, and give a small
+download from a free service a generous timeout, a second source where one
+exists, and a copy kept over restarts.
