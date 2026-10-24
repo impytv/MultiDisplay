@@ -10,6 +10,11 @@
  * lat/lon (degrees, east positive). Below SUN_DOWN_DEG it has set. */
 double sun_elevation_deg(double lat, double lon, time_t t);
 
+/* Where the sun is overhead at epoch seconds `t` (degrees, east positive,
+ * -180..180), and, if dir isn't NULL, the unit vector towards it in the
+ * frame of the stars (x to the vernal equinox, z to the north pole). */
+void sun_subsolar(double t, double *lat, double *lon, double dir[3]);
+
 /* The upper rim on the horizon, with refraction: sunrise and sunset. */
 #define SUN_DOWN_DEG (-0.833)
 

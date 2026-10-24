@@ -480,3 +480,25 @@ tiles, allocated and freed in turn, had cut the heap up. Found from
 *Lesson:* look at the largest free block as well as the total; a large
 buffer is allocated once and kept (decoded into in place, as the Sonos
 cover is), not two of them where one does.
+
+### A rasteriser that leaves rows out
+
+The world map for the ISS screen (`scripts/build_world.py`) first came out
+with thin sea-coloured lines straight across Russia, Asia and Canada: PIL's
+polygon fill left whole rows out of the largest polygons, and neither
+drawing the edges too nor nudging the corners off the pixel grid helped. A
+dozen lines of scanline fill in numpy (crossings per row, half-open at the
+corners) drew it right. Seen only because the result was looked at as a
+picture before it went into the firmware.
+*Lesson:* look at generated data as a picture, and check a suspect row by
+its numbers; when a library's output is wrong in a way that resists
+workarounds, a small fill of one's own beats more workarounds.
+
+### A screen's buffer and the memory watchdog
+
+The ISS map's 160 KB took free PSRAM on that screen to 311 KB, just over the
+watchdog's 300 KB restart limit. It is given back when another screen
+shows, so it is reported with `wd_psram_held`, as the music tiles are.
+*Lesson:* a new screen's buffer that is held while it shows is checked
+against `WD_LOW_PSRAM` on the device, and counted as held if it is given
+back.

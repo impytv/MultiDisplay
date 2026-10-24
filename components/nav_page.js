@@ -2,7 +2,7 @@
 // screens as buttons, grouped as a tap steps through them, the one on show
 // marked. A press switches the display as a tap on it would. Below them, a
 // button switches the screen off till the next touch, or lights it.
-const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',sonos:'Sonos',europa:'Europa',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
+const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',sonos:'Sonos',europa:'Europa',iss:'ISS',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
 nedbor:'Nedbør',avganger:'Avganger',luft:'Luft',tidevann:'Tidevann',satellitt:'Satellitt'};
 const nav=document.getElementById('nav'),st=document.createElement('small');
 function show(d){nav.textContent='';st.textContent='';let grp=null,key=null;

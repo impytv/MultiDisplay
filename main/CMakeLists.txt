@@ -21,6 +21,7 @@ idf_component_register(
         "sonos.c"
         "music_tiles.c"
         "satellite.c"
+        "iss.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
@@ -56,13 +57,16 @@ idf_component_register(
         "../components/sonos_parse.c"
         "../components/png_decode.c"
         "../components/png_inflate.c"
+        "../components/sgp4.c"
     INCLUDE_DIRS
         "."
         "../components"
-    # Airport + runway table for the radar (see scripts/build_airports.py).
+    # Airport + runway table for the radar (see scripts/build_airports.py), the
+    # satellite image's palettes, and the ISS screen's map (build_world.py).
     EMBED_FILES
         "../components/airports.bin"
         "../components/sat_palette.bin"
+        "../components/world.bin"
     # The setup page's departure picker, served as /dep.js (wifi_provision.c).
     EMBED_TXTFILES
         "../components/setup_departures.js"

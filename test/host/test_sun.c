@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdlib.h>
 #include "check.h"
 #include "../../main/sun.c"
@@ -33,4 +34,17 @@ void test_sun(void)
     CHECK(sun_times(69.68, 18.94, noon(2026, 6, 21), &r, &s) == SUN_UP_ALL_DAY);     /* midnattssol */
     CHECK(sun_elevation_deg(59.91, 10.75, noon(2026, 6, 21)) > 50);
     CHECK(sun_elevation_deg(59.91, 10.75, noon(2026, 6, 21) + 12 * 3600) < 0);
+
+    /* Overhead: at the solstice (2026-06-21 08:24 UTC) on the Tropic of
+     * Cancer, east of Greenwich by the hours before noon; at the equinox
+     * (2026-03-20 14:46 UTC) on the equator, west of it. */
+    double lat, lon, dir[3];
+    sun_subsolar(1782030240.0, &lat, &lon, dir);
+    CHECK(fabs(lat - 23.44) < 0.02);
+    CHECK(fabs(lon - 54.4) < 0.5); /* (12:01.5 - 08:24) x 15: noon at Greenwich then is 12:01.5 UTC */
+    CHECK(fabs(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2] - 1.0) < 1e-9);
+    CHECK(fabs(dir[0]) < 0.01 && dir[1] > 0.9); /* towards 6 h of right ascension */
+    sun_subsolar(1774017960.0, &lat, &lon, NULL);
+    CHECK(fabs(lat) < 0.02);
+    CHECK(fabs(lon + 39.6) < 0.5); /* (12:07.5 - 14:46) x 15 */
 }

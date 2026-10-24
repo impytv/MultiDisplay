@@ -286,6 +286,12 @@ typedef struct {
     uint8_t so_dark;
     char so_room[APP_CONFIG_SONOS_ROOM_MAX];
     char so_radios[APP_CONFIG_SONOS_RADIOS_MAX];
+    /* The ISS screen (main/iss.c): shown, and in the rotation, and the
+     * location marked on its map: location iss_loc - 1, or none with 0.
+     * The first location if never saved. */
+    uint8_t iss_show;
+    uint8_t iss_rotate;
+    uint8_t iss_loc;
 } app_config_t;
 
 /**

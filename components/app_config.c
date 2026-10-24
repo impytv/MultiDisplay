@@ -163,6 +163,8 @@ static void sanitize_view_settings(app_config_t *c)
     c->so_rotate = c->so_rotate ? 1 : 0;
     c->so_start = c->so_start ? 1 : 0;
     c->so_dark = c->so_dark ? 1 : 0;
+    c->iss_show = c->iss_show ? 1 : 0;
+    c->iss_rotate = c->iss_rotate ? 1 : 0;
     c->so_room[APP_CONFIG_SONOS_ROOM_MAX - 1] = '\0';
     c->so_radios[APP_CONFIG_SONOS_RADIOS_MAX - 1] = '\0';
     c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
@@ -172,6 +174,9 @@ static void sanitize_view_settings(app_config_t *c)
     c->clk_rotate = c->clk_rotate ? 1 : 0;
     if (c->clk_out > c->location_count) {
         c->clk_out = 1; /* a location since removed: the first */
+    }
+    if (c->iss_loc > c->location_count) {
+        c->iss_loc = 1;
     }
     if (c->temp_offset_dc < -APP_CONFIG_TEMP_OFFSET_MAX || c->temp_offset_dc > APP_CONFIG_TEMP_OFFSET_MAX) {
         c->temp_offset_dc = 0;
@@ -209,6 +214,7 @@ static void seed_defaults(app_config_t *out)
     out->so_start = 1;
     snprintf(out->so_radios, sizeof(out->so_radios), "%s", APP_CONFIG_SONOS_RADIOS_DEFAULT);
     out->clk_out = 1;
+    out->iss_loc = 1;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
     out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
@@ -358,6 +364,9 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "sodark", &out->so_dark);
     load_str(h, "soroom", out->so_room, sizeof(out->so_room));
     load_str(h, "soradios", out->so_radios, sizeof(out->so_radios)); /* the default if never saved */
+    nvs_get_u8(h, "issshow", &out->iss_show); /* no ISS screen if never saved */
+    nvs_get_u8(h, "issrot", &out->iss_rotate);
+    nvs_get_u8(h, "issloc", &out->iss_loc); /* the first location if never saved */
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     if (!clkin_saved) {
@@ -407,6 +416,8 @@ esp_err_t app_config_load(app_config_t *out)
     ESP_LOGI(TAG, "Sonos: %s%s%s%s, room '%s', radio '%s'", out->so_show ? "shown" : "not shown",
              out->so_rotate ? ", in the rotation" : "", out->so_start ? "" : ", the rotation not started from it",
              out->so_dark ? ", dark" : "", out->so_room, out->so_radios);
+    ESP_LOGI(TAG, "ISS: %s%s, marking %s", out->iss_show ? "shown" : "not shown",
+             out->iss_rotate ? ", in the rotation" : "", out->iss_loc ? out->locations[out->iss_loc - 1].name : "none");
     for (int i = 0; i < out->location_count; i++) {
         ESP_LOGI(TAG, "  [%d] %s: show%s%s%s%s%s%s%s%s%s, radar range %u km, ship range %u km around '%s', "
                  "ships from %u m (%u m within %u km), rain range %u km, departures '%s', rotation 0x%03x",
@@ -508,6 +519,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "sodark", cfg->so_dark ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_str(h, "soroom", cfg->so_room);
     if (err == ESP_OK) err = nvs_set_str(h, "soradios", cfg->so_radios);
+    if (err == ESP_OK) err = nvs_set_u8(h, "issshow", cfg->iss_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "issrot", cfg->iss_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "issloc", cfg->iss_loc);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {

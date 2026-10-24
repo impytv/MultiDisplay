@@ -109,6 +109,11 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
     cJSON_AddStringToObject(so, "room", c->so_room);
     cJSON_AddStringToObject(so, "radios", c->so_radios);
 
+    cJSON *iss = cJSON_AddObjectToObject(root, "iss");
+    cJSON_AddBoolToObject(iss, "show", c->iss_show);
+    cJSON_AddBoolToObject(iss, "rotate", c->iss_rotate);
+    cJSON_AddNumberToObject(iss, "location", c->iss_loc); /* 1 = the first, 0 = none */
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -296,6 +301,10 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
     get_bool(so, "dark", &c->so_dark);
     ok &= get_str(so, "room", c->so_room, sizeof(c->so_room));
     ok &= get_str(so, "radios", c->so_radios, sizeof(c->so_radios));
+    const cJSON *iss = cJSON_GetObjectItemCaseSensitive(root, "iss");
+    get_bool(iss, "show", &c->iss_show);
+    get_bool(iss, "rotate", &c->iss_rotate);
+    get_u8(iss, "location", &c->iss_loc);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

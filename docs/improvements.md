@@ -826,3 +826,15 @@ work.
 Not possible: lyrics, and Spotify's audio features and recommendations,
 which Spotify has closed to new apps; Chromecast and AirPlay directly are
 too heavy for the chip.
+
+## The ISS screen (October 2026, 1.30.0)
+
+- [x] **110. Where the ISS is.** A screen with the station over a world
+  map, its last orbit as a line and the next as dots.
+  Done: orbit from Celestrak's TLE every 6 hours, SGP4 on the device
+  (checked against python-sgp4), the visibility ring, day and night on the
+  map, and the location chosen under **Sted på kartet**.
+- [ ] **111. The next pass over the chosen location.** When the station
+  next rises over it, how high it goes, and whether it can be seen (the
+  sky dark there, the station in sunlight) - the elements and SGP4 are
+  already on the device.

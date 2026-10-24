@@ -9,16 +9,37 @@
 #define RAD (M_PI / 180.0)
 #define J2000_EPOCH 946728000.0 /* 2000-01-01 12:00 UTC */
 
-double sun_elevation_deg(double lat, double lon, time_t t)
+/* Right ascension and declination (radians), and Greenwich mean sidereal
+ * time (degrees), at `t`. */
+static void sun_at(double t, double *ra, double *dec, double *gmst_deg)
 {
-    const double d = ((double)t - J2000_EPOCH) / 86400.0;
+    const double d = (t - J2000_EPOCH) / 86400.0;
     const double g = (357.529 + 0.98560028 * d) * RAD;   /* mean anomaly */
     const double q = 280.459 + 0.98564736 * d;           /* mean longitude */
     const double l = (q + 1.915 * sin(g) + 0.020 * sin(2 * g)) * RAD; /* ecliptic longitude */
     const double e = (23.439 - 0.00000036 * d) * RAD;    /* obliquity */
-    const double ra = atan2(cos(e) * sin(l), cos(l));
-    const double dec = asin(sin(e) * sin(l));
-    const double gmst_deg = fmod(280.46061837 + 360.98564736629 * d, 360.0);
+    *ra = atan2(cos(e) * sin(l), cos(l));
+    *dec = asin(sin(e) * sin(l));
+    *gmst_deg = fmod(280.46061837 + 360.98564736629 * d, 360.0);
+}
+
+void sun_subsolar(double t, double *lat, double *lon, double dir[3])
+{
+    double ra, dec, gmst_deg;
+    sun_at(t, &ra, &dec, &gmst_deg);
+    *lat = dec / RAD;
+    *lon = remainder(ra / RAD - gmst_deg, 360.0);
+    if (dir != NULL) {
+        dir[0] = cos(dec) * cos(ra);
+        dir[1] = cos(dec) * sin(ra);
+        dir[2] = sin(dec);
+    }
+}
+
+double sun_elevation_deg(double lat, double lon, time_t t)
+{
+    double ra, dec, gmst_deg;
+    sun_at((double)t, &ra, &dec, &gmst_deg);
     const double ha = (gmst_deg + lon) * RAD - ra;       /* hour angle */
     const double phi = lat * RAD;
     return asin(sin(phi) * sin(dec) + cos(phi) * cos(dec) * cos(ha)) / RAD;

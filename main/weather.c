@@ -715,6 +715,64 @@ static int pick_top_peaks(const yr_forecast_t *fc, float (*get)(const yr_forecas
     return n;
 }
 
+/* The first shown label in `others` (n of them) that `label` overlaps, with
+ * `gap` px around each; NULL if none. */
+static lv_obj_t *label_clash(lv_obj_t *label, lv_obj_t *const *others, int n, int32_t gap)
+{
+    lv_area_t a, b;
+    lv_obj_get_coords(label, &a);
+    for (int i = 0; i < n; i++) {
+        if (others[i] == label || lv_obj_has_flag(others[i], LV_OBJ_FLAG_HIDDEN)) {
+            continue;
+        }
+        lv_obj_get_coords(others[i], &b);
+        if (a.x1 < b.x2 + gap && b.x1 < a.x2 + gap && a.y1 < b.y2 + gap && b.y1 < a.y2 + gap) {
+            return others[i];
+        }
+    }
+    return NULL;
+}
+
+/* Move a precipitation label off the temperature labels (and the other
+ * precipitation label), which are placed first: beside the one it covers,
+ * right then left, else above or below it - the first spot inside the
+ * chart that clashes with none. Left where it was if there is none. */
+static void precip_marker_clear(lv_obj_t *label)
+{
+    lv_obj_t *others[TEMP_MARKER_POOL + PRECIP_MARKER_POOL];
+    int n = 0;
+    for (int i = 0; i < TEMP_MARKER_POOL; i++) {
+        others[n++] = s_temp_markers[i];
+    }
+    for (int i = 0; i < PRECIP_MARKER_POOL; i++) {
+        others[n++] = s_precip_markers[i];
+    }
+    lv_obj_update_layout(label);
+    const lv_obj_t *hit = label_clash(label, others, n, 2);
+    if (hit == NULL) {
+        return;
+    }
+    const int32_t x0 = lv_obj_get_x(label), y0 = lv_obj_get_y(label);
+    const int32_t w = lv_obj_get_width(label), h = lv_obj_get_height(label);
+    const int32_t hx = lv_obj_get_x(hit), hy = lv_obj_get_y(hit);
+    const int32_t hw = lv_obj_get_width(hit), hh = lv_obj_get_height(hit);
+    const int32_t spots[4][2] = {
+        { hx + hw + 6, y0 }, { hx - w - 6, y0 }, { x0, hy - h - 2 }, { x0, hy + hh + 2 },
+    };
+    for (int k = 0; k < 4; k++) {
+        const int32_t x = spots[k][0], y = spots[k][1];
+        if (x < CHART_X || x + w > CHART_X + CHART_W || y < CHART_Y || y + h > CHART_Y + CHART_H) {
+            continue;
+        }
+        lv_obj_set_pos(label, x, y);
+        lv_obj_update_layout(label);
+        if (label_clash(label, others, n, 2) == NULL) {
+            return;
+        }
+    }
+    lv_obj_set_pos(label, x0, y0);
+}
+
 /* Precipitation value markers: up to the two highest max-precipitation peaks
  * (pick_top_peaks - deduplicated within PEAK_LABEL_MIN_GAP_H hours, so a
  * second peak less than 6h from the strongest is dropped rather than shown),
@@ -739,6 +797,10 @@ static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_m
     }
     for (int i = n; i < PRECIP_MARKER_POOL; i++) {
         lv_obj_add_flag(s_precip_markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    /* The temperature labels are placed first; keep clear of them. */
+    for (int k = 0; k < n; k++) {
+        precip_marker_clear(s_precip_markers[k]);
     }
 }
 

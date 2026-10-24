@@ -556,6 +556,25 @@ static char *build_page(const app_config_t *cfg)
                   cfg->sat_show ? " checked" : "", cfg->sat_rotate ? " checked" : "",
                   cfg->sat_zoom == 3 ? " selected" : "", cfg->sat_zoom == 2 ? " selected" : "",
                   cfg->sat_visible ? " checked" : "");
+    p = buf_append(p, end,
+                  "<details class=sec><summary>Romstasjonen ISS</summary>"
+                  "<div class=chk><label><input type=checkbox name=issshow value=1%s>"
+                  "Vis romstasjonen</label><label><input type=checkbox name=issrot value=1%s>"
+                  "i automatisk bytte</label></div>"
+                  "<small>Hvor Den internasjonale romstasjonen er over jorda n&aring;, med forrige runde "
+                  "som en strek og neste som prikker, omr&aring;det den kan ses fra, og dag og natt p&aring; "
+                  "kartet. Som en egen skjerm etter satellittbildet. Banen hentes fra Celestrak hver "
+                  "sjette time.</small>"
+                  "<label>Sted p&aring; kartet</label><select name=issloc id=issloc>"
+                  "<option value=''%s>Ingen</option>",
+                  cfg->iss_show ? " checked" : "", cfg->iss_rotate ? " checked" : "", cfg->iss_loc == 0 ? " selected" : "");
+    /* As for the clock's outdoor temperature: by place in the form. */
+    for (int i = 0; i < cfg->location_count; i++) {
+        p = buf_append(p, end, "<option value=%d%s>", i, cfg->iss_loc == i + 1 ? " selected" : "");
+        p = html_escape_append(p, end, cfg->locations[i].name);
+        p = buf_append(p, end, "</option>");
+    }
+    p = buf_append(p, end, "</select><small>Stedet vises som en hvit prikk med navnet.</small></details>");
     p = buf_append(p, end, "<h2>Innstillinger</h2>");
 
     /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
@@ -1389,6 +1408,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->so_rotate = form_field(body, "sorot", val, sizeof(val)) ? 1 : 0;
         cfg->so_start = form_field(body, "sostart", val, sizeof(val)) ? 1 : 0;
         cfg->so_dark = form_field(body, "sodark", val, sizeof(val)) ? 1 : 0;
+        cfg->iss_show = form_field(body, "issshow", val, sizeof(val)) ? 1 : 0;
+        cfg->iss_rotate = form_field(body, "issrot", val, sizeof(val)) ? 1 : 0;
         if (form_field(body, "soroom", cfg->so_room, sizeof(cfg->so_room))) {
             /* Without the spaces around it, as the rooms are named. */
             char *r = cfg->so_room;
@@ -1566,6 +1587,11 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     const bool clkout_sent = form_field(body, "clkout", clkout, sizeof(clkout));
     const int clkout_form = (clkout_sent && clkout[0]) ? atoi(clkout) : -1;
     uint8_t clk_out = 0;
+    /* Likewise the location marked on the ISS map. */
+    char issloc[8];
+    const bool issloc_sent = form_field(body, "issloc", issloc, sizeof(issloc));
+    const int issloc_form = (issloc_sent && issloc[0]) ? atoi(issloc) : -1;
+    uint8_t iss_loc = 0;
     int n = 0;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         char key[16];
@@ -1597,6 +1623,9 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
         if (i == clkout_form) {
             clk_out = (uint8_t)(n + 1);
+        }
+        if (i == issloc_form) {
+            iss_loc = (uint8_t)(n + 1);
         }
         snprintf(locs[n].name, sizeof(locs[n].name), "%s", name);
         snprintf(locs[n].lat, sizeof(locs[n].lat), "%s", lat);
@@ -1690,6 +1719,11 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->clk_out = clk_out;
     } else if (cfg->clk_out > n) {
         cfg->clk_out = 1; /* a form without the clock (the setup portal) */
+    }
+    if (issloc_sent) {
+        cfg->iss_loc = iss_loc;
+    } else if (cfg->iss_loc > n) {
+        cfg->iss_loc = 1;
     }
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cfg->show[i] = show[i] ? show[i] : APP_SHOW_WEATHER;

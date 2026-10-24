@@ -163,7 +163,7 @@ with a throwaway key, so displays won't accept it.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
     one as a tap would (types: `oversikt`, `kalender`, `maned`, `klokke`, `vaer`, `uke`, `fly`,
-    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`;
+    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`, `iss`;
     `sted` counts from 1),
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
     over nettet** is ticked under **Vedlikehold → Skjermbilder** (off by
@@ -253,8 +253,10 @@ Navigasjonsside**. The screens, in order:
 2. **Kalender**, if shown (see [Calendar](#calendar)).
 3. **Månedskalender**, if shown (see [Month calendar](#month-calendar)).
 4. **Klokke**, if shown (see [Clock](#clock)).
-5. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
-6. For each location in order, whichever of its screens are enabled.
+5. **Spotify** and **Sonos**, if shown (see [Spotify](#spotify) and [Sonos](#sonos)).
+6. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
+7. **Romstasjonen ISS**, if shown (see [ISS](#iss)).
+8. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -729,6 +731,38 @@ doesn't document the image's projection: `scripts/fit_satellite.py` fitted
 one to the coastline drawn on it (within about a pixel over Norway); run it
 again if MET changes the image.
 
+### ISS
+
+Where the International Space Station is now, over a map of the world,
+under **Andre skjermer → Romstasjonen ISS** on the setup page (**Vis
+romstasjonen**, and **i automatisk bytte**); one screen, after the
+satellite image. On it:
+
+- the station, with the last time round (one orbit, about 93 minutes) as a
+  white line behind it and the next as yellow dots ahead;
+- a ring around it where it is above the horizon - the ground it can be seen
+  from (in the dark, with the station in sunlight);
+- day, twilight (the sun up to 6° and 12° below the horizon) and night on
+  the map, redrawn every two minutes;
+- the location chosen under **Sted på kartet** (the first unless changed,
+  or none) as a dot with its name;
+- its height, speed, position, and whether it is in sunlight or the earth's
+  shadow; "Banen er fra ..." in orange if the orbit held is over three days
+  old.
+
+The orbit is the station's two-line elements (TLE) from
+[Celestrak](https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=TLE),
+fetched every 6 hours while the screen is on show (a failure is tried again
+after a minute, then every 5), and worked out on the display with SGP4
+(`components/sgp4.c`, the near-earth part of Vallado's revision; the host
+tests check it against python-sgp4 to the metre). The station moves about a
+pixel in 5 seconds, so it is moved on that often. The map is Natural Earth's
+1:50m land less its largest lakes (public domain), built into the firmware as
+`components/world.bin` (80 KB: 800 × 400, how much of each pixel is land in
+2 bits) by `python3 scripts/build_world.py`, and shaded into a 16-colour
+image of 160 KB of PSRAM, held only while the screen is on show.
+In backups: `iss.show`, `iss.rotate`, `iss.location` (1 = the first, 0 = none).
+
 ### Night
 
 Under **Visning → Natt** on the setup page, **Nattmodus** with its **Fra**/**Til**
@@ -826,8 +860,9 @@ open one to change it. Only the fields its ticked screens need are shown,
 in closed sections: **Visning** (theme, night, text size), **Automatisk
 bytte**, **Tilgang og passord** (WiFi, setup password, BarentsWatch, yr
 contact) and **Vedlikehold** (the display's name, the navigation page,
-updates, firmware upload, backup, status). The overview, calendar and
-satellite image have closed sections of their own under **Andre skjermer**.
+updates, firmware upload, backup, status). The overview, calendar,
+satellite image, ISS and the other screens for the whole display have closed
+sections of their own under **Andre skjermer**.
 Changes are marked "Ulagrede endringer" until saved, and mistakes are shown
 by the field before anything is saved. Times are 24-hour (TT:MM). The page
 follows the browser's light or dark mode.

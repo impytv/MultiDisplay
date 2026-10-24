@@ -75,6 +75,8 @@ void test_config(void)
     a.mon_astro = 0;
     a.mon_cal = 1;
     a.clk_show = 1;
+    a.iss_show = 1;
+    a.iss_loc = 2;
     a.clk_rotate = 1;
     a.clk_out = 2;
     a.clk_in = 0;
@@ -138,6 +140,8 @@ void test_config(void)
     CHECK_INT(c.sat_visible, 1);
     CHECK(c.mon_show && !c.mon_rotate && c.mon_moon && !c.mon_astro && c.mon_cal);
     CHECK(c.clk_show && c.clk_rotate);
+    CHECK(c.iss_show && !c.iss_rotate);
+    CHECK_INT(c.iss_loc, 2);
     CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.clk_in, 0);
     CHECK(c.sp_show && !c.sp_rotate);
