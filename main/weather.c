@@ -34,6 +34,10 @@ static const char *TAG = "weather";
 #define WEATHER_REFRESH_INTERVAL_MS (10 * 60 * 1000)
 #define NOWCAST_REFRESH_INTERVAL_MS (5 * 60 * 1000)
 #define WEATHER_RETRY_INTERVAL_MS (20 * 1000)
+/* A forecast that failed while an older one is held is tried again after
+ * this, not on every poll: each try downloads and parses ~90 KB for each
+ * location, which kept PSRAM near empty while MET's answers didn't parse. */
+#define FORECAST_FAIL_RETRY_MS (3 * 60 * 1000)
 /* MET Norway's severe weather alerts ("farevarsel") change far less often
  * than the forecast - polled on its own, slower, independent cadence so one
  * data source's staleness never forces a refetch of the other. */
@@ -1966,6 +1970,10 @@ static void refresh_caches(bool overview, int sel, bool refetch_sel, int for_vie
                          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
             } else {
                 ESP_LOGW(TAG, "Forecast[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
+                if (s_fc_valid[i] && esp_lv_adapter_lock(-1) == ESP_OK) {
+                    s_fc_tk[i] = now_tk - pdMS_TO_TICKS(WEATHER_REFRESH_INTERVAL_MS - FORECAST_FAIL_RETRY_MS);
+                    esp_lv_adapter_unlock();
+                }
             }
         }
 

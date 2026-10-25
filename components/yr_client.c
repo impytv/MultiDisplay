@@ -203,9 +203,71 @@ static void parse_days(const cJSON *timeseries, yr_forecast_t *out)
     }
 }
 
-static bool parse_forecast(const char *json, yr_forecast_t *out)
+/* The numbers parse_forecast reads; drop_unused_numbers leaves out the rest. */
+static const char *const FORECAST_NUMBERS[] = {
+    "air_temperature",      "air_temperature_max",      "air_temperature_min",
+    "precipitation_amount", "precipitation_amount_max", "precipitation_amount_min",
+    "wind_from_direction",  "wind_speed",               "wind_speed_of_gust",
+};
+
+static bool keep_number(const char *name, size_t len)
+{
+    for (size_t i = 0; i < sizeof(FORECAST_NUMBERS) / sizeof(FORECAST_NUMBERS[0]); i++) {
+        if (strlen(FORECAST_NUMBERS[i]) == len && memcmp(FORECAST_NUMBERS[i], name, len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Take the "name":number members that parse_forecast doesn't read out of
+ * `json`, in place. The complete forecast has about 40 numbers an hour
+ * (pressure, humidity, clouds, percentiles...) and the display reads 9;
+ * leaving the rest out keeps cJSON's tree about 110 KB smaller, which a
+ * screen with ~350 KB of PSRAM free needs. MET sends JSON without spaces;
+ * a member written with them is simply kept. */
+static void drop_unused_numbers(char *json)
+{
+    char *r = json, *w = json;
+    while (*r != '\0') {
+        if (*r != '"') {
+            *w++ = *r++;
+            continue;
+        }
+        char *end = r + 1; /* the string's closing quote */
+        while (*end != '\0' && *end != '"') {
+            end += (end[1] != '\0' && *end == '\\') ? 2 : 1;
+        }
+        if (*end == '\0') {
+            break; /* cut off: cJSON will say so */
+        }
+        const char *val = end + 1;
+        if (*val == ':' && (val[1] == '-' || (val[1] >= '0' && val[1] <= '9')) &&
+            !keep_number(r + 1, (size_t)(end - r - 1))) {
+            val += 1;
+            while (*val != '\0' && strchr("+-.eE0123456789", *val) != NULL) {
+                val++;
+            }
+            if (*val == ',') {
+                val++;
+            } else if (w > json && w[-1] == ',') {
+                w--; /* the last member: its comma before goes instead */
+            }
+            r = (char *)val;
+            continue;
+        }
+        const size_t n = (size_t)(end + 1 - r);
+        memmove(w, r, n);
+        w += n;
+        r = end + 1;
+    }
+    memmove(w, r, strlen(r) + 1);
+}
+
+static bool parse_forecast(char *json, yr_forecast_t *out)
 {
     json_use_psram();
+    drop_unused_numbers(json);
     cJSON *root = cJSON_Parse(json);
     if (root == NULL) {
         ESP_LOGE(TAG, "Failed to parse JSON response");

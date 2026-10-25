@@ -838,3 +838,15 @@ too heavy for the chip.
   next rises over it, how high it goes, and whether it can be seen (the
   sky dark there, the station in sunlight) - the elements and SGP4 are
   already on the device.
+- [x] **112. Forecast parsing within the PSRAM left.** After hours of use a
+  weather screen had ~350 KB of PSRAM free, MET's complete forecast
+  needed ~370 KB to parse, and every forecast failed and was fetched again
+  each minute (the picture jumped and tore meanwhile). *Done in 1.30.2: the
+  numbers the display doesn't read are left out before parsing
+  (`drop_unused_numbers`, ~110 KB less), and a failed forecast waits
+  3 minutes before the next try.*
+- [ ] **113. Free PSRAM sinks over the day.** On a weather screen it was
+  ~470 KB just after a restart and ~350 KB seven hours later (the ISS map
+  was checked and is given back). Find what holds the difference -
+  caches, fragmentation or a leak - from `/status` taken at the same
+  screen over a day.

@@ -54,6 +54,30 @@ void test_yr(void)
         CHECK_STR(fc.days[1].symbol_code, "cloudy");
     }
 
+    /* Numbers the forecast doesn't read are left out before parsing; the
+     * rest, strings, arrays and escaped quotes stay as they were. */
+    char d1[] = "{\"a\":1,\"wind_speed\":-2.5e1,\"b\":{\"c\":3},\"d\":[4,5],\"e\":\"x\\\":6\",\"f\":7}";
+    drop_unused_numbers(d1);
+    CHECK_STR(d1, "{\"wind_speed\":-2.5e1,\"b\":{},\"d\":[4,5],\"e\":\"x\\\":6\"}");
+    char d2[] = "{\"air_temperature\":1,\"x\":2}";
+    drop_unused_numbers(d2);
+    CHECK_STR(d2, "{\"air_temperature\":1}");
+    char d3[] = "{\"x\":2,\"wind_speed\":1}";
+    drop_unused_numbers(d3);
+    CHECK_STR(d3, "{\"wind_speed\":1}");
+    char d4[] = "{\"x\" :2,\"y\":\"cut";
+    drop_unused_numbers(d4);
+    CHECK_STR(d4, "{\"x\" :2,\"y\":\"cut");
+    json = slurp_file("data/forecast.json");
+    if (json) {
+        const size_t before = strlen(json);
+        drop_unused_numbers(json);
+        cJSON *root = cJSON_Parse(json);
+        CHECK(root != NULL && strlen(json) < before * 3 / 4);
+        cJSON_Delete(root);
+        free(json);
+    }
+
     /* When precipitation starts and stops. */
     static yr_nowcast_t nc;
     memset(&nc, 0, sizeof(nc));

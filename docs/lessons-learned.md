@@ -512,3 +512,20 @@ few requests in a row, at different times, showed it.
 *Lesson:* time a new source several times, not once, and give a small
 download from a free service a generous timeout, a second source where one
 exists, and a copy kept over restarts.
+
+### A forecast that grew out of the memory left
+
+After seven hours the weather screens had about 350 KB of PSRAM free, and
+MET's complete forecast (91 KB) needed about 370 KB to parse: body plus
+cJSON's tree, ~80 bytes for each of its ~3,650 values. Every forecast
+failed with "Failed to parse JSON response", and was fetched again for all
+five locations every minute, keeping PSRAM at its lowest (8 bytes free)
+and the panel's PSRAM feed busy - the picture jumped and tore. Nothing
+leaked; free PSRAM on a weather screen had simply sunk below the parse.
+The forecast now has the ~1,400 numbers the display doesn't read taken
+out before parsing (the lowest point after five forecasts went from
+under 55 KB to 185 KB), and a failed forecast is tried again after
+3 minutes instead of on every poll.
+*Lesson:* a parse that fails on every try is retried with a pause, not on
+every poll, and a big JSON is parsed with only what is read from it.
+`psram_lavest` near 0 in `/status` means some allocation is failing.
