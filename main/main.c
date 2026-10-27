@@ -673,6 +673,22 @@ static void nav_open(lv_obj_t *screen)
     s_nav_timer = lv_timer_create(nav_timer_cb, NAV_CLOSE_MS, NULL);
 }
 
+/* A tap on a screen's own buttons (the month's, the music screens'):
+ * true if it took it. */
+static bool screen_own_tap(int x, int y)
+{
+    switch (s_stops[g_view_index].kind) {
+    case STOP_MONTH:
+        return month_tap(x, y);
+    case STOP_SPOTIFY:
+        return spotify_tap(x, y);
+    case STOP_SONOS:
+        return sonos_tap(x, y);
+    default:
+        return false;
+    }
+}
+
 /* Touches anywhere on screen (the tap layer): a tap switches screens on
  * touch-down, so none is lost to finger movement; one from the bottom edge
  * waits to see whether it's a swipe up to the menu. Runs in the LVGL
@@ -696,7 +712,7 @@ static void screen_touch_cb(lv_event_t *e)
     if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
         if (s_edge_press) {
             s_edge_press = false;
-            if (code == LV_EVENT_RELEASED) {
+            if (code == LV_EVENT_RELEASED && !screen_own_tap(s_edge_start.x, s_edge_start.y)) {
                 screen_tap(s_edge_start.x, lv_obj_get_width(layer));
             }
         }
@@ -714,23 +730,16 @@ static void screen_touch_cb(lv_event_t *e)
         return;
     }
 
-    if (s_stops[g_view_index].kind == STOP_MONTH && month_tap(p.x, p.y)) {
-        return; /* its own buttons */
-    }
-    if (s_stops[g_view_index].kind == STOP_SPOTIFY && spotify_tap(p.x, p.y)) {
-        return;
-    }
-    if (s_stops[g_view_index].kind == STOP_SONOS && sonos_tap(p.x, p.y)) {
-        return;
-    }
-    if (s_stop_count <= 1) {
-        return; /* nothing to cycle through */
-    }
-
-    if (g_cfg->swipe_nav && p.y >= lv_obj_get_height(layer) - NAV_EDGE_PX) {
+    /* Before the screen's own buttons: on the music screens the volume row
+     * and the controls' column reach the bottom edge, and took the swipe.
+     * A press there that isn't a swipe goes to them on release. */
+    if (g_cfg->swipe_nav && s_stop_count > 1 && p.y >= lv_obj_get_height(layer) - NAV_EDGE_PX) {
         s_edge_press = true;
         s_edge_start = p;
         return;
+    }
+    if (screen_own_tap(p.x, p.y) || s_stop_count <= 1) {
+        return; /* its own buttons, or nothing to cycle through */
     }
     screen_tap(p.x, lv_obj_get_width(layer));
 }

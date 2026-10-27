@@ -850,3 +850,8 @@ too heavy for the chip.
   was checked and is given back). Find what holds the difference -
   caches, fragmentation or a leak - from `/status` taken at the same
   screen over a day.
+- [x] **114. The swipe to the menu on the music screens.** On Spotify and
+  Sonos a swipe up from the bottom edge seldom opened the screen menu: the
+  volume row and the controls' column reach the edge and took the press
+  first. *Done: a press on the bottom edge is checked for the swipe before
+  the screen's own buttons, and given to them on release if it wasn't one.*

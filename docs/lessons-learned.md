@@ -529,3 +529,14 @@ under 55 KB to 185 KB), and a failed forecast is tried again after
 *Lesson:* a parse that fails on every try is retried with a pause, not on
 every poll, and a big JSON is parsed with only what is read from it.
 `psram_lavest` near 0 in `/status` means some allocation is failing.
+
+### A gesture checked after the buttons under it
+
+The swipe up to the screen menu starts in the bottom 40 px. The touch
+handler asked the month, Spotify and Sonos screens about their own buttons
+first, and the music screens' volume row and the "taps beside a button do
+nothing" area in their right column reach the bottom edge - so most of the
+edge never got as far as the swipe check.
+*Lesson:* a gesture that starts at a screen edge is checked before the
+screens' own hit areas; when a screen gets new controls near an edge, try
+the gesture on it.
