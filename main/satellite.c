@@ -54,7 +54,12 @@ static const char *TAG = "satellite";
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_time;
 
 /* The views in use, RGB565 in PSRAM: Europe if it is shown, and a close-up
- * per location that has one (NULL where not, or if it isn't on the image). */
+ * per location that has one and is on the image (s_eu_use, s_loc_use).
+ * Taken on the first poll; given back if memory runs short while no
+ * satellite screen shows (satellite_release), and the image fetched again
+ * on coming back. */
+static bool s_eu_use, s_loc_use[APP_CONFIG_MAX_LOCATIONS];
+static bool s_no_mem; /* a view couldn't be had */
 static uint8_t *s_eu_px; /* the palette (SAT_PAL_BYTES), then 800 x 450 indices */
 static lv_image_dsc_t s_eu_img;
 static uint16_t *s_loc_px[APP_CONFIG_MAX_LOCATIONS];
@@ -218,9 +223,9 @@ static void satellite_show(void)
     }
     if (!eu && !have_view && !loc_on_image(s_loc)) {
         lv_label_set_text_fmt(g_status_label, "%s er utenfor satellittbildet.", g_cfg->locations[s_loc].name);
-    } else if (!have_view) {
+    } else if (!have_view && s_no_mem) {
         lv_label_set_text(g_status_label, "Ikke nok minne til satellittbildet.");
-    } else if (!s_valid) {
+    } else if (!s_valid || !have_view) {
         lv_label_set_text(g_status_label, "Henter satellittbildet...");
     } else {
         lv_label_set_text(g_status_label, "");
@@ -242,12 +247,7 @@ lv_obj_t *satellite_build(lv_obj_t *screen)
     s_root = screen_root_create(screen);
     s_lw = (SAT_VIEW_W + g_cfg->sat_zoom / 2) / g_cfg->sat_zoom; /* 267 or 400 */
     s_lh = SAT_VIEW_H / g_cfg->sat_zoom;                         /* 150 or 225 */
-    bool no_mem = false;
-    if (g_cfg->sat_show) {
-        s_eu_px = heap_caps_calloc(1, SAT_PAL_BYTES + (size_t)SAT_VIEW_W * SAT_VIEW_H, MALLOC_CAP_SPIRAM);
-        no_mem |= s_eu_px == NULL;
-        img_init(&s_eu_img, s_eu_px, LV_COLOR_FORMAT_I8, SAT_VIEW_W, SAT_VIEW_H, 1, SAT_PAL_BYTES);
-    }
+    s_eu_use = g_cfg->sat_show;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
         if (!loc_wanted(i)) {
             continue;
@@ -256,12 +256,7 @@ lv_obj_t *satellite_build(lv_obj_t *screen)
             ESP_LOGW(TAG, "%s isn't on the satellite image", g_cfg->locations[i].name);
             continue;
         }
-        s_loc_px[i] = heap_caps_calloc((size_t)s_lw * s_lh, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-        no_mem |= s_loc_px[i] == NULL;
-        img_init(&s_loc_img[i], s_loc_px[i], LV_COLOR_FORMAT_RGB565, s_lw, s_lh, 2, 0);
-    }
-    if (no_mem) {
-        ESP_LOGE(TAG, "Out of memory for the satellite views");
+        s_loc_use[i] = true;
     }
 
     s_canvas = lv_obj_create(s_root);
@@ -313,9 +308,81 @@ void satellite_enter(int loc)
     satellite_show();
 }
 
+/* The views in use, unless held. Weather task: allocated outside the
+ * adapter lock, set under it as the draw reads them. */
+static void views_take(void)
+{
+    uint8_t *eu = NULL;
+    uint16_t *lp[APP_CONFIG_MAX_LOCATIONS] = { 0 };
+    bool no_mem = false;
+    if (s_eu_use && s_eu_px == NULL) {
+        eu = heap_caps_calloc(1, SAT_PAL_BYTES + (size_t)SAT_VIEW_W * SAT_VIEW_H, MALLOC_CAP_SPIRAM);
+        no_mem |= eu == NULL;
+    }
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        if (s_loc_use[i] && s_loc_px[i] == NULL) {
+            lp[i] = heap_caps_calloc((size_t)s_lw * s_lh, sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+            no_mem |= lp[i] == NULL;
+        }
+    }
+    if (no_mem) {
+        ESP_LOGE(TAG, "Out of memory for the satellite views");
+    }
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        return; /* not reached: waits for ever */
+    }
+    s_no_mem = no_mem;
+    if (eu != NULL) {
+        s_eu_px = eu;
+        img_init(&s_eu_img, s_eu_px, LV_COLOR_FORMAT_I8, SAT_VIEW_W, SAT_VIEW_H, 1, SAT_PAL_BYTES);
+        s_valid = false; /* an empty view: the image is fetched again */
+    }
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        if (lp[i] != NULL) {
+            s_loc_px[i] = lp[i];
+            img_init(&s_loc_img[i], s_loc_px[i], LV_COLOR_FORMAT_RGB565, s_lw, s_lh, 2, 0);
+            s_valid = false;
+        }
+    }
+    esp_lv_adapter_unlock();
+}
+
+bool satellite_release(void)
+{
+    void *bufs[1 + APP_CONFIG_MAX_LOCATIONS];
+    int n = 0;
+    bool any = s_eu_px != NULL; /* only this task sets them */
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        any |= s_loc_px[i] != NULL;
+    }
+    if (!any || esp_lv_adapter_lock(-1) != ESP_OK) {
+        return false;
+    }
+    if (s_eu_px != NULL) {
+        bufs[n++] = s_eu_px;
+    }
+    s_eu_px = NULL;
+    s_eu_img.data = NULL;
+    for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {
+        if (s_loc_px[i] != NULL) {
+            bufs[n++] = s_loc_px[i];
+        }
+        s_loc_px[i] = NULL;
+        s_loc_img[i].data = NULL;
+    }
+    s_valid = false;
+    memset(&s_cache, 0, sizeof(s_cache)); /* the whole image next time */
+    esp_lv_adapter_unlock();
+    for (int i = 0; i < n; i++) {
+        heap_caps_free(bufs[i]);
+    }
+    return n > 0;
+}
+
 uint32_t satellite_poll(int loc, int for_view)
 {
     (void)loc;
+    views_take();
     const time_t now = time(NULL);
     bool any = s_eu_px != NULL;
     for (int i = 0; i < APP_CONFIG_MAX_LOCATIONS; i++) {

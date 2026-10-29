@@ -343,7 +343,8 @@ and its neighbours (57.5-71.5° N, 4-31.5° E) is simplified to about 40 m and
 stored as `components/coast.bin` (about 2.1 MB) in its own `coast` flash
 partition; the tiles around a location are read and drawn once when its ship
 or aircraft screen is shown, leaving out islands under a couple of pixels
-across at that range. Regenerate it with `python3 scripts/build_coast.py`, which
+across at that range. Its images (about 380 KB, and 500 KB more for rain)
+are given back while other kinds of screens show. Regenerate it with `python3 scripts/build_coast.py`, which
 downloads the processed OSM coastlines (about 900 MB) from
 [osmdata.openstreetmap.de](https://osmdata.openstreetmap.de/data/coastlines.html).
 
@@ -726,7 +727,9 @@ under **Andre skjermer → Satellittbilde** on the setup page:
 
 The image is decoded as it streams in, so the ~1 MB file is never held;
 Europe takes 360 KB of PSRAM (256 colours, a palette per kind of image fitted
-by `scripts/build_sat_palette.py`), each close-up 80 KB (180 KB at 2 times). MET
+by `scripts/build_sat_palette.py`), each close-up 80 KB (180 KB at 2 times),
+taken on the first fetch and given back if PSRAM runs short while no
+satellite screen shows (the image is then fetched again on coming back). MET
 doesn't document the image's projection: `scripts/fit_satellite.py` fitted
 one to the coastline drawn on it (within about a pixel over Norway); run it
 again if MET changes the image.

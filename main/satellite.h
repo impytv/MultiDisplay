@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 #include "esp_lv_adapter.h"
 
 /* The satellite screen: MET Norway's infrared image of Europe, and close-ups
@@ -13,3 +15,8 @@ void satellite_enter(int loc);
 /* Fetch if a new image is due and show it if the screen is still
  * `for_view`; the wait in ms before the next poll. Weather task. */
 uint32_t satellite_poll(int loc, int for_view);
+
+/* Give back the views while no satellite screen shows and memory is short;
+ * taken, and the image fetched, again on the next poll. True if anything
+ * was held. Weather task. */
+bool satellite_release(void);

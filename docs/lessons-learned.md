@@ -540,3 +540,18 @@ edge never got as far as the swipe check.
 *Lesson:* a gesture that starts at a screen edge is checked before the
 screens' own hit areas; when a screen gets new controls near an edge, try
 the gesture on it.
+
+### Memory kept "for speed" that costs a download to give back
+
+Asked why screens not on show held memory, the first answer was to give
+back the satellite views and the rain frames as well as the radar's
+images. Measuring the downloads first changed that: the satellite image
+is 1.1 MB and an hour of rain 2.5 MB, so giving them back on every screen
+change would trade PSRAM for megabytes of downloads per visit, and the
+download and decode load that made the picture jump. They are now given
+back only when PSRAM runs short. The radar's images are drawn again from
+the flash on show anyway, so they go on every change.
+*Lesson:* before freeing a cache, check what refilling it costs - a
+redraw from flash is cheap, a download isn't. And a buffer sized to "what
+PSRAM has free" (the rain frames) grows to take whatever another change
+frees, so it needs a way to give it back.

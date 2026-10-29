@@ -80,6 +80,10 @@ static const char *TAG = "main";
  * aircraft screen would otherwise ask every 5 s all night); lighting it
  * polls at once. */
 #define DARK_POLL_MS          (5 * 60 * 1000)
+/* Below this much free PSRAM, kept images that can be fetched again are
+ * given back (see the weather task's loop): a forecast needs ~260 KB to
+ * parse, and the memory watchdog restarts below 300 KB. */
+#define TRIM_PSRAM (512 * 1024)
 
 /* Warn on screen if the clock still isn't set this long after boot. */
 #define CLOCK_WARN_US         (10 * 60 * 1000000LL)
@@ -1324,6 +1328,29 @@ static void yr_weather_task(void *arg)
          * wakes this task at once). The clock keeps itself set by NTP on
          * its own. The loop still comes round every DARK_POLL_MS for the
          * watchdog and the firmware update check. */
+        /* The radar's images, and its rain frames once too old to show
+         * again, are given back while another kind of screen shows; with
+         * PSRAM short, the rain frames and the satellite views at once
+         * (fetched again when next shown) - before a forecast fails to
+         * parse for want of it. */
+        const bool short_of_memory = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < TRIM_PSRAM;
+        const size_t free_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+        bool trimmed = false;
+        if (s_radar_root != NULL && stop->kind != STOP_RADAR && stop->kind != STOP_SHIPS && stop->kind != STOP_RAIN) {
+            radar_release(short_of_memory);
+        }
+        if (short_of_memory && s_sat_root != NULL && stop->kind != STOP_SAT && stop->kind != STOP_SAT_EUROPE) {
+            trimmed |= satellite_release();
+        }
+        if (short_of_memory) {
+            const size_t free_after = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+            trimmed |= free_after > free_before;
+            if (trimmed) {
+                ESP_LOGW(TAG, "PSRAM short (%u free): gave back %u bytes of kept images", (unsigned)free_before,
+                         (unsigned)(free_after - free_before));
+            }
+        }
+
         uint32_t wait_ms;
         const bool dark = !s_backlight_on && !firmware_on_trial();
         if (dark) {

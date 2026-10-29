@@ -845,13 +845,25 @@ too heavy for the chip.
   numbers the display doesn't read are left out before parsing
   (`drop_unused_numbers`, ~110 KB less), and a failed forecast waits
   3 minutes before the next try.*
-- [ ] **113. Free PSRAM sinks over the day.** On a weather screen it was
+- [x] **113. Free PSRAM sinks over the day.** On a weather screen it was
   ~470 KB just after a restart and ~350 KB seven hours later (the ISS map
-  was checked and is given back). Find what holds the difference -
-  caches, fragmentation or a leak - from `/status` taken at the same
-  screen over a day.
+  was checked and is given back). *Found: the rain screen's hour of frames
+  (180 KB to 1 MB, sized to the PSRAM free) stayed allocated after the
+  first visit. Now given back 15 minutes after the latest frame (when it
+  can't be shown again anyway), or at once when PSRAM is short - see 115.*
 - [x] **114. The swipe to the menu on the music screens.** On Spotify and
   Sonos a swipe up from the bottom edge seldom opened the screen menu: the
   volume row and the controls' column reach the edge and took the press
   first. *Done: a press on the bottom edge is checked for the swipe before
   the screen's own buttons, and given to them on release if it wasn't one.*
+- [x] **115. Memory held by screens not on show.** Every configured screen
+  kept its buffers from startup: the radar ~970 KB (coastline, water and
+  rain images, water seeds), a satellite view 80-360 KB. *Done in 1.30.4:
+  the radar takes its images on its first poll and gives them back when
+  another kind of screen shows, and the rain image is four strips, so no
+  500 KB block is needed in one piece. Kept data that can be fetched
+  again - the rain frames and the satellite views - is given back when
+  free PSRAM falls under 512 KB while their screen isn't on show
+  (`TRIM_PSRAM`). A weather screen went from ~470 KB free to ~1.6 MB on
+  the development display. The satellite views aren't given back
+  otherwise: the image is 1.1 MB to fetch again, and a rain frame 190 KB.*

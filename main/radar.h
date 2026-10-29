@@ -17,6 +17,11 @@ void radar_enter(int kind, int loc);
  * before the next poll. Weather task. */
 uint32_t radar_poll(int kind, int loc, int for_view);
 
+/* Give back the images while another kind of screen shows, and the rain
+ * frames once too old to show again - or at once if `short_of_memory`;
+ * taken again on the next radar_poll. Weather task. */
+void radar_release(bool short_of_memory);
+
 /* The screen's text colour (0xRRGGBB), for text laid over it. */
 uint32_t radar_status_colour(void);
 

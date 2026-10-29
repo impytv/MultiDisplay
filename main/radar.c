@@ -25,6 +25,7 @@
 #include "draw.h"
 #include "radar.h"
 #include "rain_client.h"
+#include "watchdog.h"
 #include "waveshare_rgb_lcd_port.h"
 
 static const char *TAG = "radar";
@@ -117,8 +118,12 @@ static bool s_rain_mode;
  * water, drawn in s_rp->water. They show the disc around s_coast_at
  * (a location, or a location's centre for ships) at s_coast_km; s_coast_valid gates drawing them. */
 #define COAST_D  (2 * RADAR_R + 1)
+/* The images and the seeds below are taken when one of the screens is
+ * polled and given back when another kind shows (radar_release): nearly
+ * 400 KB, and the rain image as much again, that no other screen needs. */
 static uint8_t *s_coast_px;         /* PSRAM, COAST_D x COAST_D */
 static uint8_t *s_water_px;         /* PSRAM, COAST_D x COAST_D */
+static bool s_no_coast;             /* the coast partition has no data */
 static lv_image_dsc_t s_coast_img;
 static lv_image_dsc_t s_water_img;
 /* Coastline segment middles with the normal to their water side, noted by
@@ -158,8 +163,12 @@ static EXT_RAM_BSS_ATTR float s_rain_gx[RAIN_GRID_N][RAIN_GRID_N];
 static EXT_RAM_BSS_ATTR float s_rain_gy[RAIN_GRID_N][RAIN_GRID_N];
 static float s_rain_col[RAIN_LEVELS + 1][4]; /* premultiplied colour per level; 0 is clear */
 static time_t s_rain_latest;
-static uint32_t *s_rain_px;         /* PSRAM, COAST_D x COAST_D */
-static lv_image_dsc_t s_rain_img;
+/* The frame on show, in RAIN_STRIPS images of RAIN_STRIP_H rows (the last
+ * shorter), so no 500 KB block of PSRAM is needed in one piece. */
+#define RAIN_STRIPS  4
+#define RAIN_STRIP_H ((COAST_D + RAIN_STRIPS - 1) / RAIN_STRIPS)
+static uint32_t *s_rain_px[RAIN_STRIPS]; /* PSRAM, COAST_D x RAIN_STRIP_H or less */
+static lv_image_dsc_t s_rain_img[RAIN_STRIPS];
 static bool s_rain_valid;           /* s_rain_px holds a frame */
 static int s_rain_pos = -1;         /* frame position on show */
 static int s_rain_hold;             /* ticks left resting on the latest */
@@ -779,6 +788,17 @@ static uint32_t rain_argb(uint32_t rgb, uint32_t a)
     return (a << 24) | (rgb & 0xFFFFFF);
 }
 
+/* Whether all of the rain image is held (see radar_take). */
+static bool rain_image_held(void)
+{
+    for (int k = 0; k < RAIN_STRIPS; k++) {
+        if (s_rain_px[k] == NULL) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Draw the frame `lvl` (s_rain_crop's cells) into s_rain_px: each disc pixel
  * is placed on the crop (the disc uses the same flat local projection as the
  * coastline) and blended from the four cells around it, so the 1 km radar
@@ -787,7 +807,9 @@ static uint32_t rain_argb(uint32_t rgb, uint32_t a)
 static void rain_render(const uint8_t *lvl)
 {
     const int w = s_rain_crop.w, h = s_rain_crop.h;
-    memset(s_rain_px, 0, (size_t)COAST_D * COAST_D * sizeof(uint32_t));
+    for (int k = 0; k < RAIN_STRIPS; k++) {
+        memset(s_rain_px[k], 0, s_rain_img[k].data_size);
+    }
     for (int y = 0; y < COAST_D; y++) {
         const int dy = y - RADAR_R;
         const int half = (int)sqrtf((float)(RADAR_R * RADAR_R - dy * dy));
@@ -798,7 +820,7 @@ static void rain_render(const uint8_t *lvl)
             ex[i] = s_rain_gx[gj][i] + (s_rain_gx[gj + 1][i] - s_rain_gx[gj][i]) * ty;
             ey[i] = s_rain_gy[gj][i] + (s_rain_gy[gj + 1][i] - s_rain_gy[gj][i]) * ty;
         }
-        uint32_t *row = s_rain_px + (size_t)y * COAST_D;
+        uint32_t *row = s_rain_px[y / RAIN_STRIP_H] + (size_t)(y % RAIN_STRIP_H) * COAST_D;
         for (int x = RADAR_R - half; x <= RADAR_R + half; x++) {
             const int gi = x / RAIN_GRID;
             const float tx = (float)(x - gi * RAIN_GRID) / RAIN_GRID;
@@ -952,10 +974,15 @@ static void radar_draw_cb(lv_event_t *e)
         d.recolor = lv_color_hex(s_rp->water); /* the colour of an A8 image */
         lv_draw_image(layer, &d, &a);
         if (s_rain_mode && s_rain_valid) {
-            lv_draw_image_dsc_t r;
-            lv_draw_image_dsc_init(&r);
-            r.src = &s_rain_img;
-            lv_draw_image(layer, &r, &a);
+            for (int k = 0; k < RAIN_STRIPS; k++) {
+                lv_draw_image_dsc_t r;
+                lv_draw_image_dsc_init(&r);
+                r.src = &s_rain_img[k];
+                lv_area_t ra = a;
+                ra.y1 = a.y1 + k * RAIN_STRIP_H;
+                ra.y2 = ra.y1 + (int32_t)s_rain_img[k].header.h - 1;
+                lv_draw_image(layer, &r, &ra);
+            }
         }
         d.src = &s_coast_img;
         d.recolor = lv_color_hex(s_rp->coast);
@@ -1258,17 +1285,20 @@ lv_obj_t *radar_build(lv_obj_t *screen)
     }
     s_radar_data = heap_caps_calloc(1, sizeof(*s_radar_data), MALLOC_CAP_SPIRAM);
     s_ship_data = heap_caps_calloc(1, sizeof(*s_ship_data), MALLOC_CAP_SPIRAM);
-    s_coast_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
     s_coast_img = (lv_image_dsc_t){
         .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_A8,
                     .w = COAST_D, .h = COAST_D, .stride = COAST_D },
-        .data = s_coast_px,
         .data_size = COAST_D * COAST_D,
     };
-    s_water_px = heap_caps_calloc(COAST_D, COAST_D, MALLOC_CAP_SPIRAM);
     s_water_img = s_coast_img;
-    s_water_seeds = heap_caps_malloc(WATER_SEEDS_MAX * sizeof(*s_water_seeds), MALLOC_CAP_SPIRAM);
-    s_water_img.data = s_water_px;
+    for (int k = 0; k < RAIN_STRIPS; k++) {
+        const int h = (k < RAIN_STRIPS - 1) ? RAIN_STRIP_H : COAST_D - k * RAIN_STRIP_H;
+        s_rain_img[k] = (lv_image_dsc_t){
+            .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888,
+                        .w = COAST_D, .h = h, .stride = COAST_D * 4 },
+            .data_size = (uint32_t)COAST_D * h * 4,
+        };
+    }
     bool any_rain = false;
     for (int i = 0; i < g_cfg->location_count; i++) {
         any_rain |= (g_cfg->show[i] & APP_SHOW_RAIN) != 0;
@@ -1276,19 +1306,9 @@ lv_obj_t *radar_build(lv_obj_t *screen)
     for (int i = 0; i < RAIN_FRAMES; i++) {
         s_rain_ftime[i] = RAIN_EMPTY;
     }
-    s_rain_px = any_rain ? heap_caps_calloc((size_t)COAST_D * COAST_D, sizeof(uint32_t), MALLOC_CAP_SPIRAM)
-                         : NULL;
-    s_rain_img = (lv_image_dsc_t){
-        .header = { .magic = LV_IMAGE_HEADER_MAGIC, .cf = LV_COLOR_FORMAT_ARGB8888,
-                    .w = COAST_D, .h = COAST_D, .stride = COAST_D * 4 },
-        .data = (const uint8_t *)s_rain_px,
-        .data_size = COAST_D * COAST_D * 4,
-    };
     s_radar_apt = heap_caps_calloc(RADAR_APT_MAX, sizeof(*s_radar_apt), MALLOC_CAP_SPIRAM);
     s_radar_rwy = heap_caps_calloc(RADAR_APT_MAX * RADAR_APT_RWY_MAX, sizeof(*s_radar_rwy), MALLOC_CAP_SPIRAM);
-    assert(s_radar_data != NULL && s_ship_data != NULL && s_coast_px != NULL && s_water_px != NULL && s_water_seeds != NULL &&
-           (s_rain_px != NULL || !any_rain) &&
-           s_radar_apt != NULL && s_radar_rwy != NULL);
+    assert(s_radar_data != NULL && s_ship_data != NULL && s_radar_apt != NULL && s_radar_rwy != NULL);
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
@@ -1367,7 +1387,7 @@ static void rain_set_location(int loc)
     s_ship_mode = false;
     s_rain_mode = true;
     const time_t now = time(NULL);
-    const bool keep = s_rain_valid && loc == s_rain_prep_loc && g_cfg->rain_km[loc] == s_rain_prep_range &&
+    const bool keep = s_rain_latest > 0 && loc == s_rain_prep_loc && g_cfg->rain_km[loc] == s_rain_prep_range &&
                       now > PLAUSIBLE_EPOCH_S && now - s_rain_latest < RAIN_KEEP_S;
     if (!keep) {
         s_rain_valid = false;
@@ -1667,7 +1687,7 @@ static void coast_render(const app_location_t *at, int range)
 {
     static const esp_partition_t *part;
     static coast_hdr_t hdr;
-    if (s_coast_px == NULL || (s_coast_at == at && s_coast_km == range && s_coast_valid && !s_coast_retry)) {
+    if (s_no_coast || s_coast_px == NULL || s_water_px == NULL || s_water_seeds == NULL || (s_coast_at == at && s_coast_km == range && s_coast_valid && !s_coast_retry)) {
         return;
     }
     if (part == NULL) {
@@ -1675,7 +1695,7 @@ static void coast_render(const app_location_t *at, int range)
         if (part == NULL || esp_partition_read(part, 0, &hdr, sizeof(hdr)) != ESP_OK ||
             memcmp(hdr.magic, "CST2", 4) != 0) {
             ESP_LOGW(TAG, "No coastline data in the coast partition");
-            s_coast_px = NULL; /* don't try again */
+            s_no_coast = true; /* don't try again */
             return;
         }
     }
@@ -2028,7 +2048,17 @@ static bool rain_poll(int loc, int for_view)
     const double lon = atof(g_cfg->locations[loc].lon);
     const int range = g_cfg->rain_km[loc];
     const rain_area_t *area = rain_client_pick_area(lat, lon, (float)range);
-    const bool ready = (area != NULL) && rain_prepare(loc, range, area);
+    const bool ready = (area != NULL) && rain_image_held() && rain_prepare(loc, range, area);
+
+    /* Back on the screen with the hour kept: the latest at once, from the
+     * frames held, into the image taken again. */
+    const int kept = ready && !s_rain_valid && s_rain_latest > 0 ? rain_slot_for(s_rain_latest) : -1;
+    if (kept >= 0 && lock_for_view(for_view)) {
+        rain_show(RAIN_FRAMES - 1, kept);
+        rain_info_set(range);
+        lv_label_set_text(g_status_label, "");
+        esp_lv_adapter_unlock();
+    }
 
     time_t latest = 0;
     for (int k = 0; ready && k < RAIN_FRAMES && g_view_index == for_view; k++) {
@@ -2094,6 +2124,8 @@ static bool rain_poll(int loc, int for_view)
     if (lock_for_view(for_view)) {
         if (area == NULL) {
             lv_label_set_text(g_status_label, "Ingen nedb\xC3\xB8rsradar her");
+        } else if (!rain_image_held()) {
+            lv_label_set_text(g_status_label, "Ikke nok minne til nedb\xC3\xB8rskartet. Pr\xC3\xB8ver igjen...");
         } else if (!s_rain_valid) {
             lv_label_set_text(g_status_label, "Kunne ikke hente nedb\xC3\xB8r. Pr\xC3\xB8ver igjen...");
         }
@@ -2147,8 +2179,104 @@ void radar_enter(int kind, int loc)
     }
 }
 
+/* Bytes of the images below held now, counted as free by the watchdog. */
+static size_t s_held;
+
+/* Point *p at `n` zeroed bytes of PSRAM unless it has them. Weather task:
+ * allocated outside the adapter lock, set under it as the draw reads it. */
+static void take(void **p, size_t n)
+{
+    if (*p != NULL) {
+        return;
+    }
+    void *m = heap_caps_calloc(1, n, MALLOC_CAP_SPIRAM);
+    if (m == NULL) {
+        ESP_LOGE(TAG, "Out of memory for the radar's images (%u bytes)", (unsigned)n);
+        return;
+    }
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        free(m);
+        return;
+    }
+    *p = m;
+    s_coast_img.data = s_coast_px;
+    s_water_img.data = s_water_px;
+    for (int k = 0; k < RAIN_STRIPS; k++) {
+        s_rain_img[k].data = (const uint8_t *)s_rain_px[k];
+    }
+    esp_lv_adapter_unlock();
+    s_held += n;
+    wd_psram_held((int)n); /* given back when another screen shows */
+}
+
+/* What the screen draws with: the coastline, the water and its seeds for
+ * all three kinds, the rain image too for `rain`. Whatever can't be had is
+ * tried again on the next poll; coast_render and rain_poll do without. */
+static void radar_take(bool rain)
+{
+    take((void **)&s_coast_px, COAST_D * COAST_D);
+    take((void **)&s_water_px, COAST_D * COAST_D);
+    take((void **)&s_water_seeds, WATER_SEEDS_MAX * sizeof(*s_water_seeds));
+    for (int k = 0; rain && k < RAIN_STRIPS; k++) {
+        take((void **)&s_rain_px[k], s_rain_img[k].data_size);
+    }
+}
+
+void radar_release(bool short_of_memory)
+{
+    /* The hour of rain frames is kept while it can still be shown on coming
+     * back (RAIN_KEEP_S): fetching it again is ~2.5 MB. Unless memory is
+     * short. */
+    const time_t now = time(NULL);
+    const bool frames = s_rain_cells > 0 && (short_of_memory || now <= PLAUSIBLE_EPOCH_S ||
+                                             now - s_rain_latest >= RAIN_KEEP_S);
+    if (s_held == 0 && !frames) {
+        return;
+    }
+    void *bufs[3 + RAIN_STRIPS + RAIN_FRAMES + 1];
+    int n = 0;
+    if (esp_lv_adapter_lock(-1) != ESP_OK) {
+        return;
+    }
+    bufs[n++] = s_coast_px;
+    bufs[n++] = s_water_px;
+    bufs[n++] = s_water_seeds;
+    s_coast_px = s_water_px = NULL;
+    s_water_seeds = NULL;
+    s_coast_img.data = s_water_img.data = NULL;
+    s_coast_valid = false;
+    s_coast_at = NULL; /* drawn again on coming back */
+    for (int k = 0; k < RAIN_STRIPS; k++) {
+        bufs[n++] = s_rain_px[k];
+        s_rain_px[k] = NULL;
+        s_rain_img[k].data = NULL;
+    }
+    s_rain_valid = false; /* drawn again from the frames on coming back */
+    if (frames) {
+        for (int i = 0; i < RAIN_FRAMES; i++) {
+            bufs[n++] = s_rain_frame[i];
+            s_rain_frame[i] = NULL;
+            s_rain_ftime[i] = RAIN_EMPTY;
+        }
+        bufs[n++] = s_rain_spare;
+        s_rain_spare = NULL;
+        s_rain_cells = 0;
+        s_rain_area = NULL;
+        s_rain_prep_loc = -1;
+        s_rain_pos = -1;
+        s_rain_latest = 0;
+    }
+    esp_lv_adapter_unlock();
+    for (int i = 0; i < n; i++) {
+        heap_caps_free(bufs[i]);
+    }
+    wd_psram_held(-(int)s_held);
+    s_held = 0;
+}
+
 uint32_t radar_poll(int kind, int loc, int for_view)
 {
+    radar_take(kind == STOP_RAIN);
     switch (kind) {
     case STOP_RADAR:
         coast_render(&g_cfg->locations[loc], g_cfg->radar_km[loc]);
