@@ -121,7 +121,7 @@ def write_index(site, data):
     page = """<!doctype html>
 <html lang="no"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MultiDisplay programvare</title>
+<title>Værtavla programvare</title>
 <style>
 :root{--bg:#f6f6f4;--fg:#222;--muted:#666;--line:#ddd;--accent:#2d5a86;--test:#a05a00}
 @media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#eee;--muted:#999;--line:#333;--accent:#7fb0e0;--test:#e0a050}}
@@ -133,7 +133,7 @@ th{color:var(--muted);font-weight:600}.sha{font-family:monospace;color:var(--mut
 .tag{font-size:.75rem;padding:.05rem .4rem;border-radius:.3rem;border:1px solid currentColor}
 .tag.stable{color:var(--accent)}.tag.test{color:var(--test)}
 </style>
-<h1>MultiDisplay programvare</h1>
+<h1>Værtavla programvare</h1>
 <p>Stabil: <b>%s</b> &middot; Test: <b>%s</b></p>
 <p>Bruk en av disse som oppdateringsadresse p&aring; skjermens oppsettside:<br>
 <code>manifest.json</code> for stabile versjoner, <code>manifest-test.json</code> for testversjoner.

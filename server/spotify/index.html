@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Spotify – MultiDisplay</title>
+<title>Spotify – Værtavla</title>
 <style>
 :root{color-scheme:light dark;--bg:#f6f6f4;--fg:#222;--acc:#2d5a86}
 @media(prefers-color-scheme:dark){:root{--bg:#15181c;--fg:#e4e6e8;--acc:#6f9fd0}}
@@ -29,7 +29,7 @@ a{color:var(--acc)}
   const host = state.slice(state.indexOf('~') + 1);
   const msg = document.getElementById('msg');
   if (state.indexOf('~') < 1 || !/^[A-Za-z0-9.-]{1,64}(:[0-9]{1,5})?$/.test(host)) {
-    msg.textContent = 'Denne siden brukes når en MultiDisplay-skjerm kobles til Spotify. Start fra oppsettsiden til skjermen.';
+    msg.textContent = 'Denne siden brukes når en Værtavla-skjerm kobles til Spotify. Start fra oppsettsiden til skjermen.';
     return;
   }
   const back = new URLSearchParams();

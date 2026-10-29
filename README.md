@@ -1,7 +1,16 @@
 | Supported Targets | ESP32-S3 |
 | ----------------- | -------- |
 
-# Coded with Claude based on the LVGL9 Adapter Demo
+# Værtavla
+
+**Værtavla** is a wall display for the weather around the country, with
+clocks, calendars, departures, radar and music alongside. It shows up under
+that name on its WiFi setup network (`Værtavla-XXXX`), its web pages and the
+update site. The project, the host name (`multidisplay.local`) and other
+internal names are still MultiDisplay, so existing displays and saved
+settings keep working.
+
+Coded with Claude based on the LVGL9 Adapter Demo.
 
 This project targets the Waveshare `ESP32-S3-Touch-LCD-4.3B` board and runs the official
 `lv_demo_widgets()` demo with:
@@ -186,7 +195,7 @@ with a throwaway key, so displays won't accept it.
   are never in it. Restoring keeps whatever the file doesn't have and
   restarts the display. Also `curl -O http://DEVICE-IP/config.json` (add
   `?hemmeligheter=1` for the secrets) and
-  `curl --data-binary @multidisplay-innstillinger.json http://DEVICE-IP/config.json`.
+  `curl --data-binary @vaertavla-innstillinger.json http://DEVICE-IP/config.json`.
 - **Passwords:** each password field on the setup page has **Vis passordet**
   to show what's typed, to check it before saving.
 - **Offline:** "Ingen WiFi" or "Ingen internett" shows bottom left while the
@@ -885,7 +894,7 @@ WiFi is only down for now (a router still starting after a power cut), the
 device tries it again every minute, unless someone is connected to the setup
 network, and restarts normally once it's back:
 
-1. Connect a phone/laptop to the WiFi network **`MultiDisplay-XXXX`** (open).
+1. Connect a phone/laptop to the WiFi network **`Værtavla-XXXX`** (open).
 2. A "sign in to network" page opens automatically (captive portal); if not,
    browse to **`http://192.168.4.1/`**.
 3. Pick your WiFi network, enter the password, then fill in one or more

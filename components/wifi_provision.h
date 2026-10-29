@@ -15,7 +15,7 @@ typedef void (*wifi_provision_status_fn)(const char *msg);
  *
  *  - If the device has never been set up, or the BOOT button (GPIO0) is held
  *    at boot, or the stored WiFi credentials fail to connect, start the
- *    captive setup portal: a "MultiDisplay-XXXX" access point serving a
+ *    captive setup portal: a "Værtavla-XXXX" access point serving a
  *    config web page at http://192.168.4.1/. Saving the form writes NVS and
  *    reboots - so in that case this function never returns.
  *

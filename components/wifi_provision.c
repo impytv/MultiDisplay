@@ -489,7 +489,7 @@ static char *build_page(const app_config_t *cfg)
 
     p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, cfg->device_name);
-    p = buf_append(p, end, " - MultiDisplay</title><h1>MultiDisplay oppsett: ");
+    p = buf_append(p, end, " - V&aelig;rtavla</title><h1>V&aelig;rtavla oppsett: ");
     p = html_escape_append(p, end, cfg->device_name);
     p = buf_append(p, end, "</h1>%s<form method=post action=/save id=cf novalidate>",
                   s_nav ? "<p><a href=/>&larr; Navigasjon</a></p>" : "");
@@ -885,7 +885,7 @@ static bool authorized(httpd_req_t *req)
         return false;
     }
     httpd_resp_set_status(req, "401 Unauthorized");
-    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"MultiDisplay\", charset=\"UTF-8\"");
+    httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"Værtavla\", charset=\"UTF-8\"");
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, "<meta charset=utf-8><p>Denne oppsettsiden har passord. Glemt det? Hold BOOT "
                             "inne mens skjermen sl&aring;s p&aring;, s&aring; &aring;pner oppsettnettet uten passord.");
@@ -915,7 +915,7 @@ static esp_err_t send_login(httpd_req_t *req, const char *next, auth_t why)
     char *p = buf, *end = buf + 2048;
     p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, display_title());
-    p = buf_append(p, end, " - MultiDisplay</title><h1>MultiDisplay: ");
+    p = buf_append(p, end, " - V&aelig;rtavla</title><h1>V&aelig;rtavla: ");
     p = html_escape_append(p, end, display_title());
     snprintf(p, end - p,
              "</h1><form method=post action=/login><label for=pw>Passord</label>"
@@ -1011,7 +1011,7 @@ static esp_err_t send_nav_page(httpd_req_t *req)
     char *p = buf, *end = buf + 2048;
     p = buf_append(p, end, "%s<title>", PAGE_HEAD);
     p = html_escape_append(p, end, display_title());
-    p = buf_append(p, end, " - MultiDisplay</title><h1>");
+    p = buf_append(p, end, " - V&aelig;rtavla</title><h1>");
     p = html_escape_append(p, end, display_title());
     p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div>"
                            "<p class=navf><a href=/oppsett>Oppsett</a>");
@@ -1791,7 +1791,7 @@ static esp_err_t h_config_get(httpd_req_t *req)
         return httpd_resp_send_500(req);
     }
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"multidisplay-innstillinger.json\"");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=\"vaertavla-innstillinger.json\"");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     esp_err_t err = httpd_resp_sendstr(req, json);
     cJSON_free(json);
@@ -2128,7 +2128,7 @@ static void net_common_init(void)
 
     uint8_t mac[6] = { 0 };
     esp_wifi_get_mac(WIFI_IF_AP, mac);
-    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "MultiDisplay-%02X%02X", mac[4], mac[5]);
+    snprintf(s_ap_ssid, sizeof(s_ap_ssid), "Værtavla-%02X%02X", mac[4], mac[5]);
     if (s_before_connect != NULL) {
         s_before_connect();
     }
@@ -2237,7 +2237,7 @@ static void mdns_announce(void)
         return;
     }
     char instance[48];
-    snprintf(instance, sizeof(instance), "MultiDisplay %s", s_hostname);
+    snprintf(instance, sizeof(instance), "Værtavla %s", s_hostname);
     mdns_hostname_set(s_hostname);
     mdns_instance_name_set(instance);
     mdns_service_add(instance, "_http", "_tcp", 80, NULL, 0);

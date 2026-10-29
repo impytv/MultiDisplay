@@ -51,7 +51,7 @@ static const char *check_head(ota_writer_t *w)
         (const esp_app_desc_t *)(w->head + sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t));
     if (w->head[0] != ESP_IMAGE_HEADER_MAGIC || d->magic_word != ESP_APP_DESC_MAGIC_WORD ||
         strncmp(d->project_name, esp_app_get_description()->project_name, sizeof(d->project_name)) != 0) {
-        return fail(w, "Ikke programvare for MultiDisplay");
+        return fail(w, "Ikke programvare for Værtavla");
     }
     memcpy(&w->app, d, sizeof(w->app));
     ESP_LOGI(TAG, "Firmware update: version %.32s, built %.16s %.16s, into %s", d->version, d->date, d->time,
