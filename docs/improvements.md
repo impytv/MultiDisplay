@@ -867,3 +867,9 @@ too heavy for the chip.
   (`TRIM_PSRAM`). A weather screen went from ~470 KB free to ~1.6 MB on
   the development display. The satellite views aren't given back
   otherwise: the image is 1.1 MB to fetch again, and a rain frame 190 KB.*
+- [x] **116. Birthdays and events in the settings backup.** The display's
+  own events (`/hendelser`, NVS namespace `hendelser`) weren't in
+  `config.json`, so a new display or an erased one started without them.
+  *Done in 1.31.0: the list `events` in the backup; a restore replaces the
+  events with the file's, and an older file without the list keeps them.
+  The upload limit for a restore went from 16 KB to 64 KB.*

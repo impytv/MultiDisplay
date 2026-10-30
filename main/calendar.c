@@ -3,7 +3,9 @@
  * in two columns - a heading per day ("I dag", "I morgen", "Lørdag 10.
  * oktober") and a row per event: a bar in its calendar's colour, the time
  * (or "Hele dagen") and the title. Days without events are left out, and
- * events that are over are dropped from today.
+ * events that are over are dropped from today. The display's own events
+ * (main/events.c) ticked for the calendar come in among them, all-day, in
+ * their kind's colour.
  *
  * One screen for the display, after the overview. Fetched every 15
  * minutes; redrawn every few minutes so the past drops off. */
@@ -21,6 +23,8 @@
 #include "calendar.h"
 #include "diag.h"
 #include "draw.h"
+#include "events.h"
+#include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
 
 static const char *TAG = "calendar";
@@ -35,12 +39,14 @@ static const char *TAG = "calendar";
 #define CAL_IDLE_MS  (10 * 60 * 1000)   /* with no calendar set up */
 #define CAL_RETRY_MS 60000
 #define CAL_STALE    0xE07000
+#define CAL_OWN_MAX  40 /* the display's own events in two weeks */
 
 /* As the dots on the setup page. */
 static const uint32_t FEED_COLOUR[APP_CONFIG_CAL_FEEDS] = { 0x2E86DE, 0xE67E22, 0x27AE60 };
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
 static cal_list_t *s_list, *s_scratch; /* in PSRAM */
+static cal_list_t *s_view; /* s_list and the display's own events: what is drawn */
 static fetch_stamp_t s_at;
 static uint8_t s_feed_failed; /* calendars not read on the last fetch */
 static fetch_stamp_t s_feed_at[APP_CONFIG_CAL_FEEDS]; /* when each was last read */
@@ -49,6 +55,9 @@ static bool s_failed;         /* the last poll failed while older data is shown 
 
 uint32_t calendar_feed_colour(int feed)
 {
+    if (OWN_IS_FEED(feed)) {
+        return own_kind_colour(feed - OWN_FEED(0));
+    }
     return FEED_COLOUR[(unsigned)feed % APP_CONFIG_CAL_FEEDS];
 }
 
@@ -75,6 +84,13 @@ static bool any_calendar(void)
 static const cal_list_t *shown(void)
 {
     return stamp_fresh(&s_at, CAL_KEEP_MS) ? s_list : NULL;
+}
+
+/* What to draw: the calendars' events and the display's own, or NULL
+ * while the calendars set up haven't been read. */
+static const cal_list_t *view(void)
+{
+    return shown() != NULL || !any_calendar() ? s_view : NULL;
 }
 
 /* Local midnight `days` from the day of `t`. */
@@ -150,7 +166,7 @@ static int upcoming(const cal_list_t *l, time_t now)
 
 static void calendar_draw_cb(lv_event_t *e)
 {
-    const cal_list_t *l = shown();
+    const cal_list_t *l = view();
     if (l == NULL) {
         return;
     }
@@ -209,9 +225,27 @@ static void calendar_draw_cb(lv_event_t *e)
     }
 }
 
+/* The calendars' events and the display's own for the days shown, into
+ * s_view (adapter lock held). */
+static void build_view(void)
+{
+    const cal_list_t *l = shown();
+    s_view->count = 0;
+    if (l != NULL) {
+        cal_list_copy(s_view, l);
+    }
+    const time_t now = time(NULL);
+    if (now > PLAUSIBLE_EPOCH_S) {
+        const int64_t *b = days(now);
+        events_days(b[0], b[CAL_DAYS], OWN_ON_CALENDAR, s_view);
+    }
+    cal_sort(s_view);
+}
+
 /* Labels for what is held (adapter lock held). */
 static void calendar_show(void)
 {
+    build_view();
     const cal_list_t *l = shown();
     if (l != NULL && s_at.when > 0) {
         struct tm lt;
@@ -242,11 +276,16 @@ static void calendar_show(void)
     } else {
         lv_obj_remove_local_style_prop(s_updated, LV_STYLE_TEXT_COLOR, 0);
     }
-    if (!any_calendar()) {
-        lv_label_set_text(g_status_label, "Ingen kalender lagt inn.\nLegg inn en iCal-adresse p\xC3\xA5 oppsettsiden.");
+    if (!any_calendar() && upcoming(s_view, time(NULL)) == 0) {
+        lv_label_set_text(g_status_label, events_count() > 0
+                                              ? "Ingen hendelser de neste to ukene."
+                                              : "Ingen kalender eller hendelser lagt inn.\nLegg dem inn "
+                                                "p\xC3\xA5 oppsettsiden.");
+    } else if (!any_calendar()) {
+        lv_label_set_text(g_status_label, "");
     } else if (l == NULL) {
         lv_label_set_text(g_status_label, "Henter kalenderen...");
-    } else if (upcoming(l, time(NULL)) == 0) {
+    } else if (upcoming(s_view, time(NULL)) == 0) {
         lv_label_set_text(g_status_label, "Ingen avtaler de neste to ukene.");
     } else {
         lv_label_set_text(g_status_label, "");
@@ -259,7 +298,8 @@ lv_obj_t *calendar_build(lv_obj_t *screen)
     s_root = screen_root_create(screen);
     s_list = cal_list_new(CAL_EVENTS_MAX);
     s_scratch = cal_list_new(CAL_EVENTS_MAX);
-    assert(s_list != NULL && s_scratch != NULL);
+    s_view = cal_list_new(CAL_EVENTS_MAX + CAL_OWN_MAX);
+    assert(s_list != NULL && s_scratch != NULL && s_view != NULL);
 
     s_canvas = lv_obj_create(s_root);
     lv_obj_remove_style_all(s_canvas);

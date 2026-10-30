@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "own_events.h"
 
 /* Field sizes include room for the trailing NUL. WiFi SSID is 32 bytes,
  * password 64, per the 802.11 / WPA limits. */
@@ -359,18 +360,22 @@ void app_config_sanitize(app_config_t *cfg);
 /**
  * The settings as JSON, for a backup (caller frees). The WiFi network, its
  * password and the BarentsWatch secret are included only with `secrets`; the
- * setup password and the calendar addresses never are. NULL if out of memory.
+ * setup password and the calendar addresses never are. With n_events >= 0,
+ * the display's own events e[0..n_events-1] too. NULL if out of memory.
  */
-char *app_config_to_json(const app_config_t *cfg, bool secrets);
+char *app_config_to_json(const app_config_t *cfg, bool secrets, const own_event_t *events, int n_events);
 
 /**
  * Apply a backup made by app_config_to_json on top of `cfg` (normally the
  * current settings, whose WiFi and secrets are kept unless the backup has
  * them). Settings missing from the JSON keep their value. False, with a Norwegian reason in `err`,
- * if it isn't such a backup or a location is invalid; `cfg` is then
- * unchanged.
+ * if it isn't such a backup or a location or event is invalid; `cfg` is
+ * then unchanged. With `events` (room for OWN_MAX), the backup's own events
+ * go there and *n_events is how many, or -1 if it has none (an older
+ * backup: keep those there are).
  */
-bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t err_len);
+bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *events, int *n_events, char *err,
+                          size_t err_len);
 
 /**
  * Validate a latitude / longitude string: must parse fully as a number and

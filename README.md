@@ -192,8 +192,10 @@ with a throwaway key, so displays won't accept it.
   network, its password and the BarentsWatch secret are left out unless
   **Ta med WiFi og BarentsWatch-hemmelighet** is ticked (the file then holds
   them in plain text); the setup page's password and the calendar addresses
-  are never in it. Restoring keeps whatever the file doesn't have and
-  restarts the display. Also `curl -O http://DEVICE-IP/config.json` (add
+  are never in it. The birthdays and events (`/hendelser`) are, as the list
+  `events`; a restore replaces them with the file's, and a file without
+  the list (made before 1.31.0) keeps those there are. Restoring keeps
+  whatever the file doesn't have and restarts the display. Also `curl -O http://DEVICE-IP/config.json` (add
   `?hemmeligheter=1` for the secrets) and
   `curl --data-binary @vaertavla-innstillinger.json http://DEVICE-IP/config.json`.
 - **Passwords:** each password field on the setup page has **Vis passordet**
@@ -550,6 +552,41 @@ the same save, and a backup turns it on only on a display that already has
 an offset. The chip's warmth follows how hard it
 works too (fetching, the rain radar), so expect the reading to wander by a
 degree or so.
+
+### Birthdays and events
+
+The page **Bursdager og hendelser** (`/hendelser`, linked at the top of the
+setup page and from the navigation page) holds up to 100 events of the
+display's own, behind the setup page's password. Each has a kind, a text,
+a date and where it shows:
+
+- **Bursdag** and **Merkedag** come back every year. The year is optional:
+  with it a birthday shows the age ("Kari fyller 80", otherwise "Kari har
+  bursdag") and an anniversary how many years ("Bryllupsdag (25 år)").
+  29 February is on the 28th in other years.
+- **Avtale** and **Annet** are on one date, year included; passed ones stay
+  on the page, greyed, until deleted.
+- **Vises på**: the calendar screen (among the calendars' events,
+  all-day), the month calendar (under the date, before the calendars'
+  events, whether or not those are shown) and the clock screen. Each kind
+  has its colour (pink, purple, teal, gold).
+
+On the clock screen today's and tomorrow's events show under the
+temperature ("I dag: Kari fyller 80"), two lines at most ("+2 til i
+morgen" for the rest); the empty space above and below the large digits is
+taken to make room. Without any the screen is as before.
+
+The page lists them by the next day each is on, with **Endre** and
+**Slett**. Saving writes NVS (namespace `hendelser`) at once, with no
+restart, and the screen on show redraws. An edit or delete names the event
+by its place in the list and its text, so a list changed meanwhile in
+another browser is refused rather than the wrong one changed. The events
+are in settings backups (`events`: kind `birthday`, `anniversary`,
+`appointment` or `other`, `text`, `day`, `month`, `year` if given, and
+`show` with `calendar`, `month` and `clock`); one not whole refuses the
+restore.
+`components/own_events.c` (the dates, texts and NVS; host-tested) and
+`main/events.c` (the copy for the screens and the page).
 
 ### Spotify
 

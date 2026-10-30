@@ -97,7 +97,7 @@ void test_config(void)
     CHECK(memcmp(&a, &b, sizeof(a)) == 0);
 
     /* The backup leaves out the WiFi and the secrets. */
-    char *json = app_config_to_json(&a, false);
+    char *json = app_config_to_json(&a, false, NULL, -1);
     CHECK(json != NULL);
     CHECK(strstr(json, "secret") == NULL);
     CHECK(strstr(json, "\"home\"") == NULL);
@@ -119,7 +119,7 @@ void test_config(void)
     c.sp_dark = 0;
     c.so_start = 1;
     char err[96];
-    CHECK(app_config_from_json(json, &c, err, sizeof(err)));
+    CHECK(app_config_from_json(json, &c, NULL, NULL, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "other");
     CHECK_STR(c.wifi_pass, "otherpass");
     CHECK_STR(c.ais_client_secret, "kept");         /* same client id: the secret stays */
@@ -156,12 +156,12 @@ void test_config(void)
         static app_config_t src, dst;
         app_config_load(&src);
         src.clk_in = 1;
-        char *bk = app_config_to_json(&src, false);
+        char *bk = app_config_to_json(&src, false, NULL, -1);
         app_config_load(&dst);
         dst.temp_offset_dc = 0;
-        CHECK(app_config_from_json(bk, &dst, err, sizeof(err)) && !dst.clk_in);
+        CHECK(app_config_from_json(bk, &dst, NULL, NULL, err, sizeof(err)) && !dst.clk_in);
         dst.temp_offset_dc = -150;
-        CHECK(app_config_from_json(bk, &dst, err, sizeof(err)) && dst.clk_in);
+        CHECK(app_config_from_json(bk, &dst, NULL, NULL, err, sizeof(err)) && dst.clk_in);
         free(bk);
     }
 
@@ -190,19 +190,19 @@ void test_config(void)
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");
-    CHECK(app_config_from_json(json, &c, err, sizeof(err)));
+    CHECK(app_config_from_json(json, &c, NULL, NULL, err, sizeof(err)));
     CHECK_STR(c.ais_client_secret, "");
     cJSON_free(json);
 
     /* Asked for, the backup has the WiFi and the BarentsWatch secret - but
      * still not the setup password or the calendar addresses - and they
      * are restored. */
-    json = app_config_to_json(&a, true);
+    json = app_config_to_json(&a, true, NULL, -1);
     CHECK(json != NULL);
     CHECK(strstr(json, "\"home\"") != NULL);
     CHECK(strstr(json, "secret1") != NULL && strstr(json, "secret3") != NULL);
     CHECK(strstr(json, "secret2") == NULL && strstr(json, "secret4") == NULL && strstr(json, "secret5") == NULL);
-    CHECK(app_config_from_json(json, &c, err, sizeof(err)));
+    CHECK(app_config_from_json(json, &c, NULL, NULL, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "home");
     CHECK_STR(c.wifi_pass, "secret1");
     CHECK_STR(c.ais_client_id, "me@example.com:client");
@@ -211,22 +211,22 @@ void test_config(void)
 
     /* A network without a password given is an open one. */
     CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,"
-                               "\"wifi\":{\"ssid\":\"cafe\"}}", &c, err, sizeof(err)));
+                               "\"wifi\":{\"ssid\":\"cafe\"}}", &c, NULL, NULL, err, sizeof(err)));
     CHECK_STR(c.wifi_ssid, "cafe");
     CHECK_STR(c.wifi_pass, "");
 
     /* Refused, and nothing changed. */
     static app_config_t before;
     before = c;
-    CHECK(!app_config_from_json("{\"format\":\"other\"}", &c, err, sizeof(err)));
-    CHECK(!app_config_from_json("not json", &c, err, sizeof(err)));
-    CHECK(!app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":99}", &c, err, sizeof(err)));
+    CHECK(!app_config_from_json("{\"format\":\"other\"}", &c, NULL, NULL, err, sizeof(err)));
+    CHECK(!app_config_from_json("not json", &c, NULL, NULL, err, sizeof(err)));
+    CHECK(!app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":99}", &c, NULL, NULL, err, sizeof(err)));
     CHECK(!app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,\"theme\":1,"
                                 "\"locations\":[{\"name\":\"X\",\"lat\":\"95\",\"lon\":\"10\"}]}",
-                                &c, err, sizeof(err)));
+                                &c, NULL, NULL, err, sizeof(err)));
     CHECK(strstr(err, "Sted 1") != NULL);
     CHECK(!app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,\"locations\":[]}",
-                                &c, err, sizeof(err)));
+                                &c, NULL, NULL, err, sizeof(err)));
     CHECK(memcmp(&before, &c, sizeof(c)) == 0);
 
     /* Display names become host names. */
@@ -299,10 +299,10 @@ void test_config(void)
     static app_config_t d;
     app_config_load(&d);
     CHECK_STR(d.device_name, "kjokken");
-    char *j2 = app_config_to_json(&d, false);
+    char *j2 = app_config_to_json(&d, false, NULL, -1);
     CHECK(j2 != NULL && strstr(j2, "kjokken") == NULL);
     snprintf(d.device_name, sizeof(d.device_name), "stua");
-    CHECK(app_config_from_json(j2, &d, err, sizeof(err)));
+    CHECK(app_config_from_json(j2, &d, NULL, NULL, err, sizeof(err)));
     CHECK_STR(d.device_name, "stua");
     cJSON_free(j2);
     snprintf(d.device_name, sizeof(d.device_name), "Bad Name!");
@@ -312,8 +312,8 @@ void test_config(void)
     /* Out-of-range values are brought back in range. */
     CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,"
                                "\"fonts\":{\"title_px\":200},\"locations\":[{\"name\":\"X\",\"lat\":\"60\","
-                               "\"lon\":\"10\",\"aircraft_km\":5000,\"show\":0}],\"satellite\":{\"zoom\":5}}", &c, err,
-                               sizeof(err)));
+                               "\"lon\":\"10\",\"aircraft_km\":5000,\"show\":0}],\"satellite\":{\"zoom\":5}}", &c, NULL,
+                               NULL, err, sizeof(err)));
     CHECK_INT(c.title_px, APP_CONFIG_TITLE_PX_DEFAULT);
     CHECK_INT(c.radar_km[0], APP_CONFIG_RADAR_KM_DEFAULT);
     CHECK_INT(c.show[0], APP_SHOW_WEATHER);
@@ -324,7 +324,7 @@ void test_config(void)
     /* A ship centre with bad coordinates is dropped: ships around the location. */
     CHECK(app_config_from_json("{\"format\":\"multidisplay-innstillinger\",\"version\":1,\"locations\":"
                                "[{\"name\":\"X\",\"lat\":\"60\",\"lon\":\"10\",\"ship_centre\":"
-                               "{\"name\":\"Y\",\"lat\":\"91\",\"lon\":\"10\"}}]}", &c, err, sizeof(err)));
+                               "{\"name\":\"Y\",\"lat\":\"91\",\"lon\":\"10\"}}]}", &c, NULL, NULL, err, sizeof(err)));
     CHECK(app_config_ship_centre(&c, 0) == &c.locations[0]);
     CHECK_STR(c.ship_at[0].name, "");
 

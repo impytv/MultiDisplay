@@ -11,7 +11,9 @@
  * it after any holiday. Also if ticked, the events from the calendar
  * screen's calendars (components/cal_client.c) come after the holiday, a
  * line each with a bar in the calendar's colour, and "+2" for those there
- * is no room for.
+ * is no room for. The display's own events (main/events.c) ticked for the
+ * month calendar come first, in their kind's colour, whether or not the
+ * calendars are shown.
  *
  * Buttons by the clock step four weeks back or ahead (the last week shown
  * becomes the first), and "I dag" goes back to this week; so does leaving
@@ -40,8 +42,10 @@
 #include "calendar.h"
 #include "diag.h"
 #include "draw.h"
+#include "events.h"
 #include "holidays.h"
 #include "month.h"
+#include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
 
 static const char *TAG = "month";
@@ -71,6 +75,8 @@ static const char *TAG = "month";
  * three calendars is 357 (66 KB of PSRAM per list). If there are more, the
  * earliest are kept, and the days after the last one show none. */
 #define MON_CAL_EVENTS   640
+#define MON_OWN_EVENTS   120 /* the display's own in the five weeks shown */
+#define MON_DAY_EVENTS   16  /* more than a day has room for */
 
 static lv_obj_t *s_root, *s_canvas, *s_title;
 static big_clock_t s_clock;
@@ -100,6 +106,11 @@ static cal_list_t *s_cal, *s_cal_scratch;
 static int64_t s_cal_from, s_cal_to, s_cal_asked;
 static fetch_stamp_t s_cal_at;
 static backoff_t s_cal_fail;
+
+/* The display's own events on the days shown, worked out with them (in
+ * PSRAM), and the events' generation then. */
+static cal_list_t *s_own;
+static uint32_t s_own_gen;
 
 static const char *const MONTH[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli",
                                      "august", "september", "oktober", "november", "desember" };
@@ -314,28 +325,37 @@ static bool on_day(const cal_event_t *e, int64_t ds, int64_t de)
 }
 
 /* Day `idx`'s events at nx, ny in the box nw wide down to `bottom`, a line
- * each, and "+2" on the last line for those there is no room for; the y
- * under them. */
+ * each - the display's own, then the calendars' - and "+2" on the last line
+ * for those there is no room for; the y under them. */
 static int draw_events(lv_layer_t *layer, int idx, int nx, int ny, int nw, int bottom, lv_color_t card, bool past)
 {
-    const cal_list_t *l = events();
     const int64_t ds = s_day0[idx], de = s_day0[idx + 1];
-    if (l == NULL || ds < s_cal_from || de > s_cal_to) {
-        return ny;
+    const cal_event_t *day[MON_DAY_EVENTS];
+    int total = 0, held = 0;
+    for (int i = 0; s_own != NULL && i < s_own->count; i++) {
+        if (on_day(&s_own->ev[i], ds, de)) {
+            if (held < MON_DAY_EVENTS) {
+                day[held++] = &s_own->ev[i];
+            }
+            total++;
+        }
+    }
+    const cal_list_t *l = events();
+    if (l != NULL && ds >= s_cal_from && de <= s_cal_to) {
+        for (int i = 0; i < l->count; i++) {
+            if (on_day(&l->ev[i], ds, de)) {
+                if (held < MON_DAY_EVENTS) {
+                    day[held++] = &l->ev[i];
+                }
+                total++;
+            }
+        }
     }
     const int note_lh = lv_font_get_line_height(s_note_font);
-    int total = 0;
-    for (int i = 0; i < l->count; i++) {
-        total += on_day(&l->ev[i], ds, de);
-    }
     const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
     const lv_color_t c_dim = lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
-    int drawn = 0;
-    for (int i = 0; i < l->count && drawn < total; i++) {
-        const cal_event_t *ev = &l->ev[i];
-        if (!on_day(ev, ds, de)) {
-            continue;
-        }
+    for (int drawn = 0; drawn < held; drawn++) {
+        const cal_event_t *ev = day[drawn];
         const bool fits = ny + note_lh <= bottom;
         const bool last_line = ny + 2 * note_lh > bottom;
         if (!fits) {
@@ -359,7 +379,6 @@ static int draw_events(lv_layer_t *layer, int idx, int nx, int ny, int nw, int b
         draw_text_shorten(s_note_font, ev->title, nw - 6, t, sizeof(t));
         text(layer, s_note_font, t, nx + 6, ny, nw - 6, note_lh, LV_TEXT_ALIGN_LEFT, c);
         ny += note_lh;
-        drawn++;
     }
     return ny;
 }
@@ -481,6 +500,8 @@ static void month_show(void)
 {
     struct tm today;
     s_shown_day = day_key(time(NULL), &today);
+    s_own->count = 0;
+    s_own_gen = events_generation();
     if (s_shown_day == 0) {
         s_day0[0] = 0;
         lv_label_set_text(s_title, "M\xC3\xA5ned");
@@ -518,6 +539,8 @@ static void month_show(void)
             d0.tm_isdst = -1;
             s_day0[i] = (int64_t)mktime(&d0);
         }
+        events_days(s_day0[0], s_day0[MON_DAYS], OWN_ON_MONTH, s_own);
+        cal_sort(s_own);
 
         /* The sky, seen from the first location. */
         const double lat = atof(g_cfg->locations[0].lat), lon = atof(g_cfg->locations[0].lon);
@@ -593,7 +616,7 @@ static void month_clock_timer_cb(lv_timer_t *t)
         if (g_cfg->mon_cal) {
             app_wake_poll();
         }
-    } else if (day_key(now, &lt) != s_shown_day) {
+    } else if (day_key(now, &lt) != s_shown_day || events_generation() != s_own_gen) {
         const int64_t first = s_day0[0];
         month_show();
         if (g_cfg->mon_cal && s_day0[0] != first) {
@@ -645,6 +668,8 @@ lv_obj_t *month_build(lv_obj_t *screen)
     }
     lv_obj_set_size(s_title, x - MON_X, lv_font_get_line_height(g_font_large));
     lv_timer_create(month_clock_timer_cb, 1000, NULL);
+    s_own = cal_list_new(MON_OWN_EVENTS);
+    assert(s_own != NULL);
     if (g_cfg->mon_cal) {
         s_cal = cal_list_new(MON_CAL_EVENTS);
         s_cal_scratch = cal_list_new(MON_CAL_EVENTS);

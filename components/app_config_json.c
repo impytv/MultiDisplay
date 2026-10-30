@@ -1,7 +1,9 @@
 /* Settings backup (app_config_to_json / app_config_from_json): the setup
  * page's "Sikkerhetskopi". A versioned JSON file, readable and editable by
  * hand. The WiFi network, its password and the BarentsWatch secret are in it
- * only when asked for; the setup password and the calendar addresses never. */
+ * only when asked for; the setup password and the calendar addresses never.
+ * The display's own events (components/own_events.c) are a list of their
+ * own, "events". */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,6 +12,7 @@
 #include "cJSON.h"
 
 #include "app_config.h"
+#include "own_events.h"
 
 #define BACKUP_FORMAT  "multidisplay-innstillinger"
 #define BACKUP_VERSION 1
@@ -21,7 +24,7 @@ static void add_hhmm(cJSON *o, const char *key, uint16_t min)
     cJSON_AddStringToObject(o, key, t);
 }
 
-char *app_config_to_json(const app_config_t *c, bool secrets)
+char *app_config_to_json(const app_config_t *c, bool secrets, const own_event_t *events, int n_events)
 {
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
@@ -137,6 +140,14 @@ char *app_config_to_json(const app_config_t *c, bool secrets)
         cJSON_AddStringToObject(l, "departures", c->departures[i]);
         cJSON_AddItemToArray(locs, l);
     }
+    if (n_events >= 0) {
+        cJSON *ev = own_to_json(events, n_events);
+        if (ev == NULL) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+        cJSON_AddItemToObject(root, "events", ev);
+    }
     char *text = cJSON_Print(root);
     cJSON_Delete(root);
     return text;
@@ -193,7 +204,8 @@ static void get_hhmm(const cJSON *o, const char *k, uint16_t *dst)
     }
 }
 
-bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t err_len)
+bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *events, int *n_events, char *err,
+                          size_t err_len)
 {
     cJSON *root = cJSON_Parse(json);
     const cJSON *fmt = cJSON_GetObjectItemCaseSensitive(root, "format");
@@ -356,6 +368,17 @@ bool app_config_from_json(const char *json, app_config_t *cfg, char *err, size_t
         }
         if (ok) {
             c->location_count = (uint8_t)n;
+        }
+    }
+    if (n_events != NULL) {
+        *n_events = -1;
+    }
+    const cJSON *ev = cJSON_GetObjectItemCaseSensitive(root, "events");
+    if (ok && ev != NULL && events != NULL) {
+        const int n = own_from_json(ev, events, err, err_len);
+        ok = n >= 0;
+        if (ok) {
+            *n_events = n;
         }
     }
     cJSON_Delete(root);

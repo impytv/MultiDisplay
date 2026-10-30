@@ -26,6 +26,7 @@
 #include "esp_random.h"
 #include "nvs.h"
 #include "ota_writer.h"
+#include "own_events.h"
 #include "form_util.h"
 #include "astro.h"
 #include "chip_temp.h"
@@ -125,7 +126,7 @@ static const char PAGE_MAINT[] =
     " forrige om den nye ikke starter som den skal. Eldre versjoner godtas ogs\xC3\xA5.</small><input type=file id="
     "fw accept=.bin style='margin-top:.6rem'><button type=button id=fwb class=lt2>Last opp og start p\xC3\xA5 nytt<"
     "/button><small id=fws></small></fieldset><fieldset><legend>Sikkerhetskopi</legend><small>Alle innstillingene u"
-    "nntatt navn, passordet for oppsettsiden og kalenderadressene, som en fil. WiFi-nett, WiFi-passord og BarentsWa"
+    "nntatt navn, passordet for oppsettsiden og kalenderadressene, som en fil, med bursdager og hendelser. WiFi-nett, WiFi-passord og BarentsWa"
     "tch-hemmeligheten blir bare med om du krysser av for det - pass da godt p\xC3\xA5 filen. Gjenoppretting beho"
     "lder det som ikke er i filen, og starter skjermen p\xC3\xA5 nytt.</small><div class=chk><label><input type=c"
     "heckbox id=cfgsec>Ta med WiFi og BarentsWatch-hemmelighet</label></div><p><a href=/config.json id=cfgdl downl"
@@ -491,8 +492,9 @@ static char *build_page(const app_config_t *cfg)
     p = html_escape_append(p, end, cfg->device_name);
     p = buf_append(p, end, " - V&aelig;rtavla</title><h1>V&aelig;rtavla oppsett: ");
     p = html_escape_append(p, end, cfg->device_name);
-    p = buf_append(p, end, "</h1>%s<form method=post action=/save id=cf novalidate>",
-                  s_nav ? "<p><a href=/>&larr; Navigasjon</a></p>" : "");
+    p = buf_append(p, end, "</h1><p>%s%s</p><form method=post action=/save id=cf novalidate>",
+                  s_nav ? "<a href=/>&larr; Navigasjon</a> &middot; " : "",
+                  s_portal ? "" : "<a href=/hendelser>Bursdager og hendelser</a>");
 
     /* Locations. */
     p = buf_append(p, end, "%s", PAGE_LOC_INTRO);
@@ -1014,7 +1016,7 @@ static esp_err_t send_nav_page(httpd_req_t *req)
     p = buf_append(p, end, " - V&aelig;rtavla</title><h1>");
     p = html_escape_append(p, end, display_title());
     p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div>"
-                           "<p class=navf><a href=/oppsett>Oppsett</a>");
+                           "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Hendelser</a>");
     if (s_guide_url[0]) {
         p = buf_append(p, end, "<a href=\"");
         p = html_escape_append(p, end, s_guide_url);
@@ -1785,7 +1787,10 @@ static esp_err_t h_config_get(httpd_req_t *req)
                          httpd_query_key_value(q, "hemmeligheter", val, sizeof(val)) == ESP_OK &&
                          strcmp(val, "1") == 0;
     app_config_load(cfg);
-    char *json = app_config_to_json(cfg, secrets);
+    /* The display's own events go with them, read from NVS. */
+    own_event_t *ev = heap_caps_malloc(OWN_MAX * sizeof(own_event_t), MALLOC_CAP_SPIRAM);
+    char *json = ev != NULL ? app_config_to_json(cfg, secrets, ev, own_load(ev)) : NULL;
+    free(ev);
     free(cfg);
     if (json == NULL) {
         return httpd_resp_send_500(req);
@@ -1798,6 +1803,9 @@ static esp_err_t h_config_get(httpd_req_t *req)
     return err;
 }
 
+/* A backup with settings for five locations and 100 events (about 25 KB). */
+#define BACKUP_BODY_MAX (64 * 1024)
+
 /* POST /config.json: restore such a backup over the current settings (the
  * WiFi and secrets stay unless it has them), save and restart. */
 static esp_err_t h_config_put(httpd_req_t *req)
@@ -1805,15 +1813,17 @@ static esp_err_t h_config_put(httpd_req_t *req)
     if (!authorized(req) || !same_origin(req)) {
         return ESP_OK;
     }
-    if (req->content_len <= 0 || req->content_len >= SAVE_BODY_MAX) {
+    if (req->content_len <= 0 || req->content_len >= BACKUP_BODY_MAX) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "Filen er tom eller for stor.");
     }
-    char *body = malloc(SAVE_BODY_MAX);
+    char *body = heap_caps_malloc(BACKUP_BODY_MAX, MALLOC_CAP_SPIRAM);
     app_config_t *cfg = malloc(sizeof(*cfg));
-    if (body == NULL || cfg == NULL) {
+    own_event_t *ev = heap_caps_malloc(OWN_MAX * sizeof(own_event_t), MALLOC_CAP_SPIRAM);
+    if (body == NULL || cfg == NULL || ev == NULL) {
         free(body);
         free(cfg);
+        free(ev);
         return httpd_resp_send_500(req);
     }
     int total = 0;
@@ -1822,6 +1832,7 @@ static esp_err_t h_config_put(httpd_req_t *req)
         if (r <= 0) {
             free(body);
             free(cfg);
+            free(ev);
             return httpd_resp_send_500(req);
         }
         total += r;
@@ -1829,9 +1840,16 @@ static esp_err_t h_config_put(httpd_req_t *req)
     body[total] = '\0';
     app_config_load(cfg);
     char why[96];
-    const bool ok = app_config_from_json(body, cfg, why, sizeof(why)) && app_config_save(cfg) == ESP_OK;
+    int n_ev = -1;
+    bool ok = app_config_from_json(body, cfg, ev, &n_ev, why, sizeof(why)) && app_config_save(cfg) == ESP_OK;
+    /* An older backup without them keeps the events there are. */
+    if (ok && n_ev >= 0 && own_save(ev, n_ev) != ESP_OK) {
+        snprintf(why, sizeof(why), "Innstillingene er lagret, men ikke hendelsene.");
+        ok = false;
+    }
     free(body);
     free(cfg);
+    free(ev);
     if (!ok) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, why);
@@ -1951,6 +1969,34 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
         s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
     return err;
+}
+
+/* An added page: as h_added, but without the password the login form,
+ * back to the page after. */
+static esp_err_t h_added_page(httpd_req_t *req)
+{
+    if (!page_authorized(req)) {
+        return ESP_OK;
+    }
+    esp_err_t (*handler)(httpd_req_t *) = req->user_ctx;
+    return handler(req);
+}
+
+esp_err_t wifi_provision_add_page_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
+    esp_err_t err = httpd_register_uri_handler(
+        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_page, .user_ctx = handler });
+    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
+    return err;
+}
+
+const char *wifi_provision_page_head(void)
+{
+    return PAGE_HEAD;
 }
 
 /* Like h_added without the password: only the Host is checked. */

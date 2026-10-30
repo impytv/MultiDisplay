@@ -50,6 +50,14 @@ esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(h
 /* The same for POST `uri`. */
 esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
+/* GET `uri` as a page of its own, behind the setup page's password: a
+ * browser without it gets the login form, and comes back after. */
+esp_err_t wifi_provision_add_page_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
+
+/* What a page starts with: the charset, the viewport and the setup page's
+ * look (/setup.css). */
+const char *wifi_provision_page_head(void);
+
 /* GET `uri` with no password asked: for a page another site sends the
  * browser to (the Spotify login's return), which the login cookie, being
  * SameSite=Strict, doesn't come with. The handler must check the request

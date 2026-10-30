@@ -209,6 +209,20 @@ value in `sdkconfig`, not only what `sdkconfig.defaults` sets. Measure a
 change with a temporary endpoint that times `lv_refr_now` after
 invalidating the screen, and remove the endpoint afterwards.
 
+### A label cut with "..." that wrapped instead
+
+The clock screen's event lines were labels with `LV_LABEL_LONG_MODE_DOTS`
+and a `max_width`, but a long name wrapped onto three lines and pushed the
+rest off the screen: with its height left to the content, LVGL wraps the
+text and has no reason to cut it. Giving the label one line's height made
+the dots appear. The first try also ran off the bottom with two events,
+as the 180 px font's line holds about 80 px of ascent and descent that
+digits never use; taking that back with negative margins while events
+show made room without a smaller font.
+*Lesson:* a label meant to be one line needs a fixed height as well as a
+width. Check a new layout on the device with the longest text it can get
+(here 40 characters) and with the most lines, not only a typical one.
+
 ## What worked
 
 - **Diagnostics over WiFi** (`/log`, `/status`, `/coredump`): the stack

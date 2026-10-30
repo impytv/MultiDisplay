@@ -44,6 +44,7 @@
 #include "watchdog.h"
 #include "updater.h"
 #include "diag.h"
+#include "events.h"
 #include "clock.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
@@ -1245,6 +1246,7 @@ static void yr_weather_task(void *arg)
     wifi_provision_add_get_handler("/nav.json", nav_list_handler);
     wifi_provision_add_post_handler("/nav", nav_go_handler);
     spotify_add_handlers();
+    events_add_handlers();
     diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 
@@ -1520,6 +1522,7 @@ void app_main(void)
     g_cfg = heap_caps_calloc(1, sizeof(*g_cfg), MALLOC_CAP_SPIRAM);
     assert(g_cfg != NULL);
     app_config_load(g_cfg);
+    events_init();
     yr_client_set_contact_email(g_cfg->yr_email);
     char sp_redirect[160];
     app_config_spotify_redirect(g_cfg->ota_url, sp_redirect, sizeof(sp_redirect));

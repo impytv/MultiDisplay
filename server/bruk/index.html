@@ -39,6 +39,7 @@ Er skjermen ikke satt sammen ennå, se <a href="../montering/">monteringsveiledn
 <nav><ol>
 <li><a href="#betjening">Betjening</a></li>
 <li><a href="#oppsett">Oppsettsiden</a></li>
+<li><a href="#hendelser">Bursdager og hendelser</a></li>
 <li><a href="#oversikt">Oversikt</a></li>
 <li><a href="#kalender">Kalender</a></li>
 <li><a href="#maned">Månedskalender</a></li>
@@ -86,6 +87,20 @@ Ved siden av hvert skjermbilde er det en <b>i automatisk bytte</b>-boks (se <a h
 <p>Det står «Ulagrede endringer» til du lagrer. Klokkeslett skrives med 24 timer (TT:MM).</p>
 </div>
 
+<h2 id="hendelser">Bursdager og hendelser</h2>
+<div class="card">
+<p>Bursdager, merkedager og avtaler kan legges inn på skjermen selv, uten en kalender på nettet. Gå til <b>Bursdager og hendelser</b> øverst på oppsettsiden eller nederst på navigasjonssiden.</p>
+<ul>
+<li>Velg <b>type</b>, skriv hva det er, og velg dag og måned.</li>
+<li><b>Bursdag</b> og <b>Merkedag</b> vises hvert år. Skriver du fødselsåret, står alderen på skjermen, for eksempel «Kari fyller 80». For en merkedag står det hvor mange år det er, for eksempel «Bryllupsdag (25 år)». Året kan stå tomt.</li>
+<li><b>Avtale</b> og <b>Annet</b> vises bare den ene datoen, så der må året være med.</li>
+<li>Under <b>Vises på</b> krysser du av for hvor hendelsen skal stå: kalenderen, månedskalenderen og klokken. Alle tre er krysset av fra start.</li>
+</ul>
+<p>Hendelsene lagres på skjermen med en gang, uten omstart. Listen under skjemaet viser når hver av dem er neste gang. Trykk <b>Endre</b> for å rette en og <b>Slett</b> for å fjerne den. Avtaler som er passert, blir stående grå til du sletter dem. Det er plass til 100 hendelser.</p>
+<p>Hver type har sin farge: rosa for bursdager, lilla for merkedager, turkis for avtaler og gull for annet. På klokken står dagens og morgendagens hendelser under temperaturen, for eksempel «I dag: Kari fyller 80». Er det flere enn to, står det hvor mange flere det er. Uten hendelser ser klokken ut som før.</p>
+<p>Hendelsene er med i sikkerhetskopien av innstillingene (Vedlikehold → Sikkerhetskopi). Gjenoppretter du en sikkerhetskopi, får skjermen hendelsene som står i den. En sikkerhetskopi fra før hendelsene kom, lar dem som er der, være i fred.</p>
+</div>
+
 <h2>Skjermbilder for hele skjermen</h2>
 
 <section class="card" id="oversikt">
@@ -99,7 +114,8 @@ En farget prikk ved stedsnavnet betyr at Meteorologisk institutt har sendt ut fa
 <section class="card" id="kalender">
 <h3>Kalender</h3>
 <p>Avtalene de neste to ukene, fra opptil tre kalendere, med én farge per kalender. Den hentes på nytt hvert kvarter.
-Det fungerer med Google Kalender (<i>Hemmelig adresse i iCal-format</i>), en publisert Outlook-kalender eller en annen <code>.ics</code>-adresse.</p>
+Det fungerer med Google Kalender (<i>Hemmelig adresse i iCal-format</i>), en publisert Outlook-kalender eller en annen <code>.ics</code>-adresse.
+<a href="#hendelser">Bursdager og hendelser</a> som er lagt inn på skjermen, står her også, i sin egen farge, selv uten kalenderadresser.</p>
 <div class="set"><b>Oppsett</b>Andre skjermer → Kalender → <i>Vis kalenderen</i>, <i>i automatisk bytte</i> og opptil tre kalenderadresser.
 Adressene er hemmelige, så de vises ikke igjen på siden. Et tomt felt beholder den adressen som er lagret.</div>
 <figure><img src="skjermer/kalender.jpg" alt="Kalenderskjermen uten avtaler" loading="lazy"><figcaption>Kalenderen. Her er det ingen avtaler de neste to ukene.</figcaption></figure>
@@ -114,6 +130,7 @@ Pilene ved klokken blar fire uker fram eller tilbake. Skjermen går tilbake til 
 <li><i>Månefaser</i> viser nymåne, halvmåne og fullmåne som symboler ved datoen.</li>
 <li><i>Andre hendelser på himmelen</i> viser jevndøgn og solverv, supermåner, stjerneskudd og formørkelser som kan ses fra det første stedet.</li>
 <li><i>Avtaler fra kalenderne</i> viser avtalene fra kalenderne under <i>Kalender</i>, i samme farge som på kalenderskjermen. Er det ikke plass til alle, står det hvor mange flere det er, for eksempel «+5».</li>
+<li><a href="#hendelser">Bursdager og hendelser</a> som er lagt inn på skjermen, står under datoen før avtalene fra kalenderne, også når de ikke er slått på.</li>
 </ul></div>
 <figure><img src="skjermer/maned.jpg" alt="Månedskalender for oktober og november med månefaser og Orionidene" loading="lazy"><figcaption>Månedskalenderen med månefaser og stjerneskuddsvermen Orionidene.</figcaption></figure>
 <figure><img src="skjermer/maned-avtaler.jpg" alt="Månedskalender med avtaler fra en kalender" loading="lazy"><figcaption>Med avtaler fra kalenderne.</figcaption></figure>
@@ -121,7 +138,8 @@ Pilene ved klokken blar fire uker fram eller tilbake. Skjermen går tilbake til 
 
 <section class="card" id="klokke">
 <h3>Klokke</h3>
-<p>Klokkeslettet med store tall, med sekundene mindre ved siden av. Under står dato og ukenummer, og nederst temperaturen inne i hele grader og ute til nærmeste halve grad.</p>
+<p>Klokkeslettet med store tall, med sekundene mindre ved siden av. Under står dato og ukenummer, og nederst temperaturen inne i hele grader og ute til nærmeste halve grad.
+Har du lagt inn <a href="#hendelser">bursdager eller hendelser</a> for i dag eller i morgen, står de under temperaturen.</p>
 <p>Temperaturen ute er for stedet du velger i <i>Temperatur ute for</i>, og kommer fra Meteorologisk institutt. Det er deres beregning av temperaturen akkurat nå, rettet etter målinger i nærheten, også fra private værstasjoner som Netatmo. Den hentes hvert tiende minutt. Står det «Ute –», har skjermen ikke fått noe svar den siste halvtimen. Velger du <i>Ingen</i>, vises bare temperaturen inne.</p>
 <p>Temperaturen inne måles i selve brikken i skjermen og kan bomme mye, selv når den er justert. Den er av til du har stilt den inn. Vil du ikke ha den, tar du bort haken ved <i>Vis temperaturen inne</i>.</p>
 <p>Temperaturen måles av en sensor i selve brikken bak skjermen. Brikken er varmere enn rommet, omtrent 15 grader, så skjermen trekker fra en justering som du stiller inn én gang.
@@ -316,7 +334,7 @@ Når skjermen er avslått, tennes den ved et trykk, så lenge du velger i <i>Lys
 <li><b>Navn på skjermen</b> er adressen på hjemmenettet, <code>http://navn.local/</code>. Har du flere skjermer, må hver ha sitt eget navn.</li>
 <li><b>Programvareoppdatering</b>: med <i>Installer ny programvare automatisk</i> ser skjermen etter ny versjon på denne siden til tiden under <i>Sjekk kl.</i>
 En ny versjon som ikke virker, rulles tilbake av seg selv.</li>
-<li><b>Sikkerhetskopi</b>: last ned innstillingene som en fil og legg dem inn igjen, for eksempel på en ny skjerm. Med <i>Ta med WiFi og BarentsWatch-hemmelighet</i> kommer også WiFi-passordet og BarentsWatch-hemmeligheten med.</li>
+<li><b>Sikkerhetskopi</b>: last ned innstillingene som en fil og legg dem inn igjen, for eksempel på en ny skjerm. Med <i>Ta med WiFi og BarentsWatch-hemmelighet</i> kommer også WiFi-passordet og BarentsWatch-hemmeligheten med. Bursdager og hendelser er alltid med.</li>
 <li><b>Navigasjonsside</b>: <i>Vis navigasjonssiden</i> og <i>Sveip opp fra bunnen for å velge skjerm</i>.</li>
 <li><b>Driftsstatus</b> viser versjon, minne og når hver tjeneste sist svarte.</li>
 </ul>
