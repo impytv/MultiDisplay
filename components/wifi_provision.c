@@ -1016,7 +1016,7 @@ static esp_err_t send_nav_page(httpd_req_t *req)
     p = buf_append(p, end, " - V&aelig;rtavla</title><h1>");
     p = html_escape_append(p, end, display_title());
     p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div>"
-                           "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Hendelser</a>");
+                           "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Bursdager og hendelser</a>");
     if (s_guide_url[0]) {
         p = buf_append(p, end, "<a href=\"");
         p = html_escape_append(p, end, s_guide_url);

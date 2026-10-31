@@ -39,5 +39,5 @@ input.bad{border-color:var(--err)}
 .navg{display:grid;grid-template-columns:repeat(auto-fill,minmax(7rem,1fr));gap:.5rem}
 .navg button{margin:0;background:var(--accs);color:var(--acc)}
 .navg button.on{background:var(--btn);color:#fff;font-weight:600}
-.navf{display:flex;gap:1.2rem;align-items:center;margin-top:2rem}.navf form{margin:0}
+.navf{display:flex;flex-wrap:wrap;gap:.6rem 1.2rem;align-items:center;margin-top:2rem}.navf form{margin:0}
 .navf button{margin:0;width:auto;padding:0;background:none;color:var(--acc);text-decoration:underline}
