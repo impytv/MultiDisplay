@@ -873,3 +873,14 @@ too heavy for the chip.
   *Done in 1.31.0: the list `events` in the backup; a restore replaces the
   events with the file's, and an older file without the list keeps them.
   The upload limit for a restore went from 16 KB to 64 KB.*
+- [x] **117. Passed events filling the list.** Appointments and other
+  one-date events stayed after their day until deleted by hand, each
+  taking one of the 100 places. *Done in 1.31.1: when an event is added,
+  those whose day ended 30 days or more before are deleted first
+  (`own_prune`). Only on adding, not on a timer, so the history stays
+  until there's a new event and nothing changes the list on its own.*
+- [x] **118. Sonos rooms left out of the row.** The room buttons kept
+  their full names and padding, so with four rooms and "Radio" and "Velg
+  musikk" the fourth didn't fit and wasn't shown. *Done in 1.31.1: the
+  padding shrinks (18 to 14 px) and then the longest names are cut to the
+  same width with ".." (`chip_layout`), not below 60 px.*

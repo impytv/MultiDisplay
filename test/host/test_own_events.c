@@ -105,6 +105,23 @@ void test_own_events(void)
     CHECK_INT(own_next(&list[1], day0(2026, 10, 30)), day0(2026, 11, 3));
     CHECK_INT(own_next(&list[4], day0(2026, 10, 30)), day0(2030, 11, 20)); /* not before its year */
 
+    /* Passed one-date events go 30 days after their day; those every year stay. */
+    {
+        own_event_t p[4] = {
+            ev("Kari", OWN_BIRTHDAY, 1946, 1, 5, OWN_ON_ALL),
+            ev("Tannlege", OWN_APPOINTMENT, 2026, 9, 30, OWN_ON_ALL),  /* ended 1 October */
+            ev("Frisør", OWN_OTHER, 2026, 10, 1, OWN_ON_ALL),          /* ended 2 October */
+            ev("Lege", OWN_APPOINTMENT, 2026, 12, 1, OWN_ON_ALL),
+        };
+        CHECK_INT(own_prune(p, 4, day0(2026, 10, 30), 30), 4);         /* none 30 days yet */
+        CHECK_INT(own_prune(p, 4, day0(2026, 10, 31), 30), 3);         /* across summer time's end */
+        CHECK_STR(p[0].text, "Kari");
+        CHECK_STR(p[1].text, "Frisør");
+        CHECK_STR(p[2].text, "Lege");
+        CHECK_INT(own_prune(p, 3, day0(2028, 1, 1), 30), 1);
+        CHECK_STR(p[0].text, "Kari");
+    }
+
     /* Kept in NVS; what isn't valid is left out on loading. */
     test_nvs_clear();
     static own_event_t back[OWN_MAX];

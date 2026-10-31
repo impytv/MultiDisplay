@@ -156,6 +156,27 @@ int64_t own_next(const own_event_t *e, int64_t today)
     return start;
 }
 
+int own_prune(own_event_t *e, int n, int64_t today, int days)
+{
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+        if (!yearly(&e[i])) {
+            int64_t end;
+            day_in(&e[i], e[i].year, &end);
+            const time_t tt = (time_t)end;
+            struct tm t;
+            localtime_r(&tt, &t);
+            t.tm_mday += days; /* by the calendar, so summer time doesn't move it */
+            t.tm_isdst = -1;
+            if ((int64_t)mktime(&t) <= today) {
+                continue;
+            }
+        }
+        e[kept++] = e[i];
+    }
+    return kept;
+}
+
 cJSON *own_to_json(const own_event_t *e, int n)
 {
     cJSON *arr = cJSON_CreateArray();

@@ -65,6 +65,11 @@ int own_days(const own_event_t *e, int n, int64_t from, int64_t to, uint8_t wher
  * a date passed. */
 int64_t own_next(const own_event_t *e, int64_t today);
 
+/* Drop the one-date events whose day ended `days` days or more before
+ * `today` (local midnight), keeping the order of the rest: how many are
+ * left. Those every year are kept. */
+int own_prune(own_event_t *e, int n, int64_t today, int days);
+
 /* The events as a JSON array for the settings backup:
  *   [{"kind":"birthday","text":"Kari","day":12,"month":11,"year":1946,
  *     "show":{"calendar":true,"month":true,"clock":true}}, ...]

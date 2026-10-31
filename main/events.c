@@ -30,6 +30,7 @@ static const char *TAG = "events";
 
 #define PAGE_MAX (96 * 1024) /* PSRAM; a full list is about 50 KB */
 #define BODY_MAX 1024
+#define PRUNE_DAYS 30 /* a passed one-date event is deleted this long after, on adding one */
 
 static SemaphoreHandle_t s_lock;
 static EXT_RAM_BSS_ATTR own_event_t s_ev[OWN_MAX];
@@ -281,7 +282,8 @@ static esp_err_t send_page(httpd_req_t *req, const form_t *f, const char *ok)
     }
     qsort(order, (size_t)s_n, sizeof(order[0]), cmp_item);
     p = buf_append(p, end, "<h2>Lagt inn</h2><small>%d av %d. Bursdager og merkedager vises hvert &aring;r, "
-                           "avtaler og annet bare den ene datoen.</small>", s_n, OWN_MAX);
+                           "avtaler og annet bare den ene datoen. N&aring;r du legger til en ny, "
+                           "slettes avtaler og annet som var for mer enn %d dager siden.</small>", s_n, OWN_MAX, PRUNE_DAYS);
     if (s_n == 0) {
         p = buf_append(p, end, "<p><small>Ingen hendelser enn&aring;.</small></p>");
     }
@@ -446,16 +448,25 @@ static esp_err_t h_save(httpd_req_t *req)
     if (f.idx >= 0 && !same_event(f.idx, f.was)) {
         f.err = ERR_CHANGED;
         f.idx = -1;
-    } else if (f.idx < 0 && s_n >= OWN_MAX) {
-        f.err = "Det er ikke plass til flere. Slett noen som er passert.";
     } else {
         static EXT_RAM_BSS_ATTR own_event_t ev[OWN_MAX];
         memcpy(ev, s_ev, (size_t)s_n * sizeof(own_event_t));
         int n = s_n;
-        ev[f.idx >= 0 ? f.idx : n++] = f.e;
-        err = commit(ev, n);
-        if (err != ESP_OK) {
-            f.err = "Kunne ikke lagre. Pr&oslash;v igjen.";
+        if (f.idx < 0 && time(NULL) > PLAUSIBLE_EPOCH_S) {
+            /* Only on adding, so the passed ones stay until there's a new one. */
+            n = own_prune(ev, n, today_midnight(), PRUNE_DAYS);
+            if (n != s_n) {
+                ESP_LOGI(TAG, "%d passed event(s) deleted", s_n - n);
+            }
+        }
+        if (f.idx < 0 && n >= OWN_MAX) {
+            f.err = "Det er ikke plass til flere. Slett noen du ikke trenger.";
+        } else {
+            ev[f.idx >= 0 ? f.idx : n++] = f.e;
+            err = commit(ev, n);
+            if (err != ESP_OK) {
+                f.err = "Kunne ikke lagre. Pr&oslash;v igjen.";
+            }
         }
     }
     xSemaphoreGive(s_lock);

@@ -47,6 +47,8 @@ static const char *TAG = "sonos_screen";
 #define SO_ROW_Y      58  /* the room buttons */
 #define SO_ROW_H      44
 #define SO_CHIP_PAD   18
+#define SO_CHIP_PAD_MIN 14 /* when the names are many or long; clear of the busy dot */
+#define SO_CHIP_TEXT_MIN 60 /* a name not cut shorter than this, px */
 #define SO_CHIP_GAP   10
 #define SO_TOP        118 /* below them */
 #define SO_COVER      240
@@ -328,8 +330,11 @@ static void page_box(lv_area_t *a)
     a->y2 = SO_ROW_Y + SO_ROW_H - 1;
 }
 
-/* Room button i's box; false if it doesn't fit before the picker's. */
-static bool chip_box(int i, lv_area_t *a)
+/* The room buttons' text widths and padding, so all fit before the picker's
+ * buttons: less padding first, then the longest names cut to the same
+ * width (shortened with ".." when drawn). The right edge the row may reach
+ * goes in *edge. */
+static void chip_layout(int *tw, int *pad, int *edge)
 {
     lv_area_t t;
     if (page_shown()) {
@@ -337,19 +342,66 @@ static bool chip_box(int i, lv_area_t *a)
     } else {
         toggle_box(&t);
     }
+    *edge = t.x1 - SO_CHIP_GAP;
+    const int n = s_room_count;
+    const int avail = *edge - SO_X;
+    int sum = 0, widest = 0;
+    for (int k = 0; k < n; k++) {
+        tw[k] = draw_text_w(s_rooms[k].name);
+        sum += tw[k];
+        widest = tw[k] > widest ? tw[k] : widest;
+    }
+    const int gaps = n > 0 ? (n - 1) * SO_CHIP_GAP : 0;
+    for (*pad = SO_CHIP_PAD; *pad > SO_CHIP_PAD_MIN && sum + n * 2 * *pad + gaps > avail; (*pad)--) {
+    }
+    const int room = avail - n * 2 * *pad - gaps;
+    if (sum <= room) {
+        return;
+    }
+    /* The widest cap that fits, not below SO_CHIP_TEXT_MIN (then the last
+     * ones are left out, as before). */
+    int cap = widest;
+    for (; cap > SO_CHIP_TEXT_MIN; cap--) {
+        int s2 = 0;
+        for (int k = 0; k < n; k++) {
+            s2 += tw[k] < cap ? tw[k] : cap;
+        }
+        if (s2 <= room) {
+            break;
+        }
+    }
+    for (int k = 0; k < n; k++) {
+        tw[k] = tw[k] < cap ? tw[k] : cap;
+    }
+}
+
+/* Room button i's box and the text in it (shortened if need be); false if
+ * it doesn't fit before the picker's. */
+static bool chip_box_text(int i, lv_area_t *a, char *text, size_t text_len)
+{
+    int tw[SONOS_ROOMS_MAX], pad, edge;
+    chip_layout(tw, &pad, &edge);
     int x = SO_X;
     for (int k = 0; k <= i && k < s_room_count; k++) {
-        const int w = draw_text_w(s_rooms[k].name) + 2 * SO_CHIP_PAD;
+        const int w = tw[k] + 2 * pad;
         if (k == i) {
             a->x1 = x;
             a->x2 = x + w - 1;
             a->y1 = SO_ROW_Y;
             a->y2 = SO_ROW_Y + SO_ROW_H - 1;
-            return a->x2 < t.x1 - SO_CHIP_GAP;
+            if (text != NULL) {
+                draw_text_shorten(g_font_body, s_rooms[i].name, tw[i], text, text_len);
+            }
+            return a->x2 < edge;
         }
         x += w + SO_CHIP_GAP;
     }
     return false;
+}
+
+static bool chip_box(int i, lv_area_t *a)
+{
+    return chip_box_text(i, a, NULL, 0);
 }
 
 /* --------------------------------------------------------------------------
@@ -401,8 +453,9 @@ static void draw_row(lv_layer_t *layer)
     }
     for (int i = 0; i < s_room_count; i++) {
         lv_area_t a;
-        if (chip_box(i, &a)) {
-            draw_chip(layer, &a, s_rooms[i].name, in_group(i), c_card());
+        char name[sizeof(s_rooms[i].name)];
+        if (chip_box_text(i, &a, name, sizeof(name))) {
+            draw_chip(layer, &a, name, in_group(i), c_card());
             if (s_busy[i] && !in_group(i)) { /* plays something of its own */
                 draw_dot(layer, a.x2 - 9, a.y1 + 9, 5, c_accent());
             }

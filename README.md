@@ -565,7 +565,9 @@ a date and where it shows:
   bursdag") and an anniversary how many years ("Bryllupsdag (25 år)").
   29 February is on the 28th in other years.
 - **Avtale** and **Annet** are on one date, year included; passed ones stay
-  on the page, greyed, until deleted.
+  on the page, greyed. Those passed more than 30 days ago are deleted when
+  a new event is added, not on a schedule, so the history stays until
+  there's a new one.
 - **Vises på**: the calendar screen (among the calendars' events,
   all-day), the month calendar (under the date, before the calendars'
   events, whether or not those are shown) and the clock screen. Each kind
