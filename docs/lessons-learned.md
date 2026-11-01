@@ -569,3 +569,20 @@ the flash on show anyway, so they go on every change.
 redraw from flash is cheap, a download isn't. And a buffer sized to "what
 PSRAM has free" (the rain frames) grows to take whatever another change
 frees, so it needs a way to give it back.
+
+### Sonos events: what the speakers do that the UPnP spec doesn't say
+
+The first SUBSCRIBE from the display failed with
+`ESP_ERR_HTTP_INCOMPLETE_DATA`, though the speaker had said yes: its answer
+has no Content-Length, only `Connection: close`, and `esp_http_client`
+calls that incomplete. The headers (SID, TIMEOUT) are all there is, so
+that error with a status of 200 is a success. Trying it with curl from
+another machine showed two more things: UNSUBSCRIBE is refused (412)
+unless it comes from the address the events go to, and the first NOTIFY
+comes at once, before the SID from the answer has been noted - so the
+handler answers 200 to any SID rather than 412 (which would make the
+speaker drop the new subscription), and only wakes the poll for its own.
+The web server also had 31 of its 32 handlers in use.
+*Lesson:* try a new protocol by hand (curl, nc) against the real device
+first and read the raw answer; and when adding a web handler, count the
+ones already registered against `max_uri_handlers`.

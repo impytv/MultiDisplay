@@ -38,6 +38,7 @@
 #include "music_tiles.h"
 #include "sonos.h"
 #include "sonos_client.h"
+#include "sonos_events.h"
 #include "spotify_client.h"
 #include "waveshare_rgb_lcd_port.h"
 
@@ -66,6 +67,7 @@ static const char *TAG = "sonos_screen";
 #define SO_VOL_STEP   3
 #define SO_PLAYING_MS 3000
 #define SO_IDLE_MS    6000
+#define SO_EVENTS_MS  30000 /* with the group's changes pushed (sonos_events.c) */
 #define SO_RETRY_MS   15000
 #define SO_ROOMS_MS   30000           /* the rooms and groups asked again */
 #define SO_LISTS_MS   (2 * 60 * 1000) /* favourites and recently played, while picking */
@@ -1225,6 +1227,8 @@ void sonos_release(void)
     drop_cover();
     mgrid_release(&s_music);
     mgrid_release(&s_radio);
+    mgrid_sheet_release();
+    sonos_events_stop();
 }
 
 /* The room to show from those found: the one chosen, else the setup
@@ -1386,6 +1390,7 @@ uint32_t sonos_poll(int for_view)
     page = cur_page();
     esp_lv_adapter_unlock();
 
+    sonos_events_keep(&room);
     esp_err_t err = sonos_get_now(&room, &s_now_scratch);
     if (err != ESP_OK) {
         diag_fail(DIAG_SONOS, err);
@@ -1510,6 +1515,9 @@ uint32_t sonos_poll(int for_view)
     }
     if (s_pend.on) {
         return SO_PEND_POLL_MS; /* what was tapped, as soon as it plays */
+    }
+    if (sonos_events_live()) {
+        return SO_EVENTS_MS; /* a change wakes it sooner; the position runs on by itself */
     }
     return s_now_scratch.state == SONOS_PLAYING ? SO_PLAYING_MS : SO_IDLE_MS;
 }

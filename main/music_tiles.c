@@ -235,12 +235,31 @@ static void free_tile(uint16_t *px)
 }
 
 /* A sheet of logos (sonos_logo_find's format), fetched once for all the
- * tiles taken from it in one mgrid_fetch. */
+ * tiles taken from it, and kept till mgrid_sheet_release so the radio page
+ * opens again without fetching it (74 KB over HTTPS). One that failed is
+ * fetched again on the next mgrid_fetch. Only the weather task's. */
 typedef struct {
     http_buf_t buf;
     char url[MT_URL_MAX]; /* "" = none yet; set even if it failed */
     bool ok;
+    int held;             /* bytes counted in wd_psram_held */
 } sheet_t;
+
+static EXT_RAM_BSS_ATTR sheet_t s_sheet;
+
+static void sheet_free(sheet_t *sheet)
+{
+    http_buf_free(&sheet->buf);
+    wd_psram_held(-sheet->held);
+    sheet->held = 0;
+    sheet->url[0] = '\0';
+    sheet->ok = false;
+}
+
+void mgrid_sheet_release(void)
+{
+    sheet_free(&s_sheet);
+}
 
 /* Room for a tile's picture in *px, if it has none. */
 static bool tile_alloc(uint16_t **px)
@@ -264,12 +283,14 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
     if (hash) {
         const size_t n = (size_t)(hash - url);
         if (strncmp(sheet->url, url, n) != 0 || sheet->url[n] != '\0') {
-            http_buf_free(&sheet->buf);
+            sheet_free(sheet);
             sheet->buf = (http_buf_t){ .max = MT_IMAGE_MAX };
             snprintf(sheet->url, sizeof(sheet->url), "%.*s", (int)n, url);
             sheet->ok = http_get_buf(sheet->url, yr_client_user_agent(), MT_TIMEOUT_MS,
                                      strncmp(url, "https://", 8) == 0, &sheet->buf, TAG) == ESP_OK &&
                         sheet->buf.len > 0;
+            sheet->held = (int)sheet->buf.cap;
+            wd_psram_held(sheet->held);
         }
         const uint8_t *pic;
         size_t len;
@@ -294,9 +315,7 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
 
 bool mgrid_fetch(mgrid_t *g, int max)
 {
-    static EXT_RAM_BSS_ATTR sheet_t sheet;
-    sheet.url[0] = '\0';
-    sheet.ok = false;
+    sheet_t *const sheet = &s_sheet;
     for (int i = 0; i < MT_MAX && max > 0; i++) {
         static EXT_RAM_BSS_ATTR char art[MT_URL_MAX];
         uint32_t art_hash = 0;
@@ -319,14 +338,13 @@ bool mgrid_fetch(mgrid_t *g, int max)
             continue;
         }
         max--;
-        const bool ok = fetch_picture(art, &px, &sheet);
+        const bool ok = fetch_picture(art, &px, sheet);
         if (!ok) {
             free_tile(px); /* its name shown instead: no memory held for it */
             px = NULL;
         }
         if (esp_lv_adapter_lock(-1) != ESP_OK) {
             free_tile(px);
-            http_buf_free(&sheet.buf);
             return false;
         }
         if (t->px == NULL) {
@@ -343,7 +361,9 @@ bool mgrid_fetch(mgrid_t *g, int max)
         lv_obj_invalidate(g->canvas);
         esp_lv_adapter_unlock();
     }
-    http_buf_free(&sheet.buf);
+    if (!sheet->ok) {
+        sheet_free(sheet); /* tried again next time */
+    }
     bool more = false;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         for (int i = 0; i < g->count && !more; i++) {

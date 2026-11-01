@@ -64,4 +64,10 @@ const char *wifi_provision_page_head(void);
  * itself. */
 esp_err_t wifi_provision_add_open_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
+/* `method` on `uri` with no password asked, for devices on the network
+ * (the Sonos speakers' NOTIFY). Only the Host is checked; the handler must
+ * check the rest. */
+esp_err_t wifi_provision_add_open_handler(const char *uri, httpd_method_t method,
+                                          esp_err_t (*handler)(httpd_req_t *req));
+
 #endif

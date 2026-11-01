@@ -235,7 +235,8 @@ forecast for the place (about Kp 3 in Tromsø; Oslo needs a strong storm).
 That forecast is Yr's own website API
 (`www.yr.no/api/v0/locations/LAT,LON/auroraforecast`, what yr.no shows), not
 a documented one, so it may change without notice; the chart then just shows
-no aurora. Fetched hourly, as its cache headers allow.
+no aurora. Fetched hourly, as its cache headers allow; after a failed
+fetch, again in 10 minutes.
 
 To add a location, type a place name under **Finn sted** in a location block
 on the setup page: the hits come from Kartverket's place names, and picking
@@ -506,10 +507,10 @@ shifts the moon for parallax at its own location and works out how much of
 the sun's disc it covers while the sun is up (for 12 August 2026 in Oslo,
 83 %, as Skyfield gets).
 
-The holidays are built in, read from [norskkalender.no](https://www.norskkalender.no/)
-by `python3 scripts/build_holidays.py` into `components/holidays_data.h`.
-The site has them up to 2029; after that only Sundays are red until the
-script is run again and the firmware rebuilt.
+The holidays are computed (`components/holidays.c`): five on fixed dates
+and eight from Easter Sunday (Palm Sunday to Whit Monday), so they need no
+updating. When two fall on one day, as 17 May and Whit Monday in 2027,
+both are named.
 
 ### Clock
 
@@ -564,10 +565,14 @@ a date and where it shows:
   with it a birthday shows the age ("Kari fyller 80", otherwise "Kari har
   bursdag") and an anniversary how many years ("Bryllupsdag (25 år)").
   29 February is on the 28th in other years.
-- **Avtale** and **Annet** are on one date, year included; passed ones stay
-  on the page, greyed. Those passed more than 30 days ago are deleted when
-  a new event is added, not on a schedule, so the history stays until
-  there's a new one.
+- **Avtale** and **Annet** are on one date, year included, or repeat from
+  it: **Ukevis** on the same weekday, every 1-52 weeks, or **Månedsvis**
+  on the same day of the month, every 1-12 months (the 29th-31st on the
+  last day of shorter months), chosen under **Hvor ofte** ("Annenhver
+  uke", "Hver 3. måned"). Passed
+  one-date ones stay on the page, greyed. Those passed more than 30 days
+  ago are deleted when a new event is added, not on a schedule, so the
+  history stays until there's a new one; repeated ones are kept.
 - **Vises på**: the calendar screen (among the calendars' events,
   all-day), the month calendar (under the date, before the calendars'
   events, whether or not those are shown) and the clock screen. Each kind
@@ -710,7 +715,9 @@ Sonos doesn't follow), so they need no favourite or radio service in the
 Sonos app. Each has its logo on its tile and as the cover while it plays
 (also in the Sonos app, as the stream's album art), fetched from the update
 site's `bruk/radio/` beside the guide: `tiles.bin`, all of them at tile
-size in one file for one request, and `KEY.jpg` at 240 px for the cover.
+size in one file for one request (kept while the Sonos screen shows, so
+the radio page opens again without fetching it), and `KEY.jpg` at 240 px
+for the cover.
 `scripts/build_radio_logos.py` makes them from each station's myTuner page.
 They aren't built into the firmware: it runs from PSRAM, so its every byte
 costs as much of that. Without the update site, the tiles have the
@@ -732,8 +739,15 @@ from the Sonos app (Sonos's own API leaves them out too), so they aren't
 shown. "Recently played" needs the Spotify screen's login, though not the
 screen itself; playlists are named by asking Spotify, which doesn't name
 its own playlists for apps in development mode ("Spilleliste" then).
-Asked every 3 s while playing (6 s otherwise), at once after a button
-(taps are queued, each for the group it was meant for); the rooms and
+The group on show pushes its changes: the display subscribes to its
+`AVTransport` and `GroupRenderingControl` events (UPnP GENA, renewed every
+5 minutes, moved when the group or an address changes, ended when the
+screen is left), and each NOTIFY to `/sonos/hendelse` makes it ask at once
+what plays, so a change in the Sonos app shows in a moment. It then asks
+only every 30 s besides (the position runs on by itself between); if a
+speaker won't subscribe, every 3 s while playing (6 s otherwise). Also at
+once after a button (taps are queued, each for the group it was meant
+for); the rooms and
 groups every 30 s, and at once after a room joined or left, or when the
 room stops answering. The
 covers are held only while the screen is on show (as the Spotify screen's

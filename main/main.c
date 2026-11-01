@@ -31,6 +31,7 @@
 #include "clockscreen.h"
 #include "spotify.h"
 #include "sonos.h"
+#include "sonos_events.h"
 #include "spotify_client.h"
 #include "chip_temp.h"
 #include "iss.h"
@@ -1247,6 +1248,7 @@ static void yr_weather_task(void *arg)
     wifi_provision_add_post_handler("/nav", nav_go_handler);
     spotify_add_handlers();
     events_add_handlers();
+    sonos_events_add_handler();
     diag_start();
     updater_start(xTaskGetCurrentTaskHandle());
 

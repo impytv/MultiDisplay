@@ -234,4 +234,18 @@ esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len);
 /* Give back the replies' buffer, on another screen. */
 void sonos_client_release(void);
 
+/* ---- Events (UPnP GENA), on the display (the weather task) ---- */
+
+#define SONOS_SID_MAX 64
+
+/* Ask the speaker at `ip` to send `service`'s ("AVTransport",
+ * "GroupRenderingControl") changes to `callback` ("http://.../path") for
+ * `*timeout_s` seconds; with sid set, renew that subscription instead. On
+ * ESP_OK the subscription's id in sid and the time granted in *timeout_s. */
+esp_err_t sonos_subscribe(const char *ip, const char *service, const char *callback, char *sid, size_t sid_len,
+                          int *timeout_s);
+
+/* End subscription sid. */
+esp_err_t sonos_unsubscribe(const char *ip, const char *service, const char *sid);
+
 #endif

@@ -3,7 +3,7 @@
  * left, a column per weekday (Monday first). Each day shows its date, the
  * month's short name on the first of a month (and the first day shown),
  * and a holiday's name. Sundays and holidays have their date in red
- * (components/holidays.c, from norskkalender.no); today is outlined, and
+ * (components/holidays.c, computed from Easter); today is outlined, and
  * days already past are faded. Months alternate in shade. If ticked on
  * the setup page, the moon's phases are drawn beside the date, and other
  * events in the sky (components/astro.c: equinoxes, solstices, supermoons,
@@ -126,6 +126,11 @@ static const char *const SHORTER[][2] = {
     { "Skj\xC3\xA6rtorsdag", "Skj\xC3\xA6r-torsdag" },
     { "Palmes\xC3\xB8ndag", "Palme-s\xC3\xB8ndag" },
     { "Kvadrantidene", "Kvadrant-idene" },
+    /* Two on one day (holidays.c). */
+    { "Grunnlovsdag / Kristi Himmelfartsdag", "Grunnlovs-dag, Kristi himmelfart" },
+    { "Grunnlovsdag / 1. pinsedag", "Grunnlovs-dag, 1. pinsedag" },
+    { "Grunnlovsdag / 2. pinsedag", "Grunnlovs-dag, 2. pinsedag" },
+    { "Offentlig h\xC3\xB8ytidsdag / Kristi Himmelfartsdag", "Offentlig h\xC3\xB8ytidsdag, Kristi himmelfart" },
 };
 
 static const char *shown_name(const char *name)

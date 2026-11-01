@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -540,4 +541,112 @@ esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len)
 void sonos_client_release(void)
 {
     http_buf_free(&s_resp);
+}
+
+/* --------------------------------------------------------------------------
+ * Events
+ * ------------------------------------------------------------------------ */
+
+typedef struct {
+    char sid[SONOS_SID_MAX];
+    int timeout_s;
+} gena_reply_t;
+
+static esp_err_t on_gena(esp_http_client_event_t *evt)
+{
+    gena_reply_t *r = evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER) {
+        if (strcasecmp(evt->header_key, "SID") == 0) {
+            snprintf(r->sid, sizeof(r->sid), "%s", evt->header_value);
+        } else if (strcasecmp(evt->header_key, "TIMEOUT") == 0 &&
+                   strncasecmp(evt->header_value, "Second-", 7) == 0) {
+            r->timeout_s = atoi(evt->header_value + 7);
+        }
+    }
+    return ESP_OK;
+}
+
+static const char *event_path(const char *service)
+{
+    return strcmp(service, "AVTransport") == 0             ? "/MediaRenderer/AVTransport/Event"
+         : strcmp(service, "GroupRenderingControl") == 0   ? "/MediaRenderer/GroupRenderingControl/Event"
+         : strcmp(service, "RenderingControl") == 0        ? "/MediaRenderer/RenderingControl/Event"
+                                                           : NULL;
+}
+
+/* SUBSCRIBE (renewing if sid is set) or UNSUBSCRIBE: the HTTP status, or
+ * -1 if there was no answer. */
+static int gena(esp_http_client_method_t method, const char *ip, const char *service, const char *callback,
+                const char *sid, int timeout_s, gena_reply_t *reply)
+{
+    const char *path = event_path(service);
+    if (path == NULL) {
+        return -1;
+    }
+    char url[96], header[160];
+    snprintf(url, sizeof(url), "http://%s:1400%s", ip, path);
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = method,
+        .event_handler = on_gena,
+        .user_data = reply,
+        .timeout_ms = SO_TIMEOUT_MS,
+    };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (c == NULL) {
+        return -1;
+    }
+    if (sid != NULL && sid[0]) {
+        esp_http_client_set_header(c, "SID", sid);
+    } else if (callback != NULL) {
+        snprintf(header, sizeof(header), "<%s>", callback);
+        esp_http_client_set_header(c, "CALLBACK", header);
+        esp_http_client_set_header(c, "NT", "upnp:event");
+    }
+    if (method == HTTP_METHOD_SUBSCRIBE) {
+        snprintf(header, sizeof(header), "Second-%d", timeout_s);
+        esp_http_client_set_header(c, "TIMEOUT", header);
+    }
+    /* The answer has no body and no Content-Length, only "Connection:
+     * close", which the client calls incomplete: the headers are what
+     * count. */
+    const esp_err_t err = esp_http_client_perform(c);
+    const bool answered = err == ESP_OK || err == ESP_ERR_HTTP_INCOMPLETE_DATA;
+    const int status = answered ? esp_http_client_get_status_code(c) : -1;
+    esp_http_client_cleanup(c);
+    if (!answered) {
+        ESP_LOGW(TAG, "%s %s at %s: %s", method == HTTP_METHOD_SUBSCRIBE ? "Subscribe" : "Unsubscribe", service,
+                 ip, esp_err_to_name(err));
+    }
+    return status;
+}
+
+esp_err_t sonos_subscribe(const char *ip, const char *service, const char *callback, char *sid, size_t sid_len,
+                          int *timeout_s)
+{
+    gena_reply_t r = { .timeout_s = 0 };
+    const bool renew = sid[0] != '\0';
+    const int status = gena(HTTP_METHOD_SUBSCRIBE, ip, service, callback, sid, *timeout_s, &r);
+    if (status != 200) {
+        if (status > 0) {
+            ESP_LOGW(TAG, "%s %s at %s: HTTP %d", renew ? "Renewing" : "Subscribing to", service, ip, status);
+        }
+        return status == 412 ? ESP_ERR_NOT_FOUND : ESP_FAIL; /* 412: the speaker no longer has it */
+    }
+    if (!renew) {
+        if (r.sid[0] == '\0') {
+            return ESP_FAIL;
+        }
+        snprintf(sid, sid_len, "%s", r.sid);
+    }
+    if (r.timeout_s > 0) {
+        *timeout_s = r.timeout_s;
+    }
+    return ESP_OK;
+}
+
+esp_err_t sonos_unsubscribe(const char *ip, const char *service, const char *sid)
+{
+    gena_reply_t r = { .timeout_s = 0 };
+    return gena(HTTP_METHOD_UNSUBSCRIBE, ip, service, NULL, sid, 0, &r) == 200 ? ESP_OK : ESP_FAIL;
 }

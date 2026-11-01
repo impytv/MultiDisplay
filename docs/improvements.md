@@ -340,9 +340,10 @@ with all seven screen types on all five locations and one full rotation
   adopted, and let the save wake save without polling. *Done: the switch's
   own wake is cleared once it is adopted, and the wait saves the view
   without ending.*
-- [ ] **50. A failed aurora fetch waits an hour.** One transient failure at
+- [x] **50. A failed aurora fetch waits an hour.** One transient failure at
   start-up leaves the weather screens without aurora marking for an hour.
-  Retry a failure after 10 minutes; keep the hour for successes.
+  Retry a failure after 10 minutes; keep the hour for successes. *Done in
+  1.32.0 (`AURORA_FAIL_RETRY_MS`).*
 - [ ] **51. A satellite fetch that breaks off loses the image shown.** Rows
   are decoded straight into the views, so a reply cut short leaves them part
   old, part new and the screen goes back to "Henter...". Keeping the old
@@ -604,12 +605,16 @@ cJSON-based ones.
   20 screens: rain at full resolution, PSRAM lowest 614 KB, no restart.
   `/status` now also gives PSRAM's largest free block, and the rain
   client's log gave every image as "0 bytes" (logged after freeing it).*
-- [ ] **75. The month calendar's holidays end with 2029.** They are built in
+- [x] **75. The month calendar's holidays end with 2029.** They are built in
   from norskkalender.no (`scripts/build_holidays.py`), which publishes them
   up to 2029; from 2030 only Sundays are red. Run the script again when the
   site has later years (it reads on until a year has none) and rebuild. The
   setup page says which year they go to. Computing them (Easter and the
-  days that follow it) would remove the limit.
+  days that follow it) would remove the limit. *Done in 1.32.0: computed
+  (`components/holidays.c`, Easter by Meeus's algorithm), checked against
+  the table for 2026-2029 before it and `scripts/build_holidays.py` were
+  removed. They agreed but for 17 May 2027, which the site called only
+  "2. pinsedag"; two on one day are now both named.*
 - [ ] **76. The month calendar's astronomy ends with 2035.** The phases,
   seasons, meteor showers and eclipses are built in for 2026-2035 by
   `scripts/build_astro.py` (Skyfield and DE440s). Run it again with later
@@ -747,10 +752,13 @@ work.
   ListAlarms`).
 - [ ] **96. "Grupper alle"** on the Sonos screen: every room into the group
   playing in one tap.
-- [ ] **97. Events instead of polling.** Sonos speakers push changes to a
+- [x] **97. Events instead of polling.** Sonos speakers push changes to a
   subscriber (UPnP GENA): instant updates and less traffic than asking
   every 3 s, but subscriptions must be renewed and made again when an
-  address changes.
+  address changes. *Done in 1.32.0 (`main/sonos_events.c`): the group's
+  AVTransport and GroupRenderingControl, a NOTIFY waking the poll, which
+  then runs every 30 s besides; polling as before if subscribing fails.
+  The NOTIFY bodies aren't parsed - what plays is asked for as before.*
 - [ ] **98. "Spiller nå" on the other screens.** A thin bar with the title
   playing, a tap opens the player; optional, as it costs drawing on every
   screen.
@@ -774,10 +782,12 @@ work.
   took 256 KB, and 384 KB for a moment, and failed with ~310 KB free. A
   cover that failed is asked for again after 30 s rather than never for
   that track (Sonos and Spotify).
-- [ ] **101. The radio logos kept between visits.** The radio page fetches
+- [x] **101. The radio logos kept between visits.** The radio page fetches
   `tiles.bin` (74 KB, HTTPS) each time it opens, so the logos take a
   moment; it could be kept (as JPEGs, not pixels) while the Sonos screen
-  shows, at that much PSRAM.
+  shows, at that much PSRAM. *Done in 1.32.0: kept by `music_tiles.c`
+  till the screen is left (`mgrid_sheet_release`); one that failed is
+  fetched again next time.*
 - [x] **103. Volume set by a tap on the bar.** Today a tap anywhere left of
   the bar's middle lowers the volume a step (3 % on Sonos, 10 % on
   Spotify), so 12 % to 40 % on Sonos is ten taps. A tap on the bar should
@@ -884,3 +894,10 @@ too heavy for the chip.
   musikk" the fourth didn't fit and wasn't shown. *Done in 1.31.1: the
   padding shrinks (18 to 14 px) and then the longest names are cut to the
   same width with ".." (`chip_layout`), not below 60 px.*
+- [x] **119. Repeated appointments.** Appointments and other events were
+  on one date only. *Done in 1.32.0: weekly (the same weekday, every 1-52
+  weeks) or monthly (the same day, every 1-12 months; the 29th-31st on the
+  last day of shorter months) from their date, never pruned. Two new
+  fields in `own_event_t` (`repeat`, `every`), so the NVS key went from
+  `v1` to `v2`; `v1` is read as once and erased on the next save. In the
+  backup as `"repeat"` and `"every"` (left out for 1).*

@@ -44,6 +44,9 @@ static const char *TAG = "weather";
 #define ALERT_REFRESH_INTERVAL_MS (10 * 60 * 1000)
 /* Yr's aurora forecast follows NOAA's Kp forecast, a few times a day. */
 #define AURORA_REFRESH_INTERVAL_MS (60 * 60 * 1000)
+/* A failed one sooner, so one failure at start-up doesn't leave the
+ * charts unmarked for an hour. */
+#define AURORA_FAIL_RETRY_MS (10 * 60 * 1000)
 /* Take every Nth nowcast step (5 min apart) into the merged series: every
  * 2nd = 10-minute resolution for the near term, still 6x finer than hourly
  * without over-compressing the rest of the chart. */
@@ -215,6 +218,7 @@ static EXT_RAM_BSS_ATTR http_cache_t s_aurora_http[APP_CONFIG_MAX_LOCATIONS];
 static bool s_aurora_valid[APP_CONFIG_MAX_LOCATIONS];
 static bool s_aurora_tried[APP_CONFIG_MAX_LOCATIONS]; /* s_aurora_tk is the last try, even a failed one */
 static TickType_t s_aurora_tk[APP_CONFIG_MAX_LOCATIONS];
+static bool s_aurora_failed[APP_CONFIG_MAX_LOCATIONS]; /* the last try failed: AURORA_FAIL_RETRY_MS */
 #define AURORA_LABELS 3
 static lv_obj_t *s_aurora_label[AURORA_LABELS];
 
@@ -2111,7 +2115,9 @@ static void refresh_aurora(bool overview, int sel, int for_view)
         }
         int i = (sel + k) % g_cfg->location_count;
         if (s_aurora_cache[i] == NULL ||
-            (s_aurora_tried[i] && (now_tk - s_aurora_tk[i]) < pdMS_TO_TICKS(AURORA_REFRESH_INTERVAL_MS))) {
+            (s_aurora_tried[i] &&
+             (now_tk - s_aurora_tk[i]) <
+                 pdMS_TO_TICKS(s_aurora_failed[i] ? AURORA_FAIL_RETRY_MS : AURORA_REFRESH_INTERVAL_MS))) {
             continue;
         }
         wd_weather_beat();
@@ -2127,6 +2133,7 @@ static void refresh_aurora(bool overview, int sel, int for_view)
         } else {
             diag_fail(DIAG_AURORA, err);
         }
+        s_aurora_failed[i] = false;
         if (err == HTTP_NOT_MODIFIED) {
             s_aurora_tk[i] = now_tk;
         } else if (err == ESP_OK && esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -2141,8 +2148,10 @@ static void refresh_aurora(bool overview, int sel, int for_view)
             ESP_LOGI(TAG, "Aurora[%d] %s: %d hours, %d worth looking up", i, g_cfg->locations[i].name,
                      s_aurora_scratch->count, good);
         } else {
-            /* Yr's website API may change: try again in an hour. */
+            /* Again in 10 minutes (Yr's website API may change, so not
+             * sooner). */
             s_aurora_tk[i] = now_tk;
+            s_aurora_failed[i] = true;
             ESP_LOGW(TAG, "Aurora[%d] %s failed; keeping previous", i, g_cfg->locations[i].name);
         }
         if (!overview && i == sel && s_wx_shown_at[sel].valid && lock_for_view(for_view)) {

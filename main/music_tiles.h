@@ -78,6 +78,8 @@ bool mgrid_fetch(mgrid_t *g, int max);
 
 /* Weather task: the covers' memory given back. */
 void mgrid_release(mgrid_t *g);
+/* Give back the sheet of logos mgrid_fetch keeps (when the screen is left). */
+void mgrid_sheet_release(void);
 
 /* A tile's picture (or its label) kept for a while after the grid has
  * gone: the player's "Starter ..." while what was tapped starts. */

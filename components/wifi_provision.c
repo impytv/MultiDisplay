@@ -30,7 +30,6 @@
 #include "form_util.h"
 #include "astro.h"
 #include "chip_temp.h"
-#include "holidays.h"
 #include "sonos_client.h"
 #include "spotify_client.h"
 #include "web_auth.h"
@@ -518,8 +517,7 @@ static char *build_page(const app_config_t *cfg)
                   "Vis m&aring;nedskalenderen</label><label><input type=checkbox name=monrot value=1%s>"
                   "i automatisk bytte</label></div>"
                   "<small>Fem uker fra og med denne uken, med ukenummer, som en egen skjerm etter "
-                  "kalenderen. S&oslash;ndager og helligdager har r&oslash;d dato. Helligdagene er "
-                  "lagt inn til og med %d.</small>"
+                  "kalenderen. S&oslash;ndager og helligdager har r&oslash;d dato.</small>"
                   "<div class=chk><label><input type=checkbox name=monmoon value=1%s>M&aring;nefaser</label>"
                   "<label><input type=checkbox name=monastro value=1%s>Andre hendelser p&aring; himmelen"
                   "</label></div>"
@@ -532,7 +530,7 @@ static char *build_page(const app_config_t *cfg)
                   "</label></div>"
                   "<small>Avtalene fra kalenderne under <i>Kalender</i>, i kalenderens farge, under "
                   "datoen. Hentes hvert kvarter, og n&aring;r du blar til andre uker.</small></details>",
-                  cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "", holidays_last_year(),
+                  cfg->mon_show ? " checked" : "", cfg->mon_rotate ? " checked" : "",
                   cfg->mon_moon ? " checked" : "", cfg->mon_astro ? " checked" : "", astro_last_year(),
                   cfg->mon_cal ? " checked" : "");
     p = build_clock(p, end, cfg);
@@ -1919,7 +1917,7 @@ static void start_web_server(void)
     /* The stack stays in internal RAM (the default task_caps): the update
      * and restore handlers call the OTA functions, which memory-map flash
      * and assert on a PSRAM stack (see main.c, yr_weather). */
-    config.max_uri_handlers = 32;
+    config.max_uri_handlers = 40;
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -2019,6 +2017,16 @@ esp_err_t wifi_provision_add_open_get_handler(const char *uri, esp_err_t (*handl
         s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_open, .user_ctx = handler });
     httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
     return err;
+}
+
+esp_err_t wifi_provision_add_open_handler(const char *uri, httpd_method_t method,
+                                          esp_err_t (*handler)(httpd_req_t *req))
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return httpd_register_uri_handler(
+        s_httpd, &(httpd_uri_t){ .uri = uri, .method = method, .handler = h_added_open, .user_ctx = handler });
 }
 
 esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))

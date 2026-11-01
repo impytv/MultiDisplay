@@ -39,6 +39,8 @@ static volatile uint32_t s_gen = 1;
 
 static const char *const MONTH[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli",
                                      "august", "september", "oktober", "november", "desember" };
+static const char *const WDAY[] = { "s&oslash;ndag", "mandag", "tirsdag", "onsdag", "torsdag", "fredag",
+                                    "l&oslash;rdag" };
 
 void events_init(void)
 {
@@ -116,6 +118,18 @@ static char *where_text(char *p, char *end, uint8_t show)
     return p;
 }
 
+/* "Hver uke", "Annenhver uke", "Hver 3. uke" (unit "uke" or "m&aring;ned"). */
+static void every_text(int n, const char *unit, char *dst, size_t len)
+{
+    if (n <= 1) {
+        snprintf(dst, len, "Hver %s", unit);
+    } else if (n == 2) {
+        snprintf(dst, len, "Annenhver %s", unit);
+    } else {
+        snprintf(dst, len, "Hver %d. %s", n, unit);
+    }
+}
+
 /* What the form shows: an event being added or changed (idx), and why the
  * last try was refused. */
 typedef struct {
@@ -156,7 +170,23 @@ static char *build_form(char *p, char *end, const form_t *f)
     if (f->e.year != 0) {
         p = buf_append(p, end, "%d", f->e.year);
     }
-    p = buf_append(p, end, "\"></div></div><small id=yh></small><label>Vises p&aring;</label><div class=chk>");
+    p = buf_append(p, end, "\"></div></div><div id=rw class=row><div><label for=rep>Gjentas</label>"
+                           "<select name=rep id=rep>");
+    static const char *const REPEAT[OWN_REPEATS] = { "Nei", "Ukevis", "M&aring;nedsvis" };
+    for (int r = 0; r < OWN_REPEATS; r++) {
+        p = buf_append(p, end, "<option value=%d%s>%s</option>", r, f->e.repeat == r ? " selected" : "", REPEAT[r]);
+    }
+    /* How often: rebuilt by FORM_SCRIPT when the unit changes. */
+    const bool months = f->e.repeat == OWN_MONTHLY;
+    p = buf_append(p, end, "</select></div><div id=ew><label for=every>Hvor ofte</label><select name=every id=every>");
+    for (int n = 1; n <= (months ? OWN_EVERY_MONTHS : OWN_EVERY_WEEKS); n++) {
+        char how[32];
+        every_text(n, months ? "m&aring;ned" : "uke", how, sizeof(how));
+        p = buf_append(p, end, "<option value=%d%s>%s</option>", n,
+                       (f->e.every == n || (f->e.every == 0 && n == 1)) ? " selected" : "", how);
+    }
+    p = buf_append(p, end, "</select></div></div>");
+    p = buf_append(p, end, "<small id=yh></small><label>Vises p&aring;</label><div class=chk>");
     static const char *const NAME[] = { "Kalender", "M&aring;nedskalender", "Klokken" };
     static const char *const KEY[] = { "cal", "mon", "clk" };
     for (int b = 0; b < 3; b++) {
@@ -185,13 +215,29 @@ static char *build_item(char *p, char *end, int i, int64_t next, int64_t today)
     p = buf_append(p, end, "<div class=\"ev%s\"><span class=dot style=\"background:#%06lx\"></span><div class=evt><b>",
                    next == 0 ? " past" : "", (unsigned long)own_kind_colour(e->kind));
     p = esc(p, end, title);
-    p = buf_append(p, end, "</b><small>%s &middot; %d. %s", own_kind_name(e->kind), e->day, MONTH[e->month - 1]);
-    if (e->kind == OWN_BIRTHDAY && e->year != 0) {
-        p = buf_append(p, end, " (f&oslash;dt %d)", e->year);
-    } else if (e->kind == OWN_ANNIVERSARY && e->year != 0) {
-        p = buf_append(p, end, " (fra %d)", e->year);
-    } else if (e->year != 0) {
-        p = buf_append(p, end, " %d", e->year);
+    p = buf_append(p, end, "</b><small>%s &middot; ", own_kind_name(e->kind));
+    if (e->repeat == OWN_WEEKLY) {
+        struct tm t = { .tm_year = e->year - 1900, .tm_mon = e->month - 1, .tm_mday = e->day, .tm_hour = 12,
+                        .tm_isdst = -1 };
+        mktime(&t);
+        char how[48];
+        every_text(e->every, WDAY[t.tm_wday], how, sizeof(how));
+        how[0] = (char)(how[0] - 'A' + 'a'); /* "hver", "annenhver" */
+        p = buf_append(p, end, "%s fra %d. %s %d", how, e->day, MONTH[e->month - 1], e->year);
+    } else if (e->repeat == OWN_MONTHLY) {
+        char how[48];
+        every_text(e->every, "m&aring;ned", how, sizeof(how));
+        how[0] = (char)(how[0] - 'A' + 'a');
+        p = buf_append(p, end, "%s den %d. fra %s %d", how, e->day, MONTH[e->month - 1], e->year);
+    } else {
+        p = buf_append(p, end, "%d. %s", e->day, MONTH[e->month - 1]);
+        if (e->kind == OWN_BIRTHDAY && e->year != 0) {
+            p = buf_append(p, end, " (f&oslash;dt %d)", e->year);
+        } else if (e->kind == OWN_ANNIVERSARY && e->year != 0) {
+            p = buf_append(p, end, " (fra %d)", e->year);
+        } else if (e->year != 0) {
+            p = buf_append(p, end, " %d", e->year);
+        }
     }
     if (next == 0) {
         p = buf_append(p, end, " &middot; passert");
@@ -241,11 +287,19 @@ static const char FORM_SCRIPT[] =
     "y=document.getElementById('yl'),v=document.getElementById('year'),h=document.getElementById('yh');"
     "var T=[['Hvem har bursdag?','F\xC3\xB8""dsels\xC3\xA5r','valgfritt','Med f\xC3\xB8""dsels\xC3\xA5ret st\xC3\xA5r alderen p\xC3\xA5 skjermen: "
     "\xC2\xABKari fyller 80\xC2\xBB. Vises hvert \xC3\xA5r.'],['Hva er merkedagen?','Fra \xC3\xA5r','valgfritt','Med \xC3\xA5ret st\xC3\xA5r det hvor "
-    "mange \xC3\xA5r det er: \xC2\xAB""Bryllupsdag (25 \xC3\xA5r)\xC2\xBB. Vises hvert \xC3\xA5r.'],['Hva skjer?','\xC3\x85r','','Vises bare denne "
-    "datoen.'],['Hva skjer?','\xC3\x85r','','Vises bare denne datoen.']];"
-    "function u(){var a=T[k.value];t.textContent=a[0];y.textContent=a[1];v.placeholder=a[2];"
-    "v.required=k.value>1;h.textContent=a[3];if(k.value>1&&!v.value)v.value=new Date().getFullYear();}"
-    "k.onchange=u;u();})();</script>";
+    "mange \xC3\xA5r det er: \xC2\xAB""Bryllupsdag (25 \xC3\xA5r)\xC2\xBB. Vises hvert \xC3\xA5r.'],['Hva skjer?','\xC3\x85r','',''],"
+    "['Hva skjer?','\xC3\x85r','','']];"
+    "var r=document.getElementById('rep'),w=document.getElementById('rw'),e=document.getElementById('every'),"
+    "ew=document.getElementById('ew'),R=['Vises bare denne datoen.','P\xC3\xA5 samme ukedag, fra denne datoen.',"
+    "'P\xC3\xA5 samme dato, fra denne datoen. Den 29., 30. og 31. kommer p\xC3\xA5 siste dag i kortere m\xC3\xA5neder.'],"
+    "U=['','uke','m\xC3\xA5ned'],M=[0,52,12],ru=r.value;"
+    "function f(){var s=+e.value||1,x=U[r.value],m=M[r.value];e.innerHTML='';for(var i=1;i<=m;i++){var o=document."
+    "createElement('option');o.value=i;o.textContent=i<2?'Hver '+x:i<3?'Annenhver '+x:'Hver '+i+'. '+x;"
+    "if(i==Math.min(s,m))o.selected=true;e.appendChild(o);}}"
+    "function u(){var a=T[k.value],o=k.value>1;t.textContent=a[0];y.textContent=a[1];v.placeholder=a[2];"
+    "v.required=o;w.hidden=!o;ew.hidden=r.value==0;if(r.value!=0&&r.value!=ru){f();ru=r.value;}"
+    "h.textContent=o?R[r.value]:a[3];if(o&&!v.value)v.value=new Date().getFullYear();}"
+    "k.onchange=u;r.onchange=u;u();})();</script>";
 
 static const char PAGE_STYLE[] =
     "<style>.ev{display:flex;gap:.6rem;align-items:flex-start;padding:.6rem 0;border-bottom:1px solid var(--line)}"
@@ -254,7 +308,7 @@ static const char PAGE_STYLE[] =
     ".evb{display:flex;flex-direction:column;align-items:flex-end;gap:.3rem}.evb form{margin:0}"
     ".evb button{margin:0;padding:0;width:auto;background:none;color:var(--err);font-size:.9rem}"
     ".evb a{font-size:.9rem}.ev.past{opacity:.6}p.err{color:var(--err);margin:.4rem 0}"
-    "p.ok{color:var(--acc);font-weight:600}</style>";
+    "p.ok{color:var(--acc);font-weight:600}[hidden]{display:none!important}</style>";
 
 static esp_err_t send_page(httpd_req_t *req, const form_t *f, const char *ok)
 {
@@ -282,8 +336,8 @@ static esp_err_t send_page(httpd_req_t *req, const form_t *f, const char *ok)
     }
     qsort(order, (size_t)s_n, sizeof(order[0]), cmp_item);
     p = buf_append(p, end, "<h2>Lagt inn</h2><small>%d av %d. Bursdager og merkedager vises hvert &aring;r, "
-                           "avtaler og annet bare den ene datoen. N&aring;r du legger til en ny, "
-                           "slettes avtaler og annet som var for mer enn %d dager siden.</small>", s_n, OWN_MAX, PRUNE_DAYS);
+                           "avtaler og annet den ene datoen, eller hver uke eller m&aring;ned. N&aring;r du legger til en ny, "
+                           "slettes avtaler og annet som var for mer enn %d dager siden og ikke gjentas.</small>", s_n, OWN_MAX, PRUNE_DAYS);
     if (s_n == 0) {
         p = buf_append(p, end, "<p><small>Ingen hendelser enn&aring;.</small></p>");
     }
@@ -420,6 +474,8 @@ static esp_err_t h_save(httpd_req_t *req)
         year_ok = *e == '\0' && y >= 1900 && y <= 2200;
         f.e.year = year_ok ? (uint16_t)y : 0;
     }
+    f.e.repeat = (uint8_t)(form_field(body, "rep", v, sizeof(v)) ? atoi(v) : 0);
+    const int every = form_field(body, "every", v, sizeof(v)) ? atoi(v) : 1;
     f.e.show = (form_field(body, "cal", v, sizeof(v)) ? OWN_ON_CALENDAR : 0) |
                (form_field(body, "mon", v, sizeof(v)) ? OWN_ON_MONTH : 0) |
                (form_field(body, "clk", v, sizeof(v)) ? OWN_ON_CLOCK : 0);
@@ -427,6 +483,15 @@ static esp_err_t h_save(httpd_req_t *req)
     const bool every_year = f.e.kind == OWN_BIRTHDAY || f.e.kind == OWN_ANNIVERSARY;
     if (f.e.kind >= OWN_KINDS) {
         f.e.kind = OWN_OTHER;
+    }
+    if (every_year || f.e.repeat >= OWN_REPEATS) {
+        f.e.repeat = OWN_ONCE; /* the field is hidden for these */
+    }
+    if (f.e.repeat == OWN_ONCE) {
+        f.e.every = 0;
+    } else {
+        const int most = f.e.repeat == OWN_WEEKLY ? OWN_EVERY_WEEKS : OWN_EVERY_MONTHS;
+        f.e.every = (uint8_t)(every < 1 ? 1 : every > most ? most : every);
     }
     if (f.e.text[0] == '\0') {
         f.err = "Skriv hva det er.";

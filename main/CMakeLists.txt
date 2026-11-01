@@ -19,6 +19,7 @@ idf_component_register(
         "clockscreen.c"
         "spotify.c"
         "sonos.c"
+        "sonos_events.c"
         "music_tiles.c"
         "satellite.c"
         "iss.c"
