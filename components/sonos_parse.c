@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "sonos_client.h"
 
 /* --------------------------------------------------------------------------
@@ -330,6 +331,7 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     memset(out, 0, sizeof(*out));
     out->volume = volume;
     out->position_s = out->duration_s = -1;
+    out->behind_s = -1;
     out->radio = -1;
     if (!sonos_parse_state(transport, &out->state)) {
         return false;
@@ -359,7 +361,8 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     } else if (starts(uri, "x-rincon-stream:")) {
         snprintf(out->source, sizeof(out->source), "Linje inn");
     } else if (starts(uri, "x-sonosapi-stream:") || starts(uri, "x-sonosapi-hls:") ||
-               starts(uri, "x-rincon-mp3radio:") || starts(uri, "aac:") || starts(uri, "hls-radio:")) {
+               starts(uri, "x-rincon-mp3radio:") || starts(uri, "aac:") || starts(uri, "hls-radio:") ||
+               out->radio >= 0) {
         out->stream = true;
         snprintf(out->source, sizeof(out->source), "Radio");
     } else if (starts(track_uri, "x-sonos-spotify:")) {
@@ -443,6 +446,7 @@ bool sonos_parse_now(const char *transport, const char *position, const char *me
     out->can_seek = out->duration_s > 0 && (out->can_seek || out->queue);
     if (out->stream) {
         out->can_next = out->can_previous = out->can_seek = out->queue = false;
+        out->duration_s = -1; /* a radio through the update site says some 17 hours, or 69 */
     }
     return true;
 }
@@ -652,20 +656,27 @@ static const sonos_radio_t RADIOS[] = {
     { "juleradioen", "P24-7 Juleradioen", "Jule-radioen", BAUER "station17_no_mp3", false }, /* Christmas music */
 };
 
-/* Which of RADIOS `uri` (x-rincon-mp3radio:) plays, -1 if none: it is
- * named and shown with its logo even if started without the metadata
- * naming it (by another app, say). */
+/* Which of RADIOS `uri` plays, -1 if none: it is named and shown with its
+ * logo even if started without the metadata naming it (by another app,
+ * say). Its own stream (x-rincon-mp3radio:) or the update site's that can
+ * pause (http://<site>/radio/<key>.mp3, server/radio/). */
 static int radio_find(const char *uri)
 {
-    if (!starts(uri, "x-rincon-mp3radio://")) {
+    const char *key = NULL;
+    if (starts(uri, "x-rincon-mp3radio://")) {
+        uri += strlen("x-rincon-mp3radio://");
+        if (starts(uri, "http://")) {
+            uri += 7;
+        }
+    } else if (starts(uri, "http://") && (key = strstr(uri, "/radio/")) != NULL) {
+        key += strlen("/radio/");
+    } else {
         return -1;
     }
-    uri += strlen("x-rincon-mp3radio://");
-    if (starts(uri, "http://")) {
-        uri += 7;
-    }
     for (size_t i = 0; i < sizeof(RADIOS) / sizeof(RADIOS[0]); i++) {
-        if (strcmp(uri, RADIOS[i].url + 7) == 0) {
+        const size_t n = strlen(RADIOS[i].key);
+        if (key ? strncmp(key, RADIOS[i].key, n) == 0 && strcmp(key + n, ".mp3") == 0
+                : strcmp(uri, RADIOS[i].url + 7) == 0) {
             return (int)i;
         }
     }
@@ -678,10 +689,10 @@ const sonos_radio_t *sonos_radios(int *count)
     return RADIOS;
 }
 
-bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, size_t uri_len, char *meta,
-                       size_t meta_len)
+bool sonos_radio_share(const sonos_radio_t *radio, const char *art, const char *pausable, char *uri, size_t uri_len,
+                       char *meta, size_t meta_len)
 {
-    if (strncmp(radio->url, "http://", 7) != 0) {
+    if (strncmp(radio->url, "http://", 7) != 0 || (pausable[0] && strncmp(pausable, "http://", 7) != 0)) {
         return false;
     }
     char title[64], art_esc[SONOS_URL_MAX + 32], art_xml[sizeof(art_esc) + 40] = "";
@@ -693,6 +704,18 @@ bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, s
             return false;
         }
         snprintf(art_xml, sizeof(art_xml), "<upnp:albumArtURI>%s</upnp:albumArtURI>", art_esc);
+    }
+    /* Through the update site: a plain file to Sonos, which can pause it. */
+    if (pausable[0]) {
+        const int u = snprintf(uri, uri_len, "%s", pausable);
+        const int m = snprintf(meta, meta_len,
+                               "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" "
+                               "xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" "
+                               "xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">"
+                               "<item id=\"-1\" parentID=\"-1\" restricted=\"true\"><dc:title>%s</dc:title>%s"
+                               "<upnp:class>object.item.audioItem.musicTrack</upnp:class></item></DIDL-Lite>",
+                               title, art_xml);
+        return u > 0 && (size_t)u < uri_len && m > 0 && (size_t)m < meta_len;
     }
     /* As SoCo starts a stream: a broadcast item of TuneIn's kind. */
     const int u = snprintf(uri, uri_len, "x-rincon-mp3radio://%s", radio->url + 7);
@@ -707,6 +730,64 @@ bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, s
                            "SA_RINCON65031_</desc></item></DIDL-Lite>",
                            title, art_xml);
     return u > 0 && (size_t)u < uri_len && m > 0 && (size_t)m < meta_len;
+}
+
+bool sonos_radio_pausable(const char *uri)
+{
+    return starts(uri, "http://") && radio_find(uri) >= 0;
+}
+
+bool sonos_radio_status_url(const char *uri, const char *ip, int skip, char *out, size_t out_len)
+{
+    const size_t n = strlen(uri);
+    if (!sonos_radio_pausable(uri) || n < 4) {
+        return false;
+    }
+    char how[24] = "";
+    if (skip == SONOS_SKIP_LIVE) {
+        snprintf(how, sizeof(how), "&skip=live");
+    } else if (skip > 0) {
+        snprintf(how, sizeof(how), "&skip=%d", skip);
+    }
+    const int u = snprintf(out, out_len, "%.*s.json?speaker=%s%s", (int)(n - 4), uri, ip, how);
+    return u > 0 && (size_t)u < out_len;
+}
+
+/* String `key` of `obj` into out, "" if it isn't one. */
+static void json_text(const cJSON *obj, const char *key, char *out, size_t out_len)
+{
+    const cJSON *s = cJSON_GetObjectItemCaseSensitive(obj, key);
+    const char *v = cJSON_IsString(s) ? s->valuestring : "";
+    copy_n(out, out_len, v, strlen(v));
+}
+
+bool sonos_parse_radio_status(const char *json, const char *uri, sonos_radio_status_t *out)
+{
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *behind = cJSON_GetObjectItemCaseSensitive(root, "behind");
+    const bool ok = cJSON_IsNumber(behind) && behind->valuedouble >= 0;
+    if (ok) {
+        out->behind_s = behind->valuedouble > 86400 ? 86400 : (int)behind->valuedouble;
+        json_text(root, "title", out->title, sizeof(out->title));
+        json_text(root, "artist", out->artist, sizeof(out->artist));
+        /* "art/<16 hex>.jpg", beside the stream. */
+        char image[32];
+        json_text(root, "image", image, sizeof(image));
+        out->art_url[0] = '\0';
+        const char *slash = strrchr(uri, '/');
+        bool art = strlen(image) == 4 + 16 + 4 && starts(image, "art/") && strcmp(image + 20, ".jpg") == 0 && slash;
+        for (int i = 4; art && i < 20; i++) {
+            art = (image[i] >= '0' && image[i] <= '9') || (image[i] >= 'a' && image[i] <= 'f');
+        }
+        if (art) {
+            const int u = snprintf(out->art_url, sizeof(out->art_url), "%.*s/%s", (int)(slash - uri), uri, image);
+            if (u < 0 || (size_t)u >= sizeof(out->art_url)) {
+                out->art_url[0] = '\0';
+            }
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
 }
 
 bool sonos_radio_chosen(const char *list, const char *key)

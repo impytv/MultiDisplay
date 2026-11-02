@@ -80,6 +80,9 @@ static const char *TAG = "sonos_screen";
 #define SO_PEND_MS    10000           /* "Starter ..." at most this long */
 #define SO_PEND_POLL_MS 1000          /* meanwhile asked this often */
 #define SO_PICKER_IDLE_MS (2 * 60 * 1000) /* the picker closed after this without a touch */
+#define SO_RADIO_MS   10000           /* a pausable radio's title asked this often while it plays */
+#define SO_BEHIND_MIN 5               /* seconds behind the station before it can skip */
+#define SO_SKIP_S     30              /* the next button's skip on a pausable radio */
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_track, *s_artist, *s_album, *s_msg;
 static big_clock_t s_clock;
@@ -144,7 +147,17 @@ static bool s_cover_ok;
 /* Buttons pressed, for the weather task to send in turn. A tap fills
  * s_cmd, and send() queues it with the group on show as its target, so a
  * room chosen next doesn't get it. */
-typedef enum { CMD_NONE, CMD_SONOS, CMD_FAV, CMD_SPOTIFY, CMD_RADIO, CMD_TRACK, CMD_JOIN, CMD_LEAVE } cmd_kind_t;
+typedef enum {
+    CMD_NONE,
+    CMD_SONOS,
+    CMD_FAV,
+    CMD_SPOTIFY,
+    CMD_RADIO,
+    CMD_RADIO_SKIP, /* value seconds on (SONOS_SKIP_LIVE: to now) in the radio at uri, then seek to fav */
+    CMD_TRACK,
+    CMD_JOIN,
+    CMD_LEAVE
+} cmd_kind_t;
 typedef struct {
     cmd_kind_t kind;
     sonos_room_t target; /* the group's leader, for playback */
@@ -153,7 +166,7 @@ typedef struct {
     sonos_cmd_t cmd;
     int value;
     int fav;             /* or the radio channel, or the queue's track */
-    char uri[64];
+    char uri[160];
 } cmd_t;
 #define SO_CMDS 6
 static cmd_t s_cmd;
@@ -225,6 +238,29 @@ static int position_now(void)
 
 /* Whether answer b shows anything a didn't. Not the position while it
  * plays, which the progress bar moves on by itself (sonos_tick_cb). */
+/* How far a pausable radio is behind the station, as shown: "" if not
+ * one, "Direkte" if hardly, else "12 min bak direkte". */
+static void behind_text(int s, char *out, size_t out_len)
+{
+    if (s < 0) {
+        out[0] = '\0';
+    } else if (s < SO_BEHIND_MIN) {
+        snprintf(out, out_len, "Direkte");
+    } else if (s < 60) {
+        snprintf(out, out_len, "%d s bak direkte", s);
+    } else if (s < 3600) {
+        snprintf(out, out_len, "%d min bak direkte", s / 60);
+    } else {
+        snprintf(out, out_len, "%d t %d min bak direkte", s / 3600, s / 60 % 60);
+    }
+}
+
+/* The steps that change behind_text, so a second's wobble doesn't draw. */
+static int behind_step(int s)
+{
+    return s < 0 ? -1 : s < SO_BEHIND_MIN ? 0 : s < 60 ? 1 + s / 10 : 100 + s / 60;
+}
+
 static bool now_changed(const sonos_now_t *a, const sonos_now_t *b)
 {
     const bool moving = b->state == SONOS_PLAYING || b->state == SONOS_TRANSITIONING;
@@ -234,7 +270,8 @@ static bool now_changed(const sonos_now_t *a, const sonos_now_t *b)
            a->can_previous != b->can_previous || a->can_seek != b->can_seek || a->queue != b->queue ||
            a->shuffle != b->shuffle || a->repeat != b->repeat || a->volume != b->volume ||
            strcmp(a->source, b->source) != 0 || strcmp(a->station, b->station) != 0 ||
-           strcmp(a->title, b->title) != 0 || strcmp(a->artist, b->artist) != 0 || strcmp(a->album, b->album) != 0;
+           strcmp(a->title, b->title) != 0 || strcmp(a->artist, b->artist) != 0 || strcmp(a->album, b->album) != 0 ||
+           behind_step(a->behind_s) != behind_step(b->behind_s);
 }
 
 static void note(const char *msg)
@@ -556,6 +593,14 @@ static void draw_player(lv_layer_t *layer)
         draw_text(layer, buf, x1, SO_PROG_Y + 12, SO_COL_W, LV_TEXT_ALIGN_RIGHT, c_dim());
     }
 
+    if (n->behind_s >= 0) { /* a pausable radio: how far behind, and back to now */
+        behind_text(n->behind_s, buf, sizeof(buf));
+        draw_text(layer, buf, x1, SO_PROG_Y, SO_COL_W, LV_TEXT_ALIGN_LEFT, c_dim());
+        if (n->behind_s >= SO_BEHIND_MIN) {
+            draw_text(layer, "Til direkte", x1, SO_PROG_Y, SO_COL_W, LV_TEXT_ALIGN_RIGHT, c_accent());
+        }
+    }
+
     const int cx = SO_COL_X + SO_COL_W / 2;
     draw_skip_button(layer, cx - SO_SKIP_DX, SO_CTRL_Y, -1, !n->can_previous);
     if (playing() && !n->can_pause) {
@@ -740,6 +785,16 @@ static void send(cmd_kind_t kind, sonos_cmd_t cmd, int value)
     app_wake_poll();
 }
 
+/* A pausable radio moved `skip` seconds on (SONOS_SKIP_LIVE: to now). */
+static void radio_skip(int skip)
+{
+    const int by = skip == SONOS_SKIP_LIVE || skip > s_now.behind_s ? s_now.behind_s : skip;
+    snprintf(s_cmd.uri, sizeof(s_cmd.uri), "%s", s_now.uri);
+    s_cmd.fav = position_now() + by; /* the seek after it: anywhere, it only empties the speaker's buffer */
+    s_now.behind_s -= by;
+    send(CMD_RADIO_SKIP, SONOS_SEEK, skip);
+}
+
 static bool near(int x, int y, int cx, int cy, int r)
 {
     return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
@@ -917,7 +972,9 @@ bool sonos_tap(int x, int y)
         return true;
     }
     if (near(x, y, cx + SO_SKIP_DX, SO_CTRL_Y, SO_SKIP_R + 16)) {
-        if (s_now.can_next) {
+        if (s_now.behind_s >= SO_BEHIND_MIN) {
+            radio_skip(SO_SKIP_S);
+        } else if (s_now.can_next) {
             send(CMD_SONOS, SONOS_NEXT, 0);
         }
         return true;
@@ -933,6 +990,11 @@ bool sonos_tap(int x, int y)
         return true;
     }
     const int x1 = SO_COL_X, x2 = SO_COL_X + SO_COL_W - 1;
+    if (s_now.behind_s >= SO_BEHIND_MIN && y >= SO_PROG_Y - 18 && y <= SO_PROG_Y + 30 && x >= x1 - 10 &&
+        x <= x2 + 10) {
+        radio_skip(SONOS_SKIP_LIVE);
+        return true;
+    }
     if (s_now.can_seek && y >= SO_PROG_Y - 18 && y <= SO_PROG_Y + 24 && x >= x1 - 10 && x <= x2 + 10) {
         const int px = x < x1 ? x1 : x > x2 ? x2 : x;
         s_now.position_s = (int)((int64_t)s_now.duration_s * (px - x1) / (x2 - x1));
@@ -1334,13 +1396,20 @@ uint32_t sonos_poll(int for_view)
         } else if (c->kind == CMD_RADIO) {
             int count = 0;
             const sonos_radio_t *radios = sonos_radios(&count);
-            char art[SONOS_URL_MAX] = "", file[24];
+            char art[SONOS_URL_MAX] = "", file[24], pausable[SONOS_URL_MAX] = "";
             if (c->fav >= 0 && c->fav < count) {
                 snprintf(file, sizeof(file), "%s.jpg", radios[c->fav].key);
                 app_config_radio_url(g_cfg->ota_url, file, art, sizeof(art));
+                app_config_radio_stream_url(g_cfg->ota_url, radios[c->fav].key, pausable, sizeof(pausable));
             }
-            err = c->fav >= 0 && c->fav < count ? sonos_play_radio(&c->target, &radios[c->fav], art)
+            err = c->fav >= 0 && c->fav < count ? sonos_play_radio(&c->target, &radios[c->fav], art, pausable)
                                                 : ESP_ERR_INVALID_ARG;
+        } else if (c->kind == CMD_RADIO_SKIP) {
+            static EXT_RAM_BSS_ATTR sonos_radio_status_t st;
+            err = sonos_radio_status(&c->target, c->uri, c->value, &st);
+            if (err == ESP_OK) {
+                err = sonos_command(&c->target, SONOS_SEEK, c->fav);
+            }
         } else if (c->kind == CMD_TRACK) {
             err = sonos_play_track(&c->target, c->fav);
             s_queue_track = -1; /* "Kø" asked again */
@@ -1409,6 +1478,28 @@ uint32_t sonos_poll(int for_view)
     }
     diag_ok(DIAG_SONOS);
     backoff_ok(&s_fail);
+    /* A radio through the update site: what it plays as the station sent
+     * it (which Sonos doesn't see), its picture, and how far behind. */
+    if (sonos_radio_pausable(s_now_scratch.uri)) {
+        static EXT_RAM_BSS_ATTR sonos_radio_status_t st;
+        if (sonos_radio_status(&room, s_now_scratch.uri, 0, &st) == ESP_OK) {
+            sonos_now_t *n = &s_now_scratch;
+            n->behind_s = st.behind_s;
+            n->can_next = st.behind_s >= SO_BEHIND_MIN;
+            const char *station = n->station[0] ? n->station : n->title;
+            if (st.title[0] && st.artist[0]) { /* a song: the station under the artist */
+                snprintf(n->album, sizeof(n->album), "%.*s", (int)sizeof(n->album) - 1, station);
+                snprintf(n->artist, sizeof(n->artist), "%s", st.artist);
+                snprintf(n->title, sizeof(n->title), "%s", st.title);
+            } else if (st.title[0]) {
+                snprintf(n->artist, sizeof(n->artist), "%.*s", (int)sizeof(n->artist) - 1, station);
+                snprintf(n->title, sizeof(n->title), "%s", st.title);
+            }
+            if (st.art_url[0]) {
+                snprintf(n->art_url, sizeof(n->art_url), "%s", st.art_url);
+            }
+        }
+    }
 
     /* Whether the other groups play: their rooms join no one by a tap. */
     bool busy[SONOS_ROOMS_MAX] = { 0 };
@@ -1515,6 +1606,9 @@ uint32_t sonos_poll(int for_view)
     }
     if (s_pend.on) {
         return SO_PEND_POLL_MS; /* what was tapped, as soon as it plays */
+    }
+    if (s_now_scratch.behind_s >= 0 && s_now_scratch.state == SONOS_PLAYING) {
+        return SO_RADIO_MS; /* its title: the speaker says nothing as it changes */
     }
     if (sonos_events_live()) {
         return SO_EVENTS_MS; /* a change wakes it sooner; the position runs on by itself */

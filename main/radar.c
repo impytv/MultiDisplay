@@ -482,20 +482,26 @@ static radar_col_t s_ac_col[AC_COLS];
 static bool s_route_short;
 
 /* What the route column shows for a police, rescue or ambulance aircraft,
- * in place of its route or type, shortened in the narrow destination-only
- * column; NULL for others. */
-static const char *radar_role_text(adsb_role_t role, bool narrow)
+ * in place of its route or type: the whole word when it fits the column
+ * ("Politi" fits even the narrow destination-only one), else shortened;
+ * NULL for others. */
+static const char *radar_role_text(adsb_role_t role)
 {
+    const char *full, *brief;
     switch (role) {
     case ADSB_ROLE_POLICE:
-        return narrow ? "Pol." : "Politi";
+        full = "Politi", brief = "Pol.";
+        break;
     case ADSB_ROLE_RESCUE:
-        return narrow ? "Redn." : "Redning";
+        full = "Redning", brief = "Redn.";
+        break;
     case ADSB_ROLE_AMBULANCE:
-        return narrow ? "Amb." : "Ambulanse";
+        full = "Ambulanse", brief = "Amb.";
+        break;
     default:
         return NULL;
     }
+    return draw_text_w(full) <= s_ac_col[AC_TYPE].w ? full : brief;
 }
 
 /* The route column's header: "Type" when it shows only aircraft types and
@@ -1160,7 +1166,7 @@ static void radar_draw_cb(lv_event_t *e)
         /* The role of a police, rescue or ambulance aircraft, else the
          * route when it's known, else the aircraft type (not in the narrow
          * destination-only column). */
-        const char *role = radar_role_text(a->role, s_route_short);
+        const char *role = radar_role_text(a->role);
         if (role != NULL) {
             radar_cell(layer, &s_ac_col[AC_TYPE], role, y, LV_TEXT_ALIGN_LEFT, c_txt);
         } else if (a->route[0] != '\0') {

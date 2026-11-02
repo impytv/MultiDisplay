@@ -241,20 +241,20 @@ void test_sonos(void)
     CHECK_INT(defaults, keys);
     CHECK(defaults <= APP_CONFIG_SONOS_RADIOS_SHOWN);
     char ruri[160], rmeta[1024];
-    CHECK(sonos_radio_share(&radios[0], "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+    CHECK(sonos_radio_share(&radios[0], "", "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
     CHECK_STR(ruri, "x-rincon-mp3radio://cdn0-47115-liveicecast0.dna.contentdelivery.net/p1_mp3_h");
     CHECK(strstr(rmeta, "<dc:title>NRK P1</dc:title>") != NULL);
     CHECK(strstr(rmeta, "object.item.audioItem.audioBroadcast") != NULL);
     for (int i = 0; i < nradio; i++) {
-        CHECK(sonos_radio_share(&radios[i], "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+        CHECK(sonos_radio_share(&radios[i], "", "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
         CHECK(strlen(radios[i].short_name) < 24); /* a tile's label */
     }
-    CHECK(!sonos_radio_share(&radios[0], "", ruri, 30, rmeta, sizeof(rmeta)));
+    CHECK(!sonos_radio_share(&radios[0], "", "", ruri, 30, rmeta, sizeof(rmeta)));
     const sonos_radio_t https = { "x", "X", "X", "https://example.com/x", false };
-    CHECK(!sonos_radio_share(&https, "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
+    CHECK(!sonos_radio_share(&https, "", "", ruri, sizeof(ruri), rmeta, sizeof(rmeta)));
     /* Playing one: a radio, named and pictured from the metadata sent. */
-    CHECK(sonos_radio_share(&radios[0], "https://example.no/bruk/radio/nrk_p1.jpg?a&b", ruri, sizeof(ruri), rmeta,
-                            sizeof(rmeta)));
+    CHECK(sonos_radio_share(&radios[0], "https://example.no/bruk/radio/nrk_p1.jpg?a&b", "", ruri, sizeof(ruri),
+                            rmeta, sizeof(rmeta)));
     CHECK(strstr(rmeta, "<upnp:albumArtURI>https://example.no/bruk/radio/nrk_p1.jpg?a&amp;b</upnp:albumArtURI>"));
     char media_r[1600], esc[1200];
     CHECK(sonos_xml_escape(rmeta, esc, sizeof(esc)));
@@ -312,6 +312,107 @@ void test_sonos(void)
                           NULL, "1.2.3.4", &now));
     CHECK_STR(now.title, "NRK Nyheter");
     CHECK(now.radio >= 0 && strcmp(radios[now.radio].key, "nrk_nyheter") == 0);
+    /* Through the update site (server/radio/): a plain file Sonos can pause,
+     * still a radio here. */
+    CHECK(sonos_radio_share(&radios[0], "", "http://192.168.0.119:8070/radio/nrk_p1.mp3", ruri, sizeof(ruri), rmeta,
+                            sizeof(rmeta)));
+    CHECK_STR(ruri, "http://192.168.0.119:8070/radio/nrk_p1.mp3");
+    CHECK(strstr(rmeta, "<dc:title>NRK P1</dc:title>") != NULL);
+    CHECK(strstr(rmeta, "object.item.audioItem.musicTrack") != NULL);
+    CHECK(!sonos_radio_share(&radios[0], "", "https://example.no/radio/nrk_p1.mp3", ruri, sizeof(ruri), rmeta,
+                             sizeof(rmeta)));
+    CHECK(sonos_xml_escape(rmeta, esc, sizeof(esc)));
+    snprintf(media_r, sizeof(media_r), "<CurrentURI>%s</CurrentURI><CurrentURIMetaData>%s</CurrentURIMetaData>", ruri,
+             esc);
+    CHECK(sonos_parse_now("<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>",
+                          "<TrackDuration>0:00:00</TrackDuration><TrackURI>http://192.168.0.119:8070/radio/"
+                          "nrk_p1.mp3</TrackURI><TrackMetaData></TrackMetaData>",
+                          media_r, "<Actions>Set, Stop, Pause, Play, X_DLNA_SeekTime</Actions>", "1.2.3.4", &now));
+    CHECK(now.stream && now.can_pause && !now.queue);
+    CHECK_INT(now.behind_s, -1); /* till the update site says */
+    CHECK_INT(now.radio, 0);
+    CHECK_STR(now.source, "Radio");
+    CHECK_STR(now.title, "NRK P1");
+    /* The length Sonos makes of it (2 GB at its guess of the bitrate): no
+     * progress bar for a radio. */
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>",
+                          "<TrackDuration>69:26:39</TrackDuration><RelTime>0:00:22</RelTime>", media_r,
+                          "<Actions>Set, Stop, Pause, Play, X_DLNA_SeekTime</Actions>", "1.2.3.4", &now));
+    CHECK_INT(now.duration_s, -1);
+    CHECK(!now.can_seek && !now.can_next);
+    CHECK_INT(now.position_s, 22);
+    /* What it plays, asked of the update site. */
+    CHECK(sonos_radio_pausable("http://192.168.0.119:8070/radio/nrk_p1.mp3"));
+    CHECK(!sonos_radio_pausable("x-rincon-mp3radio://cdn0-47115-liveicecast0.dna.contentdelivery.net/p1_mp3_h"));
+    CHECK(!sonos_radio_pausable("http://h/radio/nrk_p.mp3"));
+    char surl[96];
+    CHECK(sonos_radio_status_url("http://192.168.0.119:8070/radio/nrk_p1.mp3", "192.168.0.45", 0, surl,
+                                 sizeof(surl)));
+    CHECK_STR(surl, "http://192.168.0.119:8070/radio/nrk_p1.json?speaker=192.168.0.45");
+    CHECK(sonos_radio_status_url("http://h/radio/p4.mp3", "1.2.3.4", 30, surl, sizeof(surl)));
+    CHECK_STR(surl, "http://h/radio/p4.json?speaker=1.2.3.4&skip=30");
+    CHECK(sonos_radio_status_url("http://h/radio/p4.mp3", "1.2.3.4", SONOS_SKIP_LIVE, surl, sizeof(surl)));
+    CHECK_STR(surl, "http://h/radio/p4.json?speaker=1.2.3.4&skip=live");
+    CHECK(!sonos_radio_status_url("http://h/radio/p4.mp3", "1.2.3.4", SONOS_SKIP_LIVE, surl, 48)); /* just short */
+    CHECK(sonos_radio_status_url("http://h/radio/p4.mp3", "1.2.3.4", SONOS_SKIP_LIVE, surl, 49));
+    CHECK(!sonos_radio_status_url("x-rincon-mp3radio://h/p1_mp3_h", "1.2.3.4", 0, surl, sizeof(surl)));
+    static sonos_radio_status_t rs;
+    const char *const su = "http://192.168.0.119:8070/radio/p4.mp3";
+    CHECK(sonos_parse_radio_status("{\"title\": \"Urørt: Pen søm, Rigla\", \"artist\": \"\", \"image\": \"\", "
+                                   "\"behind\": 44}",
+                                   su, &rs));
+    CHECK_STR(rs.title, "Urørt: Pen søm, Rigla");
+    CHECK_STR(rs.artist, "");
+    CHECK_STR(rs.art_url, "");
+    CHECK_INT(rs.behind_s, 44);
+    /* A song with its picture, beside the stream. */
+    CHECK(sonos_parse_radio_status("{\"title\": \"Iris\", \"artist\": \"The Goo Goo Dolls\", "
+                                   "\"image\": \"art/f26e7ba36d58b738.jpg\", \"behind\": 0}",
+                                   su, &rs));
+    CHECK_STR(rs.title, "Iris");
+    CHECK_STR(rs.artist, "The Goo Goo Dolls");
+    CHECK_STR(rs.art_url, "http://192.168.0.119:8070/radio/art/f26e7ba36d58b738.jpg");
+    CHECK_INT(rs.behind_s, 0);
+    /* Anything else as a picture: none. */
+    const char *const bad[] = { "art/F26E7BA36D58B738.jpg", "art/f26e7ba36d58b73.jpg", "../x/f26e7ba36d58b738.jpg",
+                                "art/f26e7ba36d58b738.png", "http://evil/art/f26e7ba36d58b738.jpg" };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char js[160];
+        snprintf(js, sizeof(js), "{\"image\": \"%s\", \"behind\": 1}", bad[i]);
+        CHECK(sonos_parse_radio_status(js, su, &rs));
+        CHECK_STR(rs.art_url, "");
+    }
+    CHECK(sonos_parse_radio_status("{\"behind\": 3}", su, &rs)); /* no title */
+    CHECK_STR(rs.title, "");
+    rs.behind_s = 7;
+    CHECK(!sonos_parse_radio_status("{}", su, &rs)); /* no such listening */
+    CHECK(!sonos_parse_radio_status("{\"behind\": -1}", su, &rs));
+    CHECK(!sonos_parse_radio_status("<html>", su, &rs));
+    CHECK_INT(rs.behind_s, 7);
+    /* Another station's address, or a file by another name: not one. */
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>", "",
+                          "<CurrentURI>http://h/radio/nrk_p1.mp3x</CurrentURI>", NULL, "1.2.3.4", &now));
+    CHECK_INT(now.radio, -1);
+    CHECK(!now.stream);
+    CHECK(sonos_parse_now("<CurrentTransportState>PLAYING</CurrentTransportState>", "",
+                          "<CurrentURI>http://h/radio/nrk_p.mp3</CurrentURI>", NULL, "1.2.3.4", &now));
+    CHECK_INT(now.radio, -1);
+    /* The update site's list (server/radio/stations.json) has every
+     * station, at the same address. */
+    char *stations = slurp("../../server/radio/stations.json");
+    CHECK(stations != NULL);
+    for (int i = 0; stations && i < nradio; i++) {
+        char want[256];
+        snprintf(want, sizeof(want), "\"%s\": {\n    \"name\": \"%s\",\n    \"url\": \"%s\"\n  }", radios[i].key,
+                 radios[i].name, radios[i].url);
+        CHECK(strstr(stations, want) != NULL);
+    }
+    int listed = 0;
+    for (const char *p = stations; p && (p = strstr(p, "\"url\"")) != NULL; p++) {
+        listed++;
+    }
+    CHECK_INT(listed, nradio);
+    free(stations);
 
     char *v = slurp("data/sonos/volume.xml");
     CHECK_INT(sonos_parse_volume(v), 14);

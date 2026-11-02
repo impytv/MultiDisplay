@@ -65,6 +65,8 @@ typedef struct {
     bool shuffle;                /* the queue's play mode, if `queue` */
     int repeat;                  /* SONOS_REPEAT_* */
     int volume;                  /* the room's, percent; -1 if unknown */
+    int behind_s;                /* a radio through the update site (server/radio/): seconds behind
+                                    the station, once asked (sonos_radio_status); else -1 */
 } sonos_now_t;
 
 #define SONOS_REPEAT_OFF 0
@@ -205,9 +207,12 @@ bool sonos_logo_find(const uint8_t *blob, size_t len, const char *key, const uin
 
 /* What to play for `radio`: its address and metadata (DIDL-Lite, not yet
  * escaped), with `art` (its logo's address, "" = none) as the album art.
- * False if it doesn't fit. */
-bool sonos_radio_share(const sonos_radio_t *radio, const char *art, char *uri, size_t uri_len, char *meta,
-                       size_t meta_len);
+ * `pausable` is the station's address at the update site
+ * (app_config_radio_stream_url), played as a file Sonos can pause; "" =
+ * the station's own stream, played as a radio (Stop only). False if it
+ * doesn't fit. */
+bool sonos_radio_share(const sonos_radio_t *radio, const char *art, const char *pausable, char *uri, size_t uri_len,
+                       char *meta, size_t meta_len);
 
 /* The queue's tracks from number `start` (from 1), at most `max`, into
  * out[0..*count); *total the queue's length. */
@@ -218,8 +223,38 @@ esp_err_t sonos_get_queue(const sonos_room_t *room, int start, sonos_track_t *ou
  * it played something else. */
 esp_err_t sonos_play_track(const sonos_room_t *room, int n);
 
-/* Start `radio` in `room`, with its logo at `art` ("" = none). */
-esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art);
+/* Whether `uri` (what a room plays) is a radio through the update site,
+ * which can pause (sonos_radio_share's `pausable`). */
+bool sonos_radio_pausable(const char *uri);
+
+/* The address that asks the update site what speaker `ip` plays of the
+ * radio at `uri` (a pausable one), having first moved `skip` seconds on
+ * (0 = not; SONOS_SKIP_LIVE = to what the station sends now). False if it
+ * doesn't fit or `uri` isn't one. */
+#define SONOS_SKIP_LIVE (-1)
+bool sonos_radio_status_url(const char *uri, const char *ip, int skip, char *out, size_t out_len);
+
+/* What a pausable radio plays, as the update site says. */
+typedef struct {
+    char title[SONOS_TEXT_MAX];  /* as the station sent it, "" if none */
+    char artist[SONOS_TEXT_MAX]; /* a song's, "" if not one or not said */
+    char art_url[SONOS_URL_MAX]; /* its picture at the site, 240 px; "" if none */
+    int behind_s;                /* how far behind the station */
+} sonos_radio_status_t;
+
+/* The update site's answer to that for the radio at `uri` (the picture's
+ * address is beside it). False if it isn't one (the site knows no such
+ * listening). */
+bool sonos_parse_radio_status(const char *json, const char *uri, sonos_radio_status_t *out);
+
+/* What `room` (its leader) plays of the pausable radio at `uri`, as
+ * above, after moving `skip` seconds on. */
+esp_err_t sonos_radio_status(const sonos_room_t *room, const char *uri, int skip, sonos_radio_status_t *out);
+
+/* Start `radio` in `room`, with its logo at `art` ("" = none), from
+ * `pausable` if not "" (see sonos_radio_share). */
+esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art,
+                           const char *pausable);
 
 /* Errors besides the transport's. */
 #define SONOS_ERR_NO_SPOTIFY 0x7f30 /* Sonos took neither of Spotify's services: not added in the Sonos app */

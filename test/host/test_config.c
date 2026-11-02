@@ -257,6 +257,15 @@ void test_config(void)
     CHECK_STR(logo, "");
     app_config_radio_url("https://example.no/manifest.json", "p4.jpg", logo, 37);
     CHECK_STR(logo, "https://example.no/bruk/radio/p4.jpg");
+    /* A radio Sonos can pause: on the update site at home (http) only. */
+    app_config_radio_stream_url("http://192.168.0.119:8070/manifest.json", "nrk_p1", logo, sizeof(logo));
+    CHECK_STR(logo, "http://192.168.0.119:8070/radio/nrk_p1.mp3");
+    app_config_radio_stream_url("https://example.no/manifest.json", "nrk_p1", logo, sizeof(logo));
+    CHECK_STR(logo, "");
+    app_config_radio_stream_url("http://h/manifest.json", "p4", logo, 21); /* just too short */
+    CHECK_STR(logo, "");
+    app_config_radio_stream_url("http://h/manifest.json", "p4", logo, 22);
+    CHECK_STR(logo, "http://h/radio/p4.mp3");
     /* Spotify's return page: https only. */
     app_config_spotify_redirect("https://multidisplay.example.no/manifest.json", guide, sizeof(guide));
     CHECK_STR(guide, "https://multidisplay.example.no/spotify/");

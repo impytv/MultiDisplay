@@ -339,6 +339,12 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
  * `ota_url` gives none or it doesn't fit. */
 void app_config_radio_url(const char *ota_url, const char *file, char *out, size_t out_len);
 
+/* Radio `key` (of sonos_radios()) from the update site, which Sonos can
+ * pause (server/radio/): "radio/<key>.mp3" next to the manifest, if
+ * `ota_url` is http:// - the site on the home network, where the speakers
+ * can reach it. "" otherwise or if it doesn't fit. */
+void app_config_radio_stream_url(const char *ota_url, const char *key, char *out, size_t out_len);
+
 /* Where Spotify sends the browser back after a login (server/spotify/):
  * the folder "spotify/" next to the manifest, if `ota_url` is https://
  * (Spotify takes nothing else for a home network). "" otherwise. */

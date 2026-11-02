@@ -4,6 +4,7 @@
  * and refreshed on their own cadences by weather_poll. */
 
 #include "esp_attr.h"
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -335,6 +336,14 @@ static EXT_RAM_BSS_ATTR float s_temp_line_values[YR_FORECAST_MAX_POINTS];
 static uint32_t s_temp_line_count;
 static lv_color_t s_temp_warm_color;
 static lv_color_t s_temp_cold_color;
+static lv_color_t s_temp_marker_warm_color;
+
+/* Temperatures below 0 C in blue: the line, its markers and the overview. */
+static lv_color_t temp_cold_color(void)
+{
+    return g_cfg->theme == APP_THEME_DARK ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
+                                          : lv_palette_darken(LV_PALETTE_BLUE, 2);
+}
 
 static int32_t round_to_int(float v)
 {
@@ -426,6 +435,7 @@ lv_obj_t *overview_build(lv_obj_t *screen)
             s_ov_cell[i][c] = lv_label_create(root);
             lv_obj_set_pos(s_ov_cell[i][c], cell_x, row_y + OV_ICON + 1);
             lv_obj_set_width(s_ov_cell[i][c], OV_COL_W);
+            lv_label_set_recolor(s_ov_cell[i][c], true);
             lv_label_set_text(s_ov_cell[i][c], "");
         }
     }
@@ -603,6 +613,8 @@ static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
     }
     lv_obj_t *label = s_temp_markers[(*used)++];
     lv_label_set_text_fmt(label, "%.1f\xC2\xB0", (double)fc->points[m].air_temperature_c);
+    lv_obj_set_style_text_color(label,
+                                fc->points[m].air_temperature_c < 0.0f ? s_temp_cold_color : s_temp_marker_warm_color, 0);
     lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
     place_marker_label(label, CHART_X + s_temp_line_points[m].x,
                        CHART_Y + s_temp_line_points[m].y, above);
@@ -1514,11 +1526,20 @@ static void update_overview(void)
                 }
             }
 
-            if (psum >= 0.05f) {
-                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0\n%.1f mm",
-                                      (double)np->air_temperature_c, (double)psum);
+            /* Below 0 C the temperature (not the amount) in blue, by the
+             * label's recolour command. */
+            char temp[48];
+            const float tc = np->air_temperature_c;
+            if (tc < 0.0f) {
+                snprintf(temp, sizeof(temp), "#%06" PRIx32 " %.0f\xC2\xB0#", lv_color_to_u32(temp_cold_color()) & 0xFFFFFF,
+                         (double)tc);
             } else {
-                lv_label_set_text_fmt(cell, "%.0f\xC2\xB0", (double)np->air_temperature_c);
+                snprintf(temp, sizeof(temp), "%.0f\xC2\xB0", (double)tc);
+            }
+            if (psum >= 0.05f) {
+                lv_label_set_text_fmt(cell, "%s\n%.1f mm", temp, (double)psum);
+            } else {
+                lv_label_set_text(cell, temp);
             }
             set_weather_icon(icon, np->symbol_code);
         }
@@ -1766,8 +1787,8 @@ lv_obj_t *weather_build(lv_obj_t *screen)
      * lv_line, which can only draw in a single colour. The points are set each
      * refresh in update_ui_with_forecast. */
     s_temp_warm_color = lv_palette_main(LV_PALETTE_ORANGE);
-    s_temp_cold_color = dark ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
-                             : lv_palette_darken(LV_PALETTE_BLUE, 2);
+    s_temp_cold_color = temp_cold_color();
+    s_temp_marker_warm_color = dark ? lv_palette_lighten(LV_PALETTE_ORANGE, 2) : lv_palette_darken(LV_PALETTE_ORANGE, 2);
     s_temp_line = lv_obj_create(s_detail_root);
     lv_obj_remove_style_all(s_temp_line);
     lv_obj_set_pos(s_temp_line, CHART_X, CHART_Y);
@@ -1783,9 +1804,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
      * Any left over are kept hidden. */
     for (int i = 0; i < TEMP_MARKER_POOL; i++) {
         s_temp_markers[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_temp_markers[i],
-                                    dark ? lv_palette_lighten(LV_PALETTE_ORANGE, 2)
-                                         : lv_palette_darken(LV_PALETTE_ORANGE, 2), 0);
+        lv_obj_set_style_text_color(s_temp_markers[i], s_temp_marker_warm_color, 0);
         /* The backdrop, shown only over the bars (see temp_emit). */
         lv_obj_set_style_bg_color(s_temp_markers[i], lv_obj_get_style_bg_color(s_precip_frame, LV_PART_MAIN), 0);
         lv_obj_set_style_bg_opa(s_temp_markers[i], LV_OPA_TRANSP, 0);

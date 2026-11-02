@@ -114,7 +114,8 @@ cd server && docker compose up -d
 ```
 
 The container mounts `/srv/multidisplay` read-only and starts again by
-itself after a restart.
+itself after a restart. A second container, `radio`, serves radio that
+Sonos can pause at `/radio/` (see Sonos below).
 
 To reach the site from outside the LAN as well, over HTTPS through a
 Cloudflare Tunnel (no port opened on the router):
@@ -258,8 +259,8 @@ off with **Sveip opp fra bunnen for å velge skjerm** under **Vedlikehold →
 Navigasjonsside**. The screens, in order:
 
 1. **Oversikt** – an overview table with one row per location that shows
-   weather and 6-hour columns, each showing the weather icon, temperature and
-   the precipitation summed over that 6-hour block. Shown unless **Vis
+   weather and 6-hour columns, each showing the weather icon, temperature
+   (blue below 0 °C) and the precipitation summed over that 6-hour block. Shown unless **Vis
    oversikten** under **Andre skjermer → Oversikt** on the setup page is unticked (its **i
    automatisk bytte** puts it in the rotation).
 2. **Kalender**, if shown (see [Calendar](#calendar)).
@@ -298,7 +299,8 @@ altitude (metres, or kilometres from 1000 m), ground speed in knots (left
 out at large font sizes) and distance in kilometres. Aircraft on the ground
 are left out.
 Police, rescue and ambulance aircraft show **Politi**, **Redning** or
-**Ambulanse** (Pol., Redn., Amb. under **Til**) in place of the route, and
+**Ambulanse** (under **Til**, shortened to Pol., Redn. or Amb. when
+the word is too wide) in place of the route, and
 get their callsign tag on the plot before the others. They are known by
 callsign where the service has its own (the Air Force's rescue helicopters
 "SAVER..", ambulances "DOC..", "BNO..", "DFL.."), and for Norwegian
@@ -672,7 +674,8 @@ screen's "recently played".
 One screen for the whole display, after Spotify: what plays in a room of
 Sonos speakers on the local network, with the cover, the title, the
 artist and the album, a progress bar, buttons for the previous track,
-play/pause (stop for a radio, which can't pause) and the next track, and
+play/pause (stop for a radio, which can't pause - except the radio page's
+channels through the update site, below) and the next track, and
 the volume (- and +, in steps of 3 %). Playing from the room's queue (not
 a radio, TV, line-in or AirPlay), there are shuffle and repeat buttons too
 (`SetPlayMode`, read with `GetTransportSettings`), and a tap on the
@@ -723,6 +726,55 @@ They aren't built into the firmware: it runs from PSRAM, so its every byte
 costs as much of that. Without the update site, the tiles have the
 channel's name instead, as has any other radio without a cover of its own
 in the cover square.
+
+Sonos plays a radio stream with Stop only, whatever the server: it decides
+by the kind of address (`x-rincon-mp3radio:` and the radio services'
+`x-sonosapi-*` give the actions Set, Stop and Play), so a station added as
+a custom radio station in the Sonos app can't pause either. A plain
+`http://` file gets Pause. So when the display's update address is the
+site at home (`http://`), the radio page starts a channel as
+`http://<site>/radio/KEY.mp3` instead (`app_config_radio_stream_url`), a
+file to Sonos, which the update site's `radio` container
+(`server/radio/radio_proxy.py`) serves from the station. It says the file
+is 2 GB long (some 17 hours), because Sonos asks for a byte range only of
+a file of known length. Seen on a Roam: on Pause the speaker closes the
+connection, and on Play it asks again from the byte it had come to
+(`Range: bytes=N-`), after a probing request without a range; a start, or
+Play after Stop, asks without a range. The container records a station
+while one of its listenings is kept, up to an hour after its last
+connection (`RADIO_PAUSE_MINUTES` in `server/.env`), and answers a range by
+the speaker's listening that had come that far, so Play goes on where it
+paused. nginx sends `/radio/` there from the home network only.
+
+Sonos reads what is being sent (the station's ICY metadata) only from a
+radio stream, so the container takes it out of the stream itself and notes
+where each song began: `StreamTitle`, and `StreamUrl` where it says more -
+P4 Group's is JSON with the artist, the title and a picture (1000 px, or
+1920 x 1080 for a programme), Bauer's (NRJ) the address of the same at
+`listenapi.planetradio.co.uk`, fetched as it comes. NRK sends only a title.
+A picture is fetched and made a 240 x 240 baseline JPEG (Pillow, in the
+container's own image, `server/radio/Dockerfile`) when the display asks for
+`/radio/art/ID.jpg`, ID one the container gave out, the last 40 kept. Where the speaker is can't be had from Sonos:
+its play time maps to bytes by its own guess (it took 2 GB of 192 kbit/s
+for 69 hours), so the container counts it, from where a listening started
+and on at the station's bitrate while a connection is open, and gives the
+speaker at most 10 s more than that. `/radio/KEY.json?speaker=IP` answers
+`{"title": ..., "artist": ..., "image": "art/ID.jpg", "behind": seconds}` for
+that place, and the Sonos screen asks it every 10 s while such a radio
+plays (`sonos_radio_status`): the title as the track, the artist under it
+and the station under that (or the station under the title, without an
+artist), the picture as the cover (else the station's logo), and where the progress bar would
+be, "Direkte" or "12 min bak direkte" with **Til direkte** beside it. The
+next button skips 30 s on, and **Til direkte** to now (`&skip=30`,
+`&skip=live`); the screen then asks the speaker to seek anywhere, which
+throws away what it had fetched ahead, and the container answers the range
+of that seek from the new place. With an `https://` update address
+(through the tunnel, where the speakers can't reach it) the channels play
+as before. `server/radio/stations.json` lists the stations for the
+container; a host test checks it against `RADIOS`.
+`scripts/sonos_radio_playlist.py SPEAKER_IP` saves them all as the Sonos
+playlist "Radio med pause", for the Sonos app, where they can be paused
+too.
 
 No login and no cloud: the speakers are found with an SSDP search, and
 asked through the UPnP control they answer on port 1400 - as Home

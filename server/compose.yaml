@@ -31,9 +31,30 @@ services:
       - ./bruk:/usr/share/nginx/html/bruk:ro
       # Where Spotify sends a display's login back to (main/spotify.c).
       - ./spotify:/usr/share/nginx/html/spotify:ro
+    depends_on:
+      - radio
     read_only: true
     tmpfs:
       - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Radio that Sonos can pause (radio/radio_proxy.py), at /radio/ of the
+  # update site through nginx, from the home network only.
+  radio:
+    build: ./radio
+    image: multidisplay-radio
+    container_name: multidisplay-radio
+    restart: unless-stopped
+    command: python -I -u /app/radio_proxy.py
+    volumes:
+      - ./radio:/app:ro
+    environment:
+      # How long a paused station is kept, recorded, for Play to go on.
+      RADIO_PAUSE_MINUTES: ${RADIO_PAUSE_MINUTES:-60}
+    read_only: true
     cap_drop:
       - ALL
     security_opt:

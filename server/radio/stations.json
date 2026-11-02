@@ -1,0 +1,114 @@
+{
+  "nrk_p1": {
+    "name": "NRK P1",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/p1_mp3_h"
+  },
+  "nrk_p1pluss": {
+    "name": "NRK P1+",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/p1pluss_mp3_h"
+  },
+  "nrk_p2": {
+    "name": "NRK P2",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/p2_mp3_h"
+  },
+  "nrk_p3": {
+    "name": "NRK P3",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/p3_mp3_h"
+  },
+  "nrk_p3musikk": {
+    "name": "NRK P3 Musikk",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/p3musikk_mp3_h"
+  },
+  "nrk_mp3": {
+    "name": "NRK mP3",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/mp3_mp3_h"
+  },
+  "nrk_nyheter": {
+    "name": "NRK Nyheter",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/nyheter_mp3_h"
+  },
+  "nrk_klassisk": {
+    "name": "NRK Klassisk",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/klassisk_mp3_h"
+  },
+  "nrk_jazz": {
+    "name": "NRK Jazz",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/jazz_mp3_h"
+  },
+  "nrk_folkemusikk": {
+    "name": "NRK Folkemusikk",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/folkemusikk_mp3_h"
+  },
+  "nrk_sport": {
+    "name": "NRK Sport",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/sport_mp3_h"
+  },
+  "nrk_super": {
+    "name": "NRK Super",
+    "url": "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/radio_super_mp3_h"
+  },
+  "p4": {
+    "name": "P4 Norge",
+    "url": "http://p4.p4groupaudio.com/P04_MM"
+  },
+  "radionorge": {
+    "name": "Radio Norge",
+    "url": "http://live-bauerno.sharp-stream.com/radionorge_no_mp3"
+  },
+  "p5": {
+    "name": "P5 Hits",
+    "url": "http://p5.p4groupaudio.com/P05_MM"
+  },
+  "p10": {
+    "name": "P10 Country",
+    "url": "http://p10.p4groupaudio.com/P10_MM"
+  },
+  "p7": {
+    "name": "P7 Klem",
+    "url": "http://p7.p4groupaudio.com/P07_MM"
+  },
+  "p11": {
+    "name": "P11 Dance",
+    "url": "http://p11.p4groupaudio.com/P11_MM"
+  },
+  "nrj": {
+    "name": "NRJ",
+    "url": "http://live-bauerno.sharp-stream.com/kiss_no_mp3"
+  },
+  "radiorock": {
+    "name": "Radio Rock",
+    "url": "http://live-bauerno.sharp-stream.com/radiorock_no_mp3"
+  },
+  "p9": {
+    "name": "P9 Retro",
+    "url": "http://p9.p4groupaudio.com/P09_MM"
+  },
+  "vinyl": {
+    "name": "Radio Vinyl",
+    "url": "http://live-bauerno.sharp-stream.com/vinyl_no_mp3"
+  },
+  "p8": {
+    "name": "P8 Pop",
+    "url": "http://p8.p4groupaudio.com/P08_MM"
+  },
+  "p6": {
+    "name": "P6 Rock",
+    "url": "http://p6.p4groupaudio.com/P06_MM"
+  },
+  "top40": {
+    "name": "Topp 40",
+    "url": "http://live-bauerno.sharp-stream.com/top40_no_mp3"
+  },
+  "p12": {
+    "name": "P12 Hitmix",
+    "url": "http://nrj.p4groupaudio.com/NRJ_MM"
+  },
+  "p247mix": {
+    "name": "P24-7 Mix",
+    "url": "http://live-bauerno.sharp-stream.com/p247mix_no_mp3"
+  },
+  "juleradioen": {
+    "name": "P24-7 Juleradioen",
+    "url": "http://live-bauerno.sharp-stream.com/station17_no_mp3"
+  }
+}

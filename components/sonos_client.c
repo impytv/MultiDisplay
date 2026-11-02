@@ -471,7 +471,8 @@ esp_err_t sonos_play_favorite(const sonos_room_t *room, const sonos_fav_t *fav)
     return play_uri(room, fav->uri, fav->meta);
 }
 
-esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art)
+esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio, const char *art,
+                           const char *pausable)
 {
     ESP_LOGI(TAG, "Playing %s in %s", radio->name, room->name);
     char uri[160];
@@ -479,9 +480,25 @@ esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio,
     if (meta == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    const esp_err_t err = sonos_radio_share(radio, art, uri, sizeof(uri), meta, 1024) ? play_uri(room, uri, meta)
-                                                                                       : ESP_ERR_INVALID_ARG;
+    const esp_err_t err = sonos_radio_share(radio, art, pausable, uri, sizeof(uri), meta, 1024)
+                              ? play_uri(room, uri, meta)
+                              : ESP_ERR_INVALID_ARG;
     free(meta);
+    return err;
+}
+
+esp_err_t sonos_radio_status(const sonos_room_t *room, const char *uri, int skip, sonos_radio_status_t *out)
+{
+    char url[256];
+    if (!sonos_radio_status_url(uri, room->ip, skip, url, sizeof(url))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    char *body = NULL;
+    esp_err_t err = http_get_body(url, yr_client_user_agent(), SO_TIMEOUT_MS, 2048, &body, TAG);
+    if (err == ESP_OK && !sonos_parse_radio_status(body, uri, out)) {
+        err = ESP_ERR_NOT_FOUND;
+    }
+    free(body);
     return err;
 }
 

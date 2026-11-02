@@ -913,3 +913,19 @@ too heavy for the chip.
   counts as going that way if a later stop of its is within three quarters
   of this stop's distance to the via stop (their coordinates now in the
   query). The row's track comes from the first train, not a bus.*
+- [x] **121. Radio that can't pause.** Sonos plays a radio stream with
+  Stop only, decided by the address's kind, so a proxy behind a custom
+  radio station in the Sonos app would not help. *Done in 1.33.0: with an
+  `http://` update address the radio page plays a channel as a plain file
+  from the update site's new `radio` container (`/radio/KEY.mp3`, 2 GB
+  long), which Sonos can pause; the container records the station while a
+  listening is paused (an hour by default) and answers the speaker's
+  range on Play from the recording. `scripts/sonos_radio_playlist.py`
+  saves the channels as the Sonos playlist "Radio med pause" for the app.
+  The station's titles (ICY), which Sonos reads only from a radio
+  stream, are taken out by the container and given to the display for
+  where the speaker is (`/radio/KEY.json`), as is how far behind it is,
+  with the artist and a picture where the station sends them (P4 Group's
+  JSON, Bauer's planetradio details), made 240 px by the container;
+  the next button skips 30 s on and "Til direkte" to now. The Sonos app
+  shows only the station's name.*

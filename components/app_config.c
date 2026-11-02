@@ -663,6 +663,21 @@ void app_config_radio_url(const char *ota_url, const char *file, char *out, size
     }
 }
 
+void app_config_radio_stream_url(const char *ota_url, const char *key, char *out, size_t out_len)
+{
+    out[0] = '\0';
+    if (strncmp(ota_url, "http://", 7) != 0) {
+        return;
+    }
+    site_url(ota_url, false, "radio/", out, out_len);
+    const size_t n = strlen(out);
+    if (n > 0 && n + strlen(key) + strlen(".mp3") < out_len) {
+        snprintf(out + n, out_len - n, "%s.mp3", key);
+    } else {
+        out[0] = '\0';
+    }
+}
+
 void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len)
 {
     site_url(ota_url, true, "spotify/", out, out_len);

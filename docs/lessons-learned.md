@@ -587,6 +587,27 @@ The web server also had 31 of its 32 handlers in use.
 first and read the raw answer; and when adding a web handler, count the
 ones already registered against `max_uri_handlers`.
 
+### Sonos: Pause is decided by the kind of address
+
+The wish was a proxy for radio stations added in the Sonos app, so they
+could be paused. Asking the speakers first (`GetCurrentTransportActions`,
+read only) showed that every radio - our own `x-rincon-mp3radio:` and
+NRK's through its service - gets "Set, Stop, Play": Sonos decides by the
+address's kind, not by what the server can do, so that proxy could never
+have worked. A test proxy that logged every request showed the rest on a
+real speaker in a few minutes: a plain `http://` file gets Pause, but
+without a length Sonos starts it over on Play; with a length it asks for
+the byte it had come to, after probing requests (no range, the last 128
+bytes, `bytes=10-`) that must not be taken for the listening itself.
+Seeking showed one more: Sonos turns a time into a byte by its own guess
+of the bitrate (69 hours for 2 GB of 192 kbit/s), so its play time can't
+say what it plays. The server counts that instead, and gives the speaker
+only a few seconds ahead of it, so the count stays near the truth.
+*Lesson:* before building around a device's behaviour, read what it says
+it allows, and put a logging stand-in in front of it - what the protocol
+leaves open (when it reconnects, what it probes, how it maps time to
+bytes) is only learnt that way.
+
 ### Entur: a cap applied before our own filter
 
 The departure board asks Entur for the next two departures per line and
