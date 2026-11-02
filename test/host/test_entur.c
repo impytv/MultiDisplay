@@ -42,6 +42,34 @@ static const char REPLY[] =
     "{\"directionType\":\"outbound\",\"line\":{\"id\":\"RUT:Line:390\",\"publicCode\":\"390\",\"transportMode\":\"bus\"}}}"
     "]}}}";
 
+/* Nittedal stasjon toward Oslo (via Kjelsås, 530) with replacement buses
+ * (2 November 2026): one by Sinsen to Oslo S, which stops at no station
+ * but comes well nearer to Kjelsås; one the other way, to Hakadal; and the
+ * train after them. Coordinates rounded off Entur's. */
+#define BUS_JOURNEY(sub, quays)                                                         \
+    "\"serviceJourney\":{\"directionType\":\"unknown\",\"transportSubmode\":\"" sub "\"," \
+    "\"line\":{\"id\":\"VYG:Line:R31\",\"publicCode\":\"R31\",\"transportMode\":\"rail\"},\"quays\":[" quays "]}}"
+#define NITTEDAL_TRACK "{\"id\":\"NSR:Quay:2\",\"latitude\":60.0476,\"longitude\":10.8706,\"stopPlace\":{\"id\":\"NSR:StopPlace:58858\"}}"
+#define NITTEDAL_BUS   "{\"id\":\"NSR:Quay:5\",\"latitude\":60.0478,\"longitude\":10.8712,\"stopPlace\":{\"id\":\"NSR:StopPlace:58858\"}}"
+static const char REPLACED[] =
+    "{\"data\":{\"v530\":{\"latitude\":59.9653,\"longitude\":10.7811},"
+    "\"s0\":{\"name\":\"Nittedal stasjon\",\"estimatedCalls\":["
+    "{\"realtime\":true,\"aimedDepartureTime\":\"2026-11-02T07:41:00+01:00\",\"expectedDepartureTime\":\"2026-11-02T07:41:00+01:00\","
+    "\"destinationDisplay\":{\"frontText\":\"Oslo S\"},\"quay\":{\"id\":\"NSR:Quay:5\",\"publicCode\":\"B\"},"
+    BUS_JOURNEY("railReplacementBus", NITTEDAL_BUS ","
+                "{\"id\":\"NSR:Quay:61\",\"latitude\":59.9284,\"longitude\":10.7787,\"stopPlace\":{\"id\":\"NSR:StopPlace:6435\"}},"
+                "{\"id\":\"NSR:Quay:62\",\"latitude\":59.9112,\"longitude\":10.7570,\"stopPlace\":{\"id\":\"NSR:StopPlace:62\"}}") ","
+    "{\"realtime\":true,\"aimedDepartureTime\":\"2026-11-02T07:45:00+01:00\",\"expectedDepartureTime\":\"2026-11-02T07:45:00+01:00\","
+    "\"destinationDisplay\":{\"frontText\":\"Hakadal\"},\"quay\":{\"id\":\"NSR:Quay:5\"},"
+    BUS_JOURNEY("railReplacementBus", NITTEDAL_BUS ","
+                "{\"id\":\"NSR:Quay:71\",\"latitude\":60.0702,\"longitude\":10.8455,\"stopPlace\":{\"id\":\"NSR:StopPlace:71\"}},"
+                "{\"id\":\"NSR:Quay:72\",\"latitude\":60.1129,\"longitude\":10.8293,\"stopPlace\":{\"id\":\"NSR:StopPlace:72\"}}") ","
+    "{\"realtime\":true,\"aimedDepartureTime\":\"2026-11-02T08:19:00+01:00\",\"expectedDepartureTime\":\"2026-11-02T08:19:00+01:00\","
+    "\"destinationDisplay\":{\"frontText\":\"Oslo S\"},\"quay\":{\"id\":\"NSR:Quay:2\",\"publicCode\":\"2\"},"
+    BUS_JOURNEY("local", NITTEDAL_TRACK ","
+                "{\"id\":\"NSR:Quay:9\",\"latitude\":59.9653,\"longitude\":10.7811,\"stopPlace\":{\"id\":\"NSR:StopPlace:530\"}}")
+    "]}}}";
+
 void test_entur(void)
 {
     char *q;
@@ -214,5 +242,27 @@ void test_entur(void)
     free(q);
     q = build_query(&all);
     CHECK(q != NULL && strstr(q, "whiteListed") == NULL && strstr(q, "stopPlace{id}") == NULL);
+    free(q);
+
+    /* Replacement buses: the one toward Kjelsås kept, in orange with "Buss
+     * for tog", the train's track kept for the row; the other way dropped. */
+    static entur_selection_t rb;
+    CHECK(entur_parse_selection("58858=VYG:Line:R31/v530", &rb));
+    memset(&out, 0, sizeof(out));
+    CHECK(parse_response(REPLACED, &rb, &out));
+    CHECK_INT(out.group_count, 1);
+    CHECK_INT(out.groups[0].call_count, 2);
+    CHECK(out.groups[0].calls[0].replacement_bus);
+    CHECK(!out.groups[0].calls[1].replacement_bus);
+    CHECK_STR(out.groups[0].quay, "2");
+    CHECK_STR(out.groups[0].notice, "Buss for tog");
+    q = build_query(&rb);
+    CHECK(q != NULL && strstr(q, "v530:stopPlace(id:\"NSR:StopPlace:530\"){latitude longitude}") != NULL);
+    CHECK(strstr(q, "quays{id latitude longitude stopPlace{id}}") != NULL && strstr(q, "transportSubmode") != NULL);
+    free(q);
+    /* A via stop named on two lines is asked for once. */
+    CHECK(entur_parse_selection("58858=VYG:Line:R31/v530,VYG:Line:RE30/v530", &rb));
+    q = build_query(&rb);
+    CHECK(q != NULL && strstr(q, "v530:") != NULL && strstr(strstr(q, "v530:") + 1, "v530:") == NULL);
     free(q);
 }

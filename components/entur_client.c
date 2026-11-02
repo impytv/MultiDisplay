@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -255,11 +256,12 @@ static int post_query(const char *body, bool *reused)
  * Query and response
  * ------------------------------------------------------------------------ */
 
-/* %s: the journey's stops, when a "/v" direction needs them. */
+/* %s: the journey's stops, when a "/v" direction needs them (where they
+ * are, for replacement buses: see goes_via). */
 #define CALL_FIELDS                                                               \
     "realtime cancellation aimedDepartureTime expectedDepartureTime "             \
     "destinationDisplay{frontText} quay{id publicCode} "                          \
-    "serviceJourney{directionType%s line{id publicCode transportMode "            \
+    "serviceJourney{directionType transportSubmode%s line{id publicCode transportMode "            \
     "presentation{colour textColour}}} "                                          \
     "situations{summary{value language} description{value language}}"
 
@@ -310,7 +312,21 @@ static char *build_query(const entur_selection_t *sel)
             }
         }
         if (n < cap) {
-            n += snprintf(q + n, cap - n, "){" CALL_FIELDS "}}", stop_has_via(st) ? " quays{id stopPlace{id}}" : "");
+            n += snprintf(q + n, cap - n, "){" CALL_FIELDS "}}", stop_has_via(st) ? " quays{id latitude longitude stopPlace{id}}" : "");
+        }
+    }
+    /* Where the via stops are, once each, as v<number>. */
+    for (int i = 0; i < sel->stop_count && n < cap; i++) {
+        for (int l = 0; l < sel->stops[i].line_count; l++) {
+            const entur_line_sel_t *line = &sel->stops[i].lines[l];
+            for (int v = 0; v < line->via_count && n < cap; v++) {
+                char alias[16]; /* after the '}' that ends what comes before */
+                snprintf(alias, sizeof(alias), "}v%lu:", (unsigned long)line->via[v]);
+                if (strstr(q, alias) == NULL) {
+                    n += snprintf(q + n, cap - n, "%sstopPlace(id:\"NSR:StopPlace:%lu\"){latitude longitude}", alias + 1,
+                                  (unsigned long)line->via[v]);
+                }
+            }
         }
     }
     if (n < cap) {
@@ -379,25 +395,76 @@ typedef struct {
     char dir[40];
 } group_key_t;
 
+/* Whether journey `sj` is a bus in place of a train. */
+static bool replacement_bus(const cJSON *sj)
+{
+    const char *sub = str_at(sj, "transportSubmode");
+    return sub != NULL && strcmp(sub, "railReplacementBus") == 0;
+}
+
+static bool lat_lon(const cJSON *obj, double *lat, double *lon)
+{
+    const cJSON *a = cJSON_GetObjectItemCaseSensitive(obj, "latitude");
+    const cJSON *o = cJSON_GetObjectItemCaseSensitive(obj, "longitude");
+    if (!cJSON_IsNumber(a) || !cJSON_IsNumber(o)) {
+        return false;
+    }
+    *lat = a->valuedouble;
+    *lon = o->valuedouble;
+    return true;
+}
+
+/* The squared distance between two points a few km apart, in degrees of
+ * latitude: enough to tell nearer from farther. */
+static double dist2(double lat1, double lon1, double lat2, double lon2)
+{
+    const double dx = (lon2 - lon1) * cos(lat1 * M_PI / 180.0);
+    const double dy = lat2 - lat1;
+    return dx * dx + dy * dy;
+}
+
 /* Whether journey `sj`, at the quay `quay_id`, calls at one of `line`'s
- * via stops later on. */
-static bool goes_via(const entur_line_sel_t *line, const cJSON *sj, const char *quay_id)
+ * via stops later on. A replacement bus takes the roads, and stops at none
+ * of the stations: it goes that way if a stop of its later on is well
+ * nearer to a via stop (`vias`: the query's "v<number>" places) than this
+ * one is. */
+static bool goes_via(const entur_line_sel_t *line, const cJSON *sj, const char *quay_id, const cJSON *vias)
 {
     const cJSON *quays = cJSON_GetObjectItemCaseSensitive(sj, "quays");
-    bool passed = false; /* got to this stop */
+    const bool bus = replacement_bus(sj);
+    const cJSON *here = NULL; /* got to this stop */
+    double here_d2[ENTUR_MAX_VIA], via_lat[ENTUR_MAX_VIA], via_lon[ENTUR_MAX_VIA];
+    bool via_at[ENTUR_MAX_VIA] = { false };
     const cJSON *q;
     cJSON_ArrayForEach(q, quays)
     {
-        if (!passed) {
+        double lat, lon;
+        if (here == NULL) {
             const char *id = str_at(q, "id");
-            passed = (id != NULL && quay_id != NULL && strcmp(id, quay_id) == 0);
+            if (id != NULL && quay_id != NULL && strcmp(id, quay_id) == 0) {
+                here = q;
+                for (int v = 0; bus && v < line->via_count; v++) {
+                    char alias[16];
+                    snprintf(alias, sizeof(alias), "v%lu", (unsigned long)line->via[v]);
+                    via_at[v] = lat_lon(q, &lat, &lon) &&
+                                lat_lon(cJSON_GetObjectItemCaseSensitive(vias, alias), &via_lat[v], &via_lon[v]);
+                    if (via_at[v]) {
+                        here_d2[v] = dist2(lat, lon, via_lat[v], via_lon[v]);
+                    }
+                }
+            }
             continue;
         }
         const char *sp = str_at(cJSON_GetObjectItemCaseSensitive(q, "stopPlace"), "id");
         const char *num = sp ? strrchr(sp, ':') : NULL;
         const uint32_t n = num ? (uint32_t)strtoul(num + 1, NULL, 10) : 0;
+        const bool at = bus && lat_lon(q, &lat, &lon);
         for (int v = 0; v < line->via_count; v++) {
             if (line->via[v] == n) {
+                return true;
+            }
+            /* "Well nearer": within 3/4 of the distance from here. */
+            if (at && via_at[v] && dist2(lat, lon, via_lat[v], via_lon[v]) < here_d2[v] * (0.75 * 0.75)) {
                 return true;
             }
         }
@@ -409,7 +476,8 @@ static bool goes_via(const entur_line_sel_t *line, const cJSON *sj, const char *
  * `*entry` is the listing it goes with: the first that wants it (a line
  * may be listed once per direction), or NULL if the line isn't listed. */
 static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, const char *dir_type,
-                             const cJSON *sj, const char *quay_id, const entur_line_sel_t **entry)
+                             const cJSON *sj, const char *quay_id, const cJSON *vias,
+                             const entur_line_sel_t **entry)
 {
     const uint8_t d = (dir_type && strcmp(dir_type, "inbound") == 0) ? ENTUR_DIR_IN
                     : (dir_type && strcmp(dir_type, "outbound") == 0) ? ENTUR_DIR_OUT : 0;
@@ -421,7 +489,7 @@ static bool direction_wanted(const entur_stop_sel_t *st, const char *line_id, co
             continue;
         }
         listed = true;
-        const bool wanted = l->via_count > 0 ? goes_via(l, sj, quay_id)
+        const bool wanted = l->via_count > 0 ? goes_via(l, sj, quay_id, vias)
                                              : (l->dirs == 0 || d == 0 || (l->dirs & d) != 0);
         if (wanted) {
             *entry = l;
@@ -470,7 +538,7 @@ static void call_notice(const cJSON *call, char *out, size_t out_len)
 
 /* Group the calls of stop `si` per line + direction into `out`, the first
  * ENTUR_PER_GROUP calls of each (the API lists them in departure order). */
-static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int si,
+static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int si, const cJSON *vias,
                            entur_departures_t *out, group_key_t *keys)
 {
     const cJSON *call;
@@ -485,7 +553,7 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
         const char *dir_type = str_at(sj, "directionType");
         const char *quay_id = str_at(cJSON_GetObjectItemCaseSensitive(call, "quay"), "id");
         const entur_line_sel_t *entry;
-        if (!direction_wanted(st, line_id, dir_type, sj, quay_id, &entry)) {
+        if (!direction_wanted(st, line_id, dir_type, sj, quay_id, vias, &entry)) {
             continue;
         }
         const char *front = str_at(cJSON_GetObjectItemCaseSensitive(call, "destinationDisplay"), "frontText");
@@ -521,8 +589,6 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
             snprintf(ng->code, sizeof(ng->code), "%s", code ? code : "?");
             snprintf(ng->mode, sizeof(ng->mode), "%s", mode ? mode : "");
             snprintf(ng->dest, sizeof(ng->dest), "%s", front ? front : "");
-            const char *quay = str_at(cJSON_GetObjectItemCaseSensitive(call, "quay"), "publicCode");
-            snprintf(ng->quay, sizeof(ng->quay), "%s", quay ? quay : "");
             const cJSON *pres = cJSON_GetObjectItemCaseSensitive(line, "presentation");
             ng->has_colour = parse_hex_colour(str_at(pres, "colour"), &ng->colour);
             if (!parse_hex_colour(str_at(pres, "textColour"), &ng->text_colour)) {
@@ -533,6 +599,12 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
         if (grp->call_count >= ENTUR_PER_GROUP) {
             continue;
         }
+        const bool bus = replacement_bus(sj);
+        if (grp->quay[0] == '\0' && !bus) {
+            /* The trains' track, not the replacement bus's stop. */
+            const char *quay = str_at(cJSON_GetObjectItemCaseSensitive(call, "quay"), "publicCode");
+            snprintf(grp->quay, sizeof(grp->quay), "%s", quay ? quay : "");
+        }
         if (grp->notice[0] == '\0') {
             call_notice(call, grp->notice, sizeof(grp->notice));
         }
@@ -541,7 +613,25 @@ static void add_stop_calls(const cJSON *calls, const entur_stop_sel_t *st, int s
         c->aimed = iso8601_to_epoch(str_at(call, "aimedDepartureTime"));
         c->realtime = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(call, "realtime"));
         c->cancelled = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(call, "cancellation"));
+        c->replacement_bus = bus;
     }
+}
+
+/* "Buss for tog" first in the notice of a row with a replacement bus,
+ * unless Entur's own notice already says so. */
+static void note_replacement(entur_group_t *grp)
+{
+    static const char BUS[] = "Buss for tog";
+    bool any = false;
+    for (int k = 0; k < grp->call_count; k++) {
+        any |= grp->calls[k].replacement_bus;
+    }
+    if (!any || strstr(grp->notice, BUS + 1) != NULL) { /* "Buss"/"buss for tog" */
+        return;
+    }
+    char was[sizeof(grp->notice)];
+    memcpy(was, grp->notice, sizeof(was));
+    snprintf(grp->notice, sizeof(grp->notice), was[0] ? "%s. %s" : "%s", BUS, was);
 }
 
 static bool parse_response(const char *json, const entur_selection_t *sel, entur_departures_t *out)
@@ -590,7 +680,10 @@ static bool parse_response(const char *json, const entur_selection_t *sel, entur
             ESP_LOGW(TAG, "stop %s not found", sel->stops[i].stop_id);
             continue;
         }
-        add_stop_calls(cJSON_GetObjectItemCaseSensitive(sp, "estimatedCalls"), &sel->stops[i], i, out, keys);
+        add_stop_calls(cJSON_GetObjectItemCaseSensitive(sp, "estimatedCalls"), &sel->stops[i], i, data, out, keys);
+    }
+    for (int g = 0; g < out->group_count; g++) {
+        note_replacement(&out->groups[g]);
     }
     qsort(out->groups, out->group_count, sizeof(out->groups[0]), compare_groups);
     out->valid = true;

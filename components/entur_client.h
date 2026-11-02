@@ -68,6 +68,7 @@ typedef struct {
     int64_t aimed;
     bool realtime;
     bool cancelled;
+    bool replacement_bus; /* a bus in place of the train */
 } entur_call_t;
 
 typedef struct {
@@ -76,9 +77,10 @@ typedef struct {
     char code[8];          /* line publicCode, e.g. "31" */
     char mode[12];         /* transportMode, e.g. "bus" */
     char dest[40];         /* destinationDisplay.frontText of the first call */
-    char quay[8];          /* quay publicCode of the first call ("" if none) */
+    char quay[8];          /* quay publicCode of the first call but replacement buses ("" if none) */
     char notice[160];      /* a disruption notice for the row's departures, e.g.
-                            * "Færre vogner: Denne avgangen kjører ..." ("" = none) */
+                            * "Færre vogner: Denne avgangen kjører ..." ("" = none);
+                            * "Buss for tog" first if a call is a replacement bus */
     bool has_colour;
     uint32_t colour;       /* line colour, 0xRRGGBB */
     uint32_t text_colour;

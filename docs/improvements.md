@@ -901,3 +901,15 @@ too heavy for the chip.
   fields in `own_event_t` (`repeat`, `every`), so the NVS key went from
   `v1` to `v2`; `v1` is read as once and erased on the next save. In the
   backup as `"repeat"` and `"every"` (left out for 1).*
+- [x] **120. Replacement buses hidden from the train rows.** At Nittedal
+  on 2 November 2026 the R31 row toward Oslo (`/v530`, via Kjelsås) showed
+  one train, then none: Vy's replacement buses run as R31 with the same
+  "Oslo S" sign but by Sinsen, so they failed the via filter - after
+  taking the two places per line and destination that Entur gives
+  (`numberOfDeparturesPerLineAndDestinationDisplay`), which left the next
+  train out too. *Done in 1.32.1: a call whose journey is
+  `railReplacementBus` is shown in the train's row, its time in orange,
+  and the row's notice starts "Buss for tog". For a via direction it
+  counts as going that way if a later stop of its is within three quarters
+  of this stop's distance to the via stop (their coordinates now in the
+  query). The row's track comes from the first train, not a bus.*

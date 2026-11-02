@@ -861,7 +861,9 @@ under a large 24-hour clock. Refreshed every 30 seconds while on screen; the
 "N min" countdowns tick between refreshes. Times without realtime data are
 dimmed, cancelled departures say *Innstilt*. Trains show their track
 ("Oslo S (Spor 2)"); buses leave out their stop position ("Fornebu" rather
-than "Fornebu (F)"). When the rows don't fit, they are first drawn closer
+than "Fornebu (F)"). A bus in place of a train (Entur's
+`railReplacementBus`) is listed in the train's row with its time in orange,
+and the row says *Buss for tog*. When the rows don't fit, they are first drawn closer
 together, then in two columns. There the times say "11 m" rather than
 "11 min" and destinations are cut short to fit.
 
@@ -878,7 +880,10 @@ show, comma-separated; a line ID ending in `/in` or `/out` shows only that
 direction, and a stop without lines shows all of them. Trains (Vy) have no
 in/out direction in Entur's data, so their direction is `/v<stop>`: only the
 departures that call at that stop place later on (`/v502`, Hakadal, keeps
-the northbound trains at Nittedal; `+` joins more than one). At most 4 stops
+the northbound trains at Nittedal; `+` joins more than one). Replacement
+buses take the roads and call at none of the stations, so they count as
+going that way if a later stop of theirs is well nearer the via stop than
+this one (within three quarters of the distance). At most 4 stops
 and 8 lines per stop.
 
 Lines can also be gathered under headings of your own, across stops, such

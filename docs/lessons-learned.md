@@ -586,3 +586,17 @@ The web server also had 31 of its 32 handlers in use.
 *Lesson:* try a new protocol by hand (curl, nc) against the real device
 first and read the raw answer; and when adding a web handler, count the
 ones already registered against `max_uri_handlers`.
+
+### Entur: a cap applied before our own filter
+
+The departure board asks Entur for the next two departures per line and
+destination, and then drops the trains that don't go via the stop the
+user picked. On a morning with replacement buses - run under the train's
+line, with the same destination sign, but by other stops - the buses took
+both places and were then dropped, so the row showed one train or none
+and the next train never came back from Entur at all. The buses were
+also exactly what the user needed to know about.
+*Lesson:* a limit the server applies before a filter of ours counts what
+the filter throws away; check what the server's grouping key is against
+our own. And when a filter drops something, ask whether the user would
+rather see it marked.

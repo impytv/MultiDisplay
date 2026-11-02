@@ -88,8 +88,9 @@ static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now, bool short_
 }
 
 /* One departure in the time column `w` wide ending at x_right ("N m" for
- * minutes if `short_min`): red "Innstilt" if cancelled, dimmed if it's
- * only the timetable (no realtime data). */
+ * minutes if `short_min`): red "Innstilt" if cancelled, orange if a bus
+ * goes in place of the train (as the row's "Buss for tog" notice), dimmed
+ * if it's only the timetable (no realtime data). */
 static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right, int w, int y, time_t now,
                           bool short_min)
 {
@@ -101,7 +102,9 @@ static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right,
         color = lv_palette_main(LV_PALETTE_RED);
     } else {
         dep_fmt_time(buf, sizeof(buf), c->expected, now, short_min);
-        if (!c->realtime) {
+        if (c->replacement_bus) {
+            color = lv_color_hex(DEP_NOTICE_COLOUR);
+        } else if (!c->realtime) {
             color = dep_dim_color();
         }
     }
