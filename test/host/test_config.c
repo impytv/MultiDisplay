@@ -247,6 +247,17 @@ void test_config(void)
     CHECK_STR(guide, "");
     app_config_guide_url("http:///manifest.json", guide, sizeof(guide));
     CHECK_STR(guide, "");
+    /* Error reports, likewise; the longest site address still fits. */
+    app_config_report_url("https://example.no/md/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "https://example.no/md/feil/");
+    app_config_report_url("ftp://example.no/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "");
+    char longest[APP_CONFIG_OTA_URL_MAX];
+    memset(longest, 'a', sizeof(longest) - 1);
+    memcpy(longest, "https://", 8);
+    longest[sizeof(longest) - 1] = '\0';
+    app_config_report_url(longest, guide, sizeof(guide));
+    CHECK(strlen(guide) == sizeof(longest) - 1 + strlen("/feil/"));
     /* The radio logos, beside the guide. */
     char logo[96];
     app_config_radio_url("https://example.no/md/manifest.json", "p4.jpg", logo, sizeof(logo));

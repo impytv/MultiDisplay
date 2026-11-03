@@ -34,6 +34,7 @@ void test_sonos(void);
 void test_sgp4(void);
 void test_png(void);
 void test_own_events(void);
+void test_report(void);
 
 int main(int argc, char **argv)
 {
@@ -44,7 +45,7 @@ int main(int argc, char **argv)
         { "routes", test_routes },   { "owners", test_owners }, { "config", test_config }, { "air", test_air }, { "yr", test_yr },
         { "tide", test_tide }, { "ical", test_ical }, { "sat", test_sat }, { "aurora", test_aurora }, { "alerts", test_alerts },
         { "webauth", test_web_auth }, { "holidays", test_holidays }, { "astro", test_astro }, { "spotify", test_spotify },
-        { "sonos", test_sonos }, { "sgp4", test_sgp4 }, { "png", test_png }, { "events", test_own_events },
+        { "sonos", test_sonos }, { "sgp4", test_sgp4 }, { "png", test_png }, { "events", test_own_events }, { "report", test_report },
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         const int before = g_failures;

@@ -66,6 +66,7 @@ static volatile bool s_sta_up; /* has an IP right now */
  * password is forgotten. Set by wifi_provision_connect. */
 static char s_web_pass[APP_CONFIG_PASS_MAX];
 static char s_guide_url[APP_CONFIG_OTA_URL_MAX + 8]; /* the usage guide on the update site, or "" */
+static char s_report_url[APP_CONFIG_OTA_URL_MAX + 8]; /* where error reports go, or "" */
 static char s_hostname[APP_CONFIG_DEVNAME_MAX] = APP_CONFIG_DEVNAME_DEFAULT; /* <name>.local */
 static esp_netif_t *s_sta_netif;
 static bool s_auth_bypass;
@@ -1013,7 +1014,13 @@ static esp_err_t send_nav_page(httpd_req_t *req)
     p = html_escape_append(p, end, display_title());
     p = buf_append(p, end, " - V&aelig;rtavla</title><h1>");
     p = html_escape_append(p, end, display_title());
-    p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div>"
+    p = buf_append(p, end, "</h1><div id=nav><small>Henter skjermene...</small></div><div id=feil");
+    if (s_report_url[0]) {
+        p = buf_append(p, end, " data-url=\"");
+        p = html_escape_append(p, end, s_report_url);
+        p = buf_append(p, end, "\"");
+    }
+    p = buf_append(p, end, "></div>"
                            "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Bursdager og hendelser</a>");
     if (s_guide_url[0]) {
         p = buf_append(p, end, "<a href=\"");
@@ -1917,7 +1924,7 @@ static void start_web_server(void)
     /* The stack stays in internal RAM (the default task_caps): the update
      * and restore handlers call the OTA functions, which memory-map flash
      * and assert on a PSRAM stack (see main.c, yr_weather). */
-    config.max_uri_handlers = 40;
+    config.max_uri_handlers = 48; /* room for a few more than are registered */
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
 
@@ -2308,6 +2315,7 @@ esp_err_t wifi_provision_connect(const app_config_t *cfg, wifi_provision_status_
     snprintf(s_web_pass, sizeof(s_web_pass), "%s", cfg->web_pass);
     snprintf(s_hostname, sizeof(s_hostname), "%s", cfg->device_name);
     app_config_guide_url(cfg->ota_url, s_guide_url, sizeof(s_guide_url));
+    app_config_report_url(cfg->ota_url, s_report_url, sizeof(s_report_url));
     s_auth_bypass = force_portal;
     if (force_portal) {
         ESP_LOGW(TAG, "BOOT held - forcing setup portal");

@@ -334,6 +334,10 @@ void app_config_hostname(const char *in, char *out, size_t out_len);
  * manifest. "" for anything else. */
 void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
 
+/* Where the display's error reports go (server/feil/feil.py): the folder
+ * "feil/" on the update site, as app_config_guide_url. */
+void app_config_report_url(const char *ota_url, char *out, size_t out_len);
+
 /* A radio logo's address: `file` in the folder "bruk/radio/" next to the
  * manifest (scripts/build_radio_logos.py), as for the guide. "" if
  * `ota_url` gives none or it doesn't fit. */

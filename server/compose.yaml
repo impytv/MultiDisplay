@@ -33,6 +33,10 @@ services:
       - ./spotify:/usr/share/nginx/html/spotify:ro
     depends_on:
       - radio
+      - feil
+    networks:
+      - default
+      - feil
     read_only: true
     tmpfs:
       - /tmp
@@ -60,6 +64,33 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Error reports from the displays' navigation page (feil/feil.py), at
+  # /feil/ of the update site through nginx, kept in the folder below and
+  # pushed to an ntfy topic (.env.example). The folder is made by the user
+  # who runs the service (uid 1000), before the first start.
+  feil:
+    build: ./feil
+    image: multidisplay-feil
+    container_name: multidisplay-feil
+    restart: unless-stopped
+    command: python -I -u /app/feil.py
+    user: "1000:1000"
+    volumes:
+      - ./feil:/app:ro
+      - ${MULTIDISPLAY_REPORTS:-./feilmeldinger}:/data
+    environment:
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
+    # Its own network with nginx only, so the limits there can't be gone
+    # around from another container; out to ntfy through it.
+    networks:
+      - feil
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   tunnel:
     image: cloudflare/cloudflared:2026.10.7
     container_name: multidisplay-tunnel
@@ -78,3 +109,6 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+
+networks:
+  feil:

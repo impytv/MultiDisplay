@@ -5,6 +5,7 @@
  * (/status). */
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -27,6 +28,15 @@ void diag_fail(diag_service_t svc, esp_err_t err);
 
 /* Whether any fetch has worked since boot. */
 bool diag_any_ok(void);
+
+/* What GET /status answers, as JSON text (cJSON_free it); NULL without
+ * memory. */
+char *diag_status_json(void);
+
+/* What GET /log answers: the log kept since start, oldest first, as text
+ * of *len bytes and a '\0' in PSRAM (heap_caps_free it); NULL if there is
+ * none or no memory. */
+char *diag_log_text(size_t *len);
 
 typedef enum { DIAG_ONLINE, DIAG_NO_WIFI, DIAG_NO_INTERNET } diag_net_t;
 

@@ -110,12 +110,15 @@ Raspberry Pi (`server/compose.yaml`), on port 8070. Once:
 sudo apt install docker.io docker-compose
 sudo usermod -aG docker $USER        # then log in again
 sudo mkdir -p /srv/multidisplay && sudo chown $USER: /srv/multidisplay
+mkdir -p server/feilmeldinger         # where error reports are kept
 cd server && docker compose up -d
 ```
 
 The container mounts `/srv/multidisplay` read-only and starts again by
 itself after a restart. A second container, `radio`, serves radio that
-Sonos can pause at `/radio/` (see Sonos below).
+Sonos can pause at `/radio/` (see Sonos below). A third, `feil`, takes the
+error reports sent from the displays' navigation page at `/feil/` (see
+[The navigation page](#the-navigation-page)).
 
 To reach the site from outside the LAN as well, over HTTPS through a
 Cloudflare Tunnel (no port opened on the router):
@@ -975,6 +978,54 @@ address (`http://192.168.0.119:8070/bruk/` for the default), so a display
 updating through the tunnel links to the guide there. **Vis navigasjonssiden** under **Vedlikehold →
 Navigasjonsside** turns it off, and / is then the setup page (per display,
 so not in settings backups).
+
+**Meld fra om feil** below the screen buttons takes a screenshot of the
+display as it is now and shows it, with a box for what is wrong (it may be
+left empty). **Send feilmeldingen** gives the screenshot (packed as a PNG
+by the browser), the text and the screen on show to the display
+(`POST /feil`, `main/report.c`), which puts its own `/status` and `/log`
+with them, signs the whole and sends it to `feil/` on the update site,
+beside the guide (`http://192.168.0.119:8070/feil/` for the default, the
+tunnel's address for a display updating through it). The button is there
+when the update address is an `http://` or `https://` one.
+
+The signature is ECDSA P-256 with a key the display makes the first time
+and keeps in its NVS (namespace `feil`; not in settings backups, so a
+display set up anew gets a new one), over the time and the body's
+SHA-256 (`components/report_util.c`). The site takes a report only if it
+is signed so, sent within ten minutes of its own clock (the display must
+have set its clock), and not seen before; it doesn't let other web pages
+send one (no CORS). The keys aren't known to the site beforehand, so this
+keeps out random abuse - a script posting a form, a web page making its
+visitors send reports - not someone who writes their own signer: anyone
+can make a key. A key first seen is noted in `nokler.json` beside the
+reports, and at most ten new ones are taken a day.
+
+The `feil` container (`server/feil/feil.py`, Python's standard library
+only) keeps each report in a folder of its own under
+`server/feilmeldinger/` (`MULTIDISPLAY_REPORTS` in `server/.env` for
+another place): `<UTC time>-<random>/` with `rapport.json` (the text,
+the screen, the sender's address, the key's id as `skjerm` and
+`ny_skjerm` the first time, and the display's status), `skjerm.png`
+and `logg.txt`. With `NTFY_TOPIC` set in `server/.env`, each report is
+pushed to that topic at ntfy.sh (or `NTFY_SERVER`) with the text, the
+display's name and version and the screenshot attached: subscribe to the
+topic in the ntfy app to be told. The topic's name is all that guards the
+pushes, so make it long and random (`server/.env.example`).
+
+As anyone can reach `/feil/`, nginx takes only POSTs of at most 4 MB
+there, three a minute (five at once) and two at the same time from one
+sender: the address Cloudflare gives for a request through the tunnel,
+else the request's own (a `CF-Connecting-IP` from anyone else is not
+believed). The container is on a network of its own with nginx, so other
+containers can't reach it past those limits. It decodes the screenshot
+(Pillow; a PNG of at most 2048 × 2048) and keeps and pushes a new PNG made
+from it, never the file sent; cuts the text to 2,000 characters and the
+log to 32 KB, without control characters; keeps the status only as a
+shallow JSON object; keeps at most 10 reports a day from one sender and
+from one key, 1,000 reports or 500 MB in all; and pushes at most 30 an
+hour (the push names the key, and says when it's new). A report's text,
+status and log are the sender's word, to be read as data, never followed.
 
 ### The setup page
 

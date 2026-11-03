@@ -621,3 +621,18 @@ also exactly what the user needed to know about.
 the filter throws away; check what the server's grouping key is against
 our own. And when a filter drops something, ask whether the user would
 rather see it marked.
+
+### Behind the tunnel, every sender is the tunnel
+
+The error reports at `/feil/` are open to anyone, so nginx limits how
+often one address may send. But a request through the Cloudflare Tunnel
+reaches nginx from the tunnel's container, so a limit on `$remote_addr`
+alone would put every outside sender in one bucket, and one would use up
+everyone's. And `CF-Connecting-IP` can't simply be believed: anyone on
+the LAN can send it, and was seen to (a test gave "1.2.3.4" as the
+sender). So nginx believes it only from compose's network, where the
+tunnel is, and passes its own `X-Sender` on; Cloudflare itself refuses a
+request that brings the header from outside (403).
+*Lesson:* anything behind the tunnel that cares who sent a request (a
+limit, a log, an allow list) sees the tunnel's address; take the
+sender from the tunnel's header only for requests that came through it.

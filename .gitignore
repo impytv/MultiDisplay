@@ -26,3 +26,6 @@ test/host/host_tests
 
 # Cloudflare Tunnel token for the update site (server/.env.example)
 server/.env
+
+# Error reports from the displays (server/feil/feil.py), kept on the Pi
+server/feilmeldinger/

@@ -24,6 +24,7 @@ idf_component_register(
         "satellite.c"
         "iss.c"
         "events.c"
+        "report.c"
         "lv_mem_psram.c"
         "../components/waveshare_rgb_lcd_port.c"
         "../components/app_config.c"
@@ -61,6 +62,7 @@ idf_component_register(
         "../components/png_decode.c"
         "../components/png_inflate.c"
         "../components/sgp4.c"
+        "../components/report_util.c"
     INCLUDE_DIRS
         "."
         "../components"

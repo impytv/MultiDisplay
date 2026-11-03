@@ -119,14 +119,14 @@ void diag_init(void)
     }
 }
 
-static esp_err_t h_log(httpd_req_t *req)
+char *diag_log_text(size_t *len)
 {
     if (s_ring == NULL) {
-        return httpd_resp_send_404(req);
+        return NULL;
     }
-    char *copy = heap_caps_malloc(LOG_RING, MALLOC_CAP_SPIRAM);
+    char *copy = heap_caps_malloc(LOG_RING + 1, MALLOC_CAP_SPIRAM);
     if (copy == NULL) {
-        return httpd_resp_send_500(req);
+        return NULL;
     }
     xSemaphoreTake(s_ring_lock, portMAX_DELAY);
     size_t n;
@@ -146,10 +146,23 @@ static esp_err_t h_log(httpd_req_t *req)
         const char *nl = memchr(copy, '\n', n);
         start = nl ? (size_t)(nl - copy) + 1 : 0;
     }
+    memmove(copy, copy + start, n - start);
+    copy[n - start] = '\0';
+    *len = n - start;
+    return copy;
+}
+
+static esp_err_t h_log(httpd_req_t *req)
+{
+    size_t n;
+    char *text = diag_log_text(&n);
+    if (text == NULL) {
+        return s_ring == NULL ? httpd_resp_send_404(req) : httpd_resp_send_500(req);
+    }
     httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    esp_err_t err = httpd_resp_send(req, copy + start, n - start);
-    heap_caps_free(copy);
+    esp_err_t err = httpd_resp_send(req, text, n);
+    heap_caps_free(text);
     return err;
 }
 
@@ -343,11 +356,11 @@ static void add_stacks(cJSON *o)
     heap_caps_free(ts);
 }
 
-static esp_err_t h_status(httpd_req_t *req)
+char *diag_status_json(void)
 {
     cJSON *o = cJSON_CreateObject();
     if (o == NULL) {
-        return httpd_resp_send_500(req);
+        return NULL;
     }
     cJSON_AddStringToObject(o, "navn", g_cfg->device_name);
     cJSON_AddStringToObject(o, "versjon", esp_app_get_description()->version);
@@ -425,6 +438,12 @@ static esp_err_t h_status(httpd_req_t *req)
     add_stacks(o);
     char *text = cJSON_PrintUnformatted(o);
     cJSON_Delete(o);
+    return text;
+}
+
+static esp_err_t h_status(httpd_req_t *req)
+{
+    char *text = diag_status_json();
     if (text == NULL) {
         return httpd_resp_send_500(req);
     }

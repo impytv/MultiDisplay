@@ -652,6 +652,11 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
     site_url(ota_url, false, "bruk/", out, out_len);
 }
 
+void app_config_report_url(const char *ota_url, char *out, size_t out_len)
+{
+    site_url(ota_url, false, "feil/", out, out_len);
+}
+
 void app_config_radio_url(const char *ota_url, const char *file, char *out, size_t out_len)
 {
     site_url(ota_url, false, "bruk/radio/", out, out_len);

@@ -41,6 +41,7 @@
 #include "entur_client.h"
 #include "radar.h"
 #include "rain_client.h"
+#include "report.h"
 #include "screenshot.h"
 #include "watchdog.h"
 #include "updater.h"
@@ -1250,6 +1251,7 @@ static void yr_weather_task(void *arg)
     events_add_handlers();
     sonos_events_add_handler();
     diag_start();
+    report_start();
     updater_start(xTaskGetCurrentTaskHandle());
 
     /* Let WiFi's own connection-setup buffers settle before hitting it with

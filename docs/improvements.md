@@ -929,3 +929,26 @@ too heavy for the chip.
   JSON, Bauer's planetradio details), made 240 px by the container;
   the next button skips 30 s on and "Til direkte" to now. The Sonos app
   shows only the station's name.*
+- [x] **122. No way to tell of an error from the display.** A user who
+  saw something wrong had to describe it by mail, without the screen or
+  the log. *Done in 1.34.0: the navigation page's "Meld fra om feil"
+  takes a screenshot, asks what is wrong and sends both, with `/status`
+  and `/log`, to the update site's new `feil` container, which keeps
+  them under `server/feilmeldinger/` and pushes each to an ntfy topic
+  with the screenshot. Rate, size and count capped, as it is reachable
+  through the tunnel; reviewed for abuse: the sender taken from the
+  tunnel's header only through the tunnel, two at a time and ten a day
+  per sender, the screenshot decoded and made anew, a deep status JSON
+  (which made the writing fail and left a half-written folder) kept as
+  text, control characters taken out, the container on a network of its
+  own with nginx.*
+- [x] **123. A report can't be told from one a display sent.** Any web
+  page could POST to `/feil/` (CORS was open for the navigation page) with
+  any name and version, so pushes could be faked and the store filled
+  from many addresses. A key in the firmware would not help: the images
+  are public on the update site. *Done in 1.34.0: each display makes its
+  own ECDSA P-256 key and signs the report, which it now sends itself
+  (the browser gives it the screenshot and text); the site takes only
+  signed, recent reports not seen before, without CORS, and at most ten
+  new keys a day. Keys aren't approved beforehand (by choice): this stops
+  random abuse, not a sender who makes keys of their own.*

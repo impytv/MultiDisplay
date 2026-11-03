@@ -41,3 +41,6 @@ input.bad{border-color:var(--err)}
 .navg button.on{background:var(--btn);color:#fff;font-weight:600}
 .navf{display:flex;flex-wrap:wrap;gap:.6rem 1.2rem;align-items:center;margin-top:2rem}.navf form{margin:0}
 .navf button{margin:0;width:auto;padding:0;background:none;color:var(--acc);text-decoration:underline}
+#feil img{display:block;width:100%;margin-top:1.3rem;border:1px solid var(--line);border-radius:.4rem}
+#feil textarea{width:100%;box-sizing:border-box;padding:.5rem;font:inherit;font-size:1rem;border:1px solid var(--inb);border-radius:.4rem;background:var(--in);color:var(--fg)}
+#feil p{margin:1.3rem 0 0}
