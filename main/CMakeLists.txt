@@ -10,6 +10,7 @@ idf_component_register(
         "updater.c"
         "diag.c"
         "sun.c"
+        "iss_pass.c"
         "clock.c"
         "air.c"
         "week.c"

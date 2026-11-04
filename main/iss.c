@@ -1,7 +1,9 @@
 /* The ISS screen: where the International Space Station is over the world
  * map, the last time round as a line behind it and the next as dots ahead,
  * the ground it can be seen from (above the horizon) as a ring around it,
- * day and night on the map, and the location chosen on the setup page.
+ * day and night on the map, and the location chosen on the setup page with
+ * when the station next passes over it and whether it can be seen then
+ * (main/iss_pass.c).
  *
  * The orbit comes from the station's two-line elements (TLE) at Celestrak
  * (or ARISS, if Celestrak doesn't answer), fetched every 6 hours while the
@@ -30,6 +32,7 @@
 #include "draw.h"
 #include "http_util.h"
 #include "iss.h"
+#include "iss_pass.h"
 #include "sgp4.h"
 #include "sun.h"
 #include "watchdog.h"
@@ -46,6 +49,8 @@ static const char *TAG = "iss";
 #define ISS_RETRY_MS 60000
 #define ISS_POLL_MS  5000                 /* it moves about a pixel in this time */
 #define ISS_SHADE_S  120                  /* the day and night redrawn after this */
+#define PASS_LOOK_DAYS 4                  /* passes looked for this far ahead */
+#define PASS_RETRY_S 3600                 /* looked for again after this if none */
 
 #define MAP_W    800
 #define MAP_H    400
@@ -99,6 +104,14 @@ static double s_now;             /* the time drawn for */
 static sgp4_ground_t s_here;     /* where it is then */
 static bool s_here_ok;
 static int s_drawn_x = -1, s_drawn_y = -1;
+/* The next pass over the location, and the next that can be seen (the
+ * same one if it can), from the weather task; held under the adapter lock. */
+static iss_pass_t s_pass, s_seen;
+static bool s_pass_ok, s_seen_ok;
+static int s_pass_loc;           /* the location (g_cfg->iss_loc) they are for, 0 = none */
+static double s_pass_epoch;      /* the elements they are from */
+static double s_pass_redo;       /* looked for again from this time */
+static char s_pass_txt[2][128];  /* what is said about them, bottom right */
 
 static int map_x(double lon)
 {
@@ -205,10 +218,10 @@ static void geo_line(lv_layer_t *layer, geo_t a, geo_t b, int width, lv_color_t 
 }
 
 /* Text with a dark edge under it, to read on any part of the map. */
-static void map_text(lv_layer_t *layer, const char *txt, int x, int y, lv_color_t c)
+static void map_text(lv_layer_t *layer, const char *txt, int x, int y, int w, lv_color_t c)
 {
     const int h = lv_font_get_line_height(s_small);
-    if (!draw_visible(layer, x - 1, y - 1, x + 300, y + h + 1)) {
+    if (!draw_visible(layer, x - 1, y - 1, x + w, y + h + 1)) {
         return;
     }
     lv_draw_label_dsc_t d;
@@ -219,8 +232,32 @@ static void map_text(lv_layer_t *layer, const char *txt, int x, int y, lv_color_
     for (int i = 0; i < 2; i++) {
         d.color = i ? c : lv_color_black();
         d.opa = i ? LV_OPA_COVER : LV_OPA_70;
-        lv_area_t a = { x + (i ? 0 : 1), y + (i ? 0 : 1), x + 300, y + h };
+        lv_area_t a = { x + (i ? 0 : 1), y + (i ? 0 : 1), x + w + (i ? 0 : 1), y + h + (i ? 0 : 1) };
         lv_draw_label(layer, &d, &a);
+    }
+}
+
+/* `txt` ending at x_right, cut short to fit w. */
+static void map_text_right(lv_layer_t *layer, const char *txt, int x_right, int y, int w, lv_color_t c)
+{
+    char buf[sizeof(s_pass_txt[0])];
+    draw_text_shorten(s_small, txt, w, buf, sizeof(buf));
+    lv_point_t sz;
+    lv_text_get_size(&sz, buf, s_small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    map_text(layer, buf, x_right - sz.x, y, sz.x + 1, c);
+}
+
+/* The passes over the location, bottom right: the first line above the
+ * legend's row may take the whole width, the one beside it what is left. */
+static void draw_passes(lv_layer_t *layer)
+{
+    const int lh = lv_font_get_line_height(s_small);
+    const int ly = MAP_TOP + MAP_H - lh - 6, right = MAP_W - 10;
+    if (s_pass_txt[1][0] != '\0') {
+        map_text_right(layer, s_pass_txt[0], right, ly - lh - 2, MAP_W - 20, lv_color_white());
+        map_text_right(layer, s_pass_txt[1], right, ly, MAP_W - 320, lv_color_white());
+    } else if (s_pass_txt[0][0] != '\0') {
+        map_text_right(layer, s_pass_txt[0], right, ly, MAP_W - 320, lv_color_white());
     }
 }
 
@@ -273,8 +310,10 @@ static void iss_draw_cb(lv_event_t *e)
         const int x = map_x(atof(loc->lon)), y = map_y(atof(loc->lat));
         draw_dot(layer, x, y, 4, lv_color_black());
         draw_dot(layer, x, y, 3, white);
-        map_text(layer, loc->name, x + 7, y - lv_font_get_line_height(s_small) / 2, white);
+        map_text(layer, loc->name, x + 7, y - lv_font_get_line_height(s_small) / 2, 300, white);
     }
+
+    draw_passes(layer);
 
     if (!s_here_ok || s_track_n == 0) {
         return;
@@ -342,14 +381,14 @@ static void iss_draw_cb(lv_event_t *e)
     const int ly = MAP_TOP + MAP_H - lh - 6;
     if (draw_visible(layer, 0, ly - 4, 400, MAP_TOP + MAP_H - 1)) {
         draw_line(layer, 10, ly + lh / 2, 34, ly + lh / 2, 2, lv_color_hex(C_PAST));
-        map_text(layer, "Forrige runde", 40, ly, white);
+        map_text(layer, "Forrige runde", 40, ly, 300, white);
         lv_point_t sz;
         lv_text_get_size(&sz, "Forrige runde", s_small, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
         const int x2 = 40 + sz.x + 20;
         for (int k = 0; k < 4; k++) {
             draw_dot(layer, x2 + 2 + 6 * k, ly + lh / 2, 2, lv_color_hex(C_NEXT));
         }
-        map_text(layer, "Neste runde", x2 + 30, ly, white);
+        map_text(layer, "Neste runde", x2 + 30, ly, 300, white);
     }
 }
 
@@ -378,6 +417,71 @@ static bool in_shadow(double t)
     return off2 < 6371.0 * 6371.0;
 }
 
+/* "i dag 19:42", "i morgen 05:51", "fredag 05:51". */
+static void day_time_text(char *buf, size_t len, double t, time_t now)
+{
+    static const char *const WD[] = { "s\xC3\xB8ndag", "mandag", "tirsdag", "onsdag", "torsdag", "fredag",
+                                      "l\xC3\xB8rdag" };
+    struct tm a, b;
+    const time_t tt = (time_t)t;
+    localtime_r(&now, &a);
+    localtime_r(&tt, &b);
+    int days = b.tm_yday - a.tm_yday;
+    if (b.tm_year != a.tm_year) {
+        const int y = a.tm_year + 1900;
+        days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+    }
+    snprintf(buf, len, "%s %02d:%02d", days == 0 ? "i dag" : days == 1 ? "i morgen" : WD[b.tm_wday], b.tm_hour,
+             b.tm_min);
+}
+
+/* "i dag 19:42-19:48, 54 degrees high", or "now, until 19:48, ..." while it is up. */
+static void pass_span_text(char *buf, size_t len, double from, double to, double el, time_t now)
+{
+    struct tm lt;
+    const time_t end = (time_t)to;
+    localtime_r(&end, &lt);
+    if (from <= (double)now) {
+        snprintf(buf, len, "n\xC3\xA5, til %02d:%02d, %d\xC2\xB0 h\xC3\xB8yt", lt.tm_hour, lt.tm_min, (int)lround(el));
+        return;
+    }
+    char when[32];
+    day_time_text(when, sizeof(when), from, now);
+    snprintf(buf, len, "%s\xE2\x80\x93%02d:%02d, %d\xC2\xB0 h\xC3\xB8yt", when, lt.tm_hour, lt.tm_min, (int)lround(el));
+}
+
+/* What is said about the passes (adapter lock held); true if it changed. */
+static bool pass_texts(void)
+{
+    char t[2][sizeof(s_pass_txt[0])] = { "", "" };
+    const time_t now = (time_t)s_now;
+    if (s_pass_loc > 0 && s_pass_loc <= g_cfg->location_count && s_now > 0) {
+        const char *name = g_cfg->locations[s_pass_loc - 1].name;
+        char span[64];
+        if (!s_pass_ok) {
+            snprintf(t[0], sizeof(t[0]), "Kommer ikke over %s de neste %d d\xC3\xB8gnene", name, PASS_LOOK_DAYS);
+        } else if (s_pass.seen_from != 0 && s_pass.seen_to > s_now) {
+            pass_span_text(span, sizeof(span), s_pass.seen_from, s_pass.seen_to, s_pass.seen_max_el, now);
+            snprintf(t[0], sizeof(t[0]), "Kan sees over %s %s", name, span);
+        } else {
+            pass_span_text(span, sizeof(span), s_pass.rise, s_pass.set, s_pass.max_el, now);
+            snprintf(t[0], sizeof(t[0]), "Over %s %s (%s)", name, span,
+                     s_pass.dark_at_top ? "i jordskyggen" : "for lyst til \xC3\xA5 sees");
+            if (s_seen_ok) {
+                pass_span_text(span, sizeof(span), s_seen.seen_from, s_seen.seen_to, s_seen.seen_max_el, now);
+                snprintf(t[1], sizeof(t[1]), "Kan sees neste gang %s", span);
+            } else {
+                snprintf(t[1], sizeof(t[1]), "Kan ikke sees de neste %d d\xC3\xB8gnene", PASS_LOOK_DAYS);
+            }
+        }
+    }
+    if (memcmp(t, s_pass_txt, sizeof(t)) == 0) {
+        return false;
+    }
+    memcpy(s_pass_txt, t, sizeof(t));
+    return true;
+}
+
 /* The labels for what is held (adapter lock held). */
 static void iss_show(void)
 {
@@ -401,6 +505,9 @@ static void iss_show(void)
         lv_label_set_text_fmt(s_line1, "%d km over bakken \xC2\xB7 %d %03d km/t", (int)lround(s_here.alt_km), kmh / 1000,
                               kmh % 1000);
         lv_label_set_text_fmt(s_line2, "Over %s \xC2\xB7 %s", pos, in_shadow(s_now) ? "i jordskyggen" : "i sollys");
+    }
+    if (pass_texts()) {
+        lv_obj_invalidate(s_canvas);
     }
     const time_t now = time(NULL);
     if (now - (time_t)s_tle.epoch > ISS_OLD_S) {
@@ -597,6 +704,31 @@ uint32_t iss_poll(int for_view)
     sgp4_ground_t here;
     const bool here_ok = sgp4_ground(&s_tle, now, &here);
 
+    /* The passes, when the one held is over (or the location or the
+     * elements changed). */
+    const int loc = g_cfg->iss_loc <= g_cfg->location_count ? g_cfg->iss_loc : 0;
+    iss_pass_t pass = { 0 }, seen = { 0 };
+    bool pass_ok = false, seen_ok = false, new_passes = false;
+    double redo = 0;
+    if (loc != s_pass_loc || s_tle.epoch != s_pass_epoch || (loc > 0 && now >= s_pass_redo)) {
+        new_passes = true;
+        if (loc > 0) {
+            const double lat = atof(g_cfg->locations[loc - 1].lat), lon = atof(g_cfg->locations[loc - 1].lon);
+            const double until = now + PASS_LOOK_DAYS * 86400.0;
+            pass_ok = iss_next_pass(&s_tle, lat, lon, now, until, false, &pass);
+            if (pass_ok && pass.seen_from != 0 && pass.seen_to > now) {
+                seen = pass;
+                seen_ok = true;
+            } else if (pass_ok) {
+                seen_ok = iss_next_pass(&s_tle, lat, lon, pass.set + 1, until, true, &seen);
+            }
+            redo = !pass_ok ? now + PASS_RETRY_S : seen_ok && seen.rise == pass.rise ? pass.seen_to : pass.set;
+            ESP_LOGI(TAG, "Next pass over %s: %s %.0f-%.0f, %.0f degrees, %s", g_cfg->locations[loc - 1].name,
+                     pass_ok ? "at" : "none", pass.rise, pass.set, pass.max_el,
+                     seen_ok ? "can be seen" : "none to be seen");
+        }
+    }
+
     if (s_map == NULL) {
         uint8_t *map = heap_caps_malloc(MAP_BYTES, MALLOC_CAP_SPIRAM);
         if (map == NULL) {
@@ -628,6 +760,15 @@ uint32_t iss_poll(int for_view)
             s_track_n = n;
             s_track_t0 = t0;
             redraw = true;
+        }
+        if (new_passes) {
+            s_pass = pass;
+            s_seen = seen;
+            s_pass_ok = pass_ok;
+            s_seen_ok = seen_ok;
+            s_pass_loc = loc;
+            s_pass_epoch = s_tle.epoch;
+            s_pass_redo = redo;
         }
         s_now = now;
         s_here = here;

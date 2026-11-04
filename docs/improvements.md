@@ -844,10 +844,13 @@ too heavy for the chip.
   Done: orbit from Celestrak's TLE every 6 hours, SGP4 on the device
   (checked against python-sgp4), the visibility ring, day and night on the
   map, and the location chosen under **Sted på kartet**.
-- [ ] **111. The next pass over the chosen location.** When the station
+- [x] **111. The next pass over the chosen location.** When the station
   next rises over it, how high it goes, and whether it can be seen (the
   sky dark there, the station in sunlight) - the elements and SGP4 are
-  already on the device.
+  already on the device. *Done in 1.35.0: bottom right on the map, the
+  next pass above 10° with its times, height and why it can't be seen if
+  it can't, and then the next that can, up to 4 days ahead
+  (`main/iss_pass.c`, matched against Skyfield to within 3 s).*
 - [x] **112. Forecast parsing within the PSRAM left.** After hours of use a
   weather screen had ~350 KB of PSRAM free, MET's complete forecast
   needed ~370 KB to parse, and every forecast failed and was fetched again

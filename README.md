@@ -866,6 +866,15 @@ satellite image. On it:
   the map, redrawn every two minutes;
 - the location chosen under **Sted på kartet** (the first unless changed,
   or none) as a dot with its name;
+- when the station next passes over that location (more than 10° above
+  the horizon, below which houses and trees hide it), how high it goes, and
+  whether it can be seen - the sky dark there (the sun 6° or more below the
+  horizon) and the station in sunlight - or why not ("i jordskyggen", "for
+  lyst til å sees"); if it can't, a second line says when it next can
+  ("Kan sees neste gang fredag 05:51–05:57, 67° høyt"), looking 4 days
+  ahead. A pass that can be seen is given as the part that can. Worked out
+  on the display from the same orbit (`main/iss_pass.c`; the host tests
+  check it against Skyfield to a few seconds), again when a pass is over;
 - its height, speed, position, and whether it is in sunlight or the earth's
   shadow; "Banen er fra ..." in orange if the orbit held is over three days
   old.
