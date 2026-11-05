@@ -69,4 +69,11 @@ int ical_end(ical_parser_t *p);
 /* Order by start, all-day events first on a day. */
 void cal_sort(cal_list_t *list);
 
+/* After a fetch where some calendars failed: the events `prev` had from
+ * the calendars in `feeds` (bit i = feed i) that overlap [from, to), added
+ * to `out` as far as it has room, and `out` sorted. Both screens keep a
+ * failed calendar's events this way, each for as long as that calendar's
+ * own last good read allows. */
+void cal_keep_feeds(cal_list_t *out, const cal_list_t *prev, uint8_t feeds, int64_t from, int64_t to);
+
 #endif

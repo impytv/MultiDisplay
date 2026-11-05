@@ -47,6 +47,7 @@
 #include "month.h"
 #include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "nb_text.h"
 
 static const char *TAG = "month";
 
@@ -106,14 +107,19 @@ static cal_list_t *s_cal, *s_cal_scratch;
 static int64_t s_cal_from, s_cal_to, s_cal_asked;
 static fetch_stamp_t s_cal_at;
 static backoff_t s_cal_fail;
+/* Each calendar's last good read, as on the calendar screen: one that
+ * fails keeps its events for MON_CAL_KEEP_MS from then, and is named in
+ * orange under the title meanwhile (s_cal_note). */
+static fetch_stamp_t s_feed_at[APP_CONFIG_CAL_FEEDS];
+static uint8_t s_feed_failed;
+static lv_obj_t *s_cal_note;
 
 /* The display's own events on the days shown, worked out with them (in
  * PSRAM), and the events' generation then. */
 static cal_list_t *s_own;
 static uint32_t s_own_gen;
 
-static const char *const MONTH[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli",
-                                     "august", "september", "oktober", "november", "desember" };
+#define MONTH NB_MONTH
 static const char *const MONTH_SHORT[] = { "jan.", "feb.", "mars", "apr.", "mai", "juni", "juli",
                                            "aug.", "sep.", "okt.", "nov.", "des." };
 static const char *const WDAY[] = { "Man", "Tir", "Ons", "Tor", "Fre", "L\xC3\xB8r", "S\xC3\xB8n" };
@@ -672,6 +678,11 @@ lv_obj_t *month_build(lv_obj_t *screen)
         x -= 10;
     }
     lv_obj_set_size(s_title, x - MON_X, lv_font_get_line_height(g_font_large));
+    s_cal_note = lv_label_create(s_root);
+    lv_obj_set_style_text_font(s_cal_note, s_note_font, 0);
+    lv_obj_set_style_text_color(s_cal_note, lv_color_hex(STALE_COLOUR), 0);
+    lv_obj_set_pos(s_cal_note, MON_X, 4 + lv_font_get_line_height(g_font_large));
+    lv_label_set_text(s_cal_note, "");
     lv_timer_create(month_clock_timer_cb, 1000, NULL);
     s_own = cal_list_new(MON_OWN_EVENTS);
     assert(s_own != NULL);
@@ -690,16 +701,32 @@ void month_enter(void)
     month_show();
 }
 
+/* "Kalender 2 ikke oppdatert" under the title while a calendar fails
+ * (adapter lock held). */
+static void cal_note_show(void)
+{
+    char note[48] = "";
+    int n = 0, cnt = 0;
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        cnt += (s_feed_failed >> i) & 1;
+    }
+    for (int i = 0, k = 0; g_cfg->mon_cal && i < APP_CONFIG_CAL_FEEDS; i++) {
+        if (s_feed_failed & (1u << i)) {
+            k++;
+            n += snprintf(note + n, sizeof(note) - n, "%s%d", k == 1 ? "Kalender " : (k == cnt ? " og " : ", "),
+                          i + 1);
+        }
+    }
+    if (n > 0) {
+        snprintf(note + n, sizeof(note) - n, " ikke oppdatert");
+    }
+    lv_label_set_text(s_cal_note, note);
+}
+
 /* Local midnight `weeks` weeks from midnight t. */
 static int64_t weeks_from(int64_t t, int weeks)
 {
-    const time_t tt = (time_t)t;
-    struct tm lt;
-    localtime_r(&tt, &lt);
-    lt.tm_mday += weeks * 7;
-    lt.tm_hour = 0;
-    lt.tm_isdst = -1;
-    return (int64_t)mktime(&lt);
+    return (int64_t)nb_midnight((time_t)t, weeks * 7);
 }
 
 /* Fetch the calendars, if due, for the days from `from` to `to` (those
@@ -725,16 +752,16 @@ static void fetch_events(int64_t from, int64_t to)
         return;
     }
     /* A calendar that failed keeps the events it had, where the windows
-     * meet. */
-    if (failed && stamp_fresh(&s_cal_at, MON_CAL_KEEP_MS)) {
-        for (int k = 0; k < s_cal->count && s_cal_scratch->count < s_cal_scratch->max; k++) {
-            const cal_event_t *e = &s_cal->ev[k];
-            if ((failed & (1u << e->feed)) && e->start < f_to && e->end > f_from) {
-                s_cal_scratch->ev[s_cal_scratch->count++] = *e;
-            }
+     * meet, for as long as its own last good read allows. */
+    uint8_t keep = 0;
+    for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
+        if (!(failed & (1u << i))) {
+            stamp_now(&s_feed_at[i]);
+        } else if (stamp_fresh(&s_feed_at[i], MON_CAL_KEEP_MS)) {
+            keep |= 1u << i;
         }
-        cal_sort(s_cal_scratch);
     }
+    cal_keep_feeds(s_cal_scratch, s_cal, keep, f_from, f_to);
     if (failed) {
         diag_fail(DIAG_CALENDAR, ESP_FAIL);
         backoff_fail(&s_cal_fail);
@@ -751,12 +778,7 @@ static void fetch_events(int64_t from, int64_t to)
                 last = s_cal_scratch->ev[k].start;
             }
         }
-        const time_t lt_t = (time_t)last;
-        struct tm lt;
-        localtime_r(&lt_t, &lt);
-        lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-        lt.tm_isdst = -1;
-        cover_to = (int64_t)mktime(&lt);
+        cover_to = (int64_t)nb_midnight((time_t)last, 0);
         ESP_LOGW(TAG, "Calendar list full: events up to %lld only", (long long)cover_to);
     }
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -765,6 +787,8 @@ static void fetch_events(int64_t from, int64_t to)
         s_cal_to = cover_to;
         s_cal_asked = from;
         stamp_now(&s_cal_at);
+        s_feed_failed = failed;
+        cal_note_show();
         esp_lv_adapter_unlock();
     }
     ESP_LOGI(TAG, "%d calendar event(s) in the %d weeks fetched", s_cal_scratch->count,

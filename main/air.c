@@ -42,7 +42,6 @@ static const char *TAG = "air";
 #define AIR_KEEP_MS       (3 * 3600 * 1000) /* older than this isn't shown */
 #define AIR_POLL_MS       (5 * 60 * 1000)
 #define AIR_RETRY_MS      30000
-#define AIR_STALE_COLOUR  0xE07000
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
 static big_clock_t s_clock;
@@ -193,19 +192,7 @@ static void air_show(void)
         lv_obj_add_flag(s_box, LV_OBJ_FLAG_HIDDEN);
     }
     const fetch_stamp_t *at = &s_q_at[s_loc];
-    if (q != NULL && at->when > 0) {
-        struct tm lt;
-        localtime_r(&at->when, &lt);
-        lv_label_set_text_fmt(s_updated, "%s kl. %02d:%02d", s_failed ? "Sist oppdatert" : "Oppdatert",
-                              lt.tm_hour, lt.tm_min);
-    } else {
-        lv_label_set_text(s_updated, "");
-    }
-    if (s_failed) {
-        lv_obj_set_style_text_color(s_updated, lv_color_hex(AIR_STALE_COLOUR), 0);
-    } else {
-        lv_obj_remove_local_style_prop(s_updated, LV_STYLE_TEXT_COLOR, 0);
-    }
+    updated_label_set(s_updated, q != NULL ? at->when : 0, s_failed, NULL);
     lv_label_set_text(g_status_label, (q != NULL || shown_p() != NULL) ? "" : "Henter luftkvalitet...");
     lv_obj_invalidate(s_canvas);
 }

@@ -126,7 +126,13 @@ static char *take_reply(void)
  * Finding them
  * ------------------------------------------------------------------------ */
 
-/* The first speaker to answer an SSDP search, into ip. */
+/* The home's household (sonos_ssdp_household), once a speaker of it has
+ * answered: later searches take only its speakers, so a device posing as
+ * one can't take over the screen. "" until then. */
+static char s_household[64];
+
+/* The first speaker to answer an SSDP search, into ip - of the household
+ * found before, if one was. */
 static bool ssdp_find(char *ip, size_t ip_len)
 {
     const int s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -150,8 +156,15 @@ static bool ssdp_find(char *ip, size_t ip_len)
         const int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (struct sockaddr *)&from, &fl);
         if (n > 0) {
             buf[n] = '\0';
-            if (strstr(buf, "ZonePlayer") || strstr(buf, "Sonos")) {
+            char hh[sizeof(s_household)] = "";
+            sonos_ssdp_household(buf, hh, sizeof(hh));
+            if ((strstr(buf, "ZonePlayer") || strstr(buf, "Sonos")) &&
+                (s_household[0] == '\0' || strcmp(hh, s_household) == 0)) {
                 inet_ntoa_r(from.sin_addr, ip, ip_len);
+                if (s_household[0] == '\0' && hh[0] != '\0') {
+                    snprintf(s_household, sizeof(s_household), "%s", hh);
+                    ESP_LOGI(TAG, "Sonos household %s", s_household);
+                }
                 found = true;
             }
         }

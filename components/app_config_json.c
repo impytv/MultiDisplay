@@ -12,6 +12,7 @@
 #include "cJSON.h"
 
 #include "app_config.h"
+#include "form_util.h"
 #include "own_events.h"
 
 #define BACKUP_FORMAT  "multidisplay-innstillinger"
@@ -196,11 +197,9 @@ static bool get_str(const cJSON *o, const char *k, char *dst, size_t len)
 static void get_hhmm(const cJSON *o, const char *k, uint16_t *dst)
 {
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(o, k);
-    int h, m;
-    char extra;
-    if (cJSON_IsString(v) && sscanf(v->valuestring, "%d:%d%c", &h, &m, &extra) == 2 && h >= 0 && h < 24 &&
-        m >= 0 && m < 60) {
-        *dst = (uint16_t)(h * 60 + m);
+    const int m = cJSON_IsString(v) ? form_hhmm(v->valuestring) : -1; /* as typed on the setup page */
+    if (m >= 0) {
+        *dst = (uint16_t)m;
     }
 }
 
@@ -275,7 +274,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *even
     get_hhmm(upd, "at", &c->ota_at);
     get_u8(upd, "every_hours", &c->ota_every_h);
     ok &= get_str(upd, "url", c->ota_url, sizeof(c->ota_url));
-    if (c->ota_url[0] != '\0' && strncmp(c->ota_url, "http://", 7) != 0 && strncmp(c->ota_url, "https://", 8) != 0) {
+    if (!app_config_ota_url_valid(c->ota_url)) {
         snprintf(c->ota_url, sizeof(c->ota_url), "%s", cfg->ota_url);
     }
     const cJSON *cal = cJSON_GetObjectItemCaseSensitive(root, "calendar");

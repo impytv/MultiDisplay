@@ -35,6 +35,7 @@
 #include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "yr_client.h"
+#include "nb_text.h"
 
 static const char *TAG = "clock";
 
@@ -91,10 +92,6 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t colour)
 
 static void show_time(time_t now)
 {
-    static const char *const WD[] = { "s\xC3\xB8ndag", "mandag", "tirsdag", "onsdag", "torsdag", "fredag",
-                                      "l\xC3\xB8rdag" };
-    static const char *const MON[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli", "august",
-                                       "september", "oktober", "november", "desember" };
     char buf[64];
     if (now <= PLAUSIBLE_EPOCH_S) {
         for (int i = 0; i < CLK_HHMM; i++) {
@@ -114,7 +111,7 @@ static void show_time(time_t now)
         }
     }
     lv_label_set_text_fmt(s_sec, ":%02d", lt.tm_sec);
-    snprintf(buf, sizeof(buf), "%s %d. %s %d  \xC2\xB7  uke %d", WD[lt.tm_wday], lt.tm_mday, MON[lt.tm_mon],
+    snprintf(buf, sizeof(buf), "%s %d. %s %d  \xC2\xB7  uke %d", NB_WEEKDAY[lt.tm_wday], lt.tm_mday, NB_MONTH[lt.tm_mon],
              lt.tm_year + 1900, iso_week(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday));
     buf[0] = (char)(buf[0] - 'a' + 'A'); /* weekdays start with a-z (not ø) */
     if (strcmp(lv_label_get_text(s_date), buf) != 0) {
@@ -173,12 +170,8 @@ static void show_events(time_t now)
     }
     s_ev_day = day;
     s_ev_gen = events_generation();
-    lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-    lt.tm_isdst = -1;
-    const int64_t today = (int64_t)mktime(&lt);
-    lt.tm_mday += 2;
-    lt.tm_isdst = -1;
-    const int64_t after = (int64_t)mktime(&lt);
+    const int64_t today = (int64_t)nb_midnight(now, 0);
+    const int64_t after = (int64_t)nb_midnight(now, 2);
     s_ev->count = 0;
     events_days(today, after, OWN_ON_CLOCK, s_ev);
     cal_sort(s_ev);

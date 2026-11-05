@@ -27,10 +27,12 @@
 #include "rain_client.h"
 #include "watchdog.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "nb_text.h"
 
 static const char *TAG = "radar";
 /* The plot as far left as its "V" label allows, to give the table room for
  * speed and distance at larger text sizes. */
+#define RAIN_STALE_S (30 * 60) /* see the rain legend */
 #define RADAR_CX            214
 #define RADAR_CY            262
 #define RADAR_R             176   /* outer ring radius, px */
@@ -243,7 +245,9 @@ static void radar_fmt_alt(char *buf, size_t n, int32_t alt_ft)
     if (m < 995.0f) {
         snprintf(buf, n, "%d m", (int)lroundf(m / 10.0f) * 10);
     } else {
-        snprintf(buf, n, "%.1f km", (double)(m / 1000.0f));
+        char km[12];
+        nb_dec(km, sizeof(km), m / 1000.0f, 1);
+        snprintf(buf, n, "%s km", km);
     }
 }
 
@@ -755,9 +759,9 @@ static void ships_draw(lv_layer_t *layer, int range, int lh)
         if (s->moored) {
             snprintf(kn, sizeof(kn), "-");
         } else {
-            snprintf(kn, sizeof(kn), "%.0f", (double)s->sog_kn);
+            snprintf(kn, sizeof(kn), "%d", nb_round(s->sog_kn));
         }
-        snprintf(dist, sizeof(dist), s->dist_km < 10.0f ? "%.1f" : "%.0f", (double)s->dist_km);
+        nb_dec(dist, sizeof(dist), s->dist_km, s->dist_km < 10.0f ? 1 : 0);
         radar_cell(layer, &s_sh_col[SH_NAME], s->name, y, LV_TEXT_ALIGN_LEFT, c_txt);
         radar_cell(layer, &s_sh_col[SH_TYPE], ais_category_label(s->category), y, LV_TEXT_ALIGN_LEFT, col);
         radar_cell(layer, &s_sh_col[SH_KN], kn, y, LV_TEXT_ALIGN_RIGHT, c_txt);
@@ -929,11 +933,22 @@ static void rain_draw_legend(lv_layer_t *layer, int lh)
 
     y += 16;
     if (s_rain_valid && s_rain_time > PLAUSIBLE_EPOCH_S) {
-        char when[40];
+        /* MET makes one every 5 minutes: older than RAIN_STALE_S, the hour
+         * playing is old, marked as old data is on the other screens. */
+        char when[48];
         struct tm lt;
         localtime_r(&s_rain_time, &lt);
-        snprintf(when, sizeof(when), "Radarbilde kl. %02d:%02d", lt.tm_hour, lt.tm_min);
-        draw_text(layer, when, RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT, c_txt);
+        const time_t wall = time(NULL);
+        const bool stale = wall - s_rain_time >= RAIN_STALE_S;
+        if (stale && nb_day_number(s_rain_time) != nb_day_number(wall)) {
+            char day[16];
+            nb_day_word(day, sizeof(day), s_rain_time, wall);
+            snprintf(when, sizeof(when), "Radarbilde %s kl. %02d:%02d", day, lt.tm_hour, lt.tm_min);
+        } else {
+            snprintf(when, sizeof(when), "Radarbilde kl. %02d:%02d", lt.tm_hour, lt.tm_min);
+        }
+        draw_text(layer, when, RADAR_LIST_X, y, 280, LV_TEXT_ALIGN_LEFT,
+                  stale ? lv_color_hex(STALE_COLOUR) : c_txt);
         y += lh + 4;
 
         /* Where the animation is in the hour: a tick per frame, the one on
@@ -1016,7 +1031,7 @@ static void radar_draw_cb(lv_event_t *e)
         if (ring_km == floorf(ring_km)) {
             snprintf(num, sizeof(num), "%d", (int)ring_km);
         } else {
-            snprintf(num, sizeof(num), "%.1f", (double)ring_km);
+            nb_dec(num, sizeof(num), ring_km, 1);
         }
         if (i == 2) {
             draw_text(layer, num, RADAR_CX + RADAR_R * i / 4 - 70, RADAR_CY - lh - 1, 70,
@@ -1161,7 +1176,7 @@ static void radar_draw_cb(lv_event_t *e)
         char alt[16], gs[8], dist[8];
         radar_fmt_alt(alt, sizeof(alt), a->alt_ft);
         snprintf(gs, sizeof(gs), "%d", (int)lroundf(a->gs_kt));
-        snprintf(dist, sizeof(dist), a->dist_km < 10.0f ? "%.1f" : "%.0f", (double)a->dist_km);
+        nb_dec(dist, sizeof(dist), a->dist_km, a->dist_km < 10.0f ? 1 : 0);
         radar_cell(layer, &s_ac_col[AC_CALL], a->callsign, y, LV_TEXT_ALIGN_LEFT, c_txt);
         /* The role of a police, rescue or ambulance aircraft, else the
          * route when it's known, else the aircraft type (not in the narrow

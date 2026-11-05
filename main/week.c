@@ -16,6 +16,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "weather.h"
 #include "week.h"
+#include "nb_text.h"
 
 #define WEEK_DAYS      7
 #define WEEK_X         12
@@ -30,6 +31,7 @@ static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated;
 static big_clock_t s_clock;
 static lv_obj_t *s_icon[WEEK_DAYS];
 static int s_loc = -1;
+static int64_t s_shown_day; /* nb_day_number of the day drawn as today */
 
 static bool dark(void)
 {
@@ -63,22 +65,26 @@ static week_rows_t rows(void)
 
 static void deg(char *out, size_t n, float t)
 {
-    snprintf(out, n, "%d\xC2\xB0", (int)lroundf(t));
+    nb_temp(out, n, t);
 }
 
 /* An amount of precipitation: "2,1", or "12" from 10 mm, or whole with
  * `whole`. */
 static void mm(char *out, size_t n, float v, bool whole)
 {
-    if (whole || v >= 9.95f) {
-        snprintf(out, n, "%d", (int)lroundf(v));
-    } else {
-        snprintf(out, n, "%.1f", (double)v);
-        char *dot = strchr(out, '.');
-        if (dot) {
-            *dot = ',';
-        }
+    nb_dec(out, n, v, whole || v >= 9.95f ? 0 : 1);
+}
+
+/* The first of the forecast's days that isn't over: after midnight its
+ * first day is yesterday until MET's next forecast comes. */
+static int first_day(const yr_forecast_t *fc, time_t now)
+{
+    const int64_t today = nb_day_number(now);
+    int d0 = 0;
+    while (d0 < fc->day_count && nb_day_number((time_t)fc->days[d0].start) < today) {
+        d0++;
     }
+    return d0;
 }
 
 /* Whether two amounts show differently at a tenth of a millimetre. */
@@ -95,8 +101,11 @@ static void week_draw_cb(lv_event_t *e)
     if (fc == NULL || fc->day_count == 0) {
         return;
     }
+    const time_t now = time(NULL);
+    const int d0 = first_day(fc, now);
+    const int left = fc->day_count - d0;
     const int lh = lv_font_get_line_height(g_font_body);
-    const int n = fc->day_count < WEEK_DAYS ? fc->day_count : WEEK_DAYS;
+    const int n = left < WEEK_DAYS ? left : WEEK_DAYS;
     const int w = card_w();
     const week_rows_t r = rows();
     const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
@@ -110,29 +119,25 @@ static void week_draw_cb(lv_event_t *e)
     /* One temperature scale for the week. */
     float lo = 1000, hi = -1000;
     for (int d = 0; d < n; d++) {
-        lo = fminf(lo, fc->days[d].temp_min_c);
-        hi = fmaxf(hi, fc->days[d].temp_max_c);
+        lo = fminf(lo, fc->days[d0 + d].temp_min_c);
+        hi = fmaxf(hi, fc->days[d0 + d].temp_max_c);
     }
     if (hi - lo < 4) {
         hi = lo + 4;
     }
-    const time_t now = time(NULL);
-    struct tm today_lt;
-    localtime_r(&now, &today_lt);
+    const int64_t today = nb_day_number(now);
 
-    static const char *const WDAY[] = { "s\xC3\xB8ndag", "mandag", "tirsdag", "onsdag", "torsdag", "fredag",
-                                        "l\xC3\xB8rdag" };
     for (int d = 0; d < n; d++) {
-        const yr_day_t *dy = &fc->days[d];
+        const yr_day_t *dy = &fc->days[d0 + d];
         const int x = WEEK_X + d * (w + WEEK_GAP);
         const time_t st = (time_t)dy->start;
         struct tm lt;
         localtime_r(&st, &lt);
-        const bool is_today = lt.tm_yday == today_lt.tm_yday && lt.tm_year == today_lt.tm_year;
+        const bool is_today = nb_day_number(st) == today;
         draw_rect(layer, x, WEEK_TOP, x + w - 1, r.bottom, 8, is_today ? c_today : c_card);
 
         char buf[40];
-        draw_text(layer, is_today ? "I dag" : WDAY[lt.tm_wday], x, r.day, w, LV_TEXT_ALIGN_CENTER, c_txt);
+        draw_text(layer, is_today ? "I dag" : NB_WEEKDAY[lt.tm_wday], x, r.day, w, LV_TEXT_ALIGN_CENTER, c_txt);
         snprintf(buf, sizeof(buf), "%d.%d.", lt.tm_mday, lt.tm_mon + 1);
         draw_text(layer, buf, x, r.date, w, LV_TEXT_ALIGN_CENTER, c_dim);
 
@@ -154,10 +159,11 @@ static void week_draw_cb(lv_event_t *e)
                 draw_rect(layer, bx1, y0, bx2, y0 + br < y2 ? y0 + br : y2, 0, c_cold);
             }
         }
+        /* Blue when it reads below zero, as on the weather screen. */
         deg(buf, sizeof(buf), dy->temp_max_c);
-        draw_text(layer, buf, x, y1 - lh - 2, w, LV_TEXT_ALIGN_CENTER, dy->temp_max_c > 0 ? c_warm : c_cold);
+        draw_text(layer, buf, x, y1 - lh - 2, w, LV_TEXT_ALIGN_CENTER, buf[0] == '-' ? c_cold : c_warm);
         deg(buf, sizeof(buf), dy->temp_min_c);
-        draw_text(layer, buf, x, y2 + 2, w, LV_TEXT_ALIGN_CENTER, dy->temp_min_c > 0 ? c_warm : c_cold);
+        draw_text(layer, buf, x, y2 + 2, w, LV_TEXT_ALIGN_CENTER, buf[0] == '-' ? c_cold : c_warm);
 
         /* "1,2 mm", or "0,4-2,1 mm" when MET's high end is more; whole
          * numbers if that is too wide. */
@@ -177,10 +183,14 @@ static void week_draw_cb(lv_event_t *e)
         }
         draw_text(layer, buf, x, r.precip, w, LV_TEXT_ALIGN_CENTER,
                   dy->precip_max_mm >= 0.05f ? c_rain : c_dim);
-        const int wind = (int)lroundf(dy->wind_max_ms), gust = (int)lroundf(dy->gust_max_ms);
-        if (gust > wind) {
-            snprintf(buf, sizeof(buf), "%d (%d) m/s", wind, gust);
-        } else {
+        /* "14 (22) m/s", or without the unit, or the gust, where that is
+         * too wide for the card at the larger text sizes. */
+        const int wind = nb_round(dy->wind_max_ms), gust = nb_round(dy->gust_max_ms);
+        snprintf(buf, sizeof(buf), gust > wind ? "%d (%d) m/s" : "%d m/s", wind, gust);
+        if (draw_text_w(buf) > w - 8 && gust > wind) {
+            snprintf(buf, sizeof(buf), "%d (%d)", wind, gust);
+        }
+        if (draw_text_w(buf) > w - 8) {
             snprintf(buf, sizeof(buf), "%d m/s", wind);
         }
         draw_text(layer, buf, x, r.wind, w, LV_TEXT_ALIGN_CENTER, c_dim);
@@ -190,14 +200,18 @@ static void week_draw_cb(lv_event_t *e)
 /* Icons and labels for s_loc's forecast (adapter lock held). */
 static void week_show(void)
 {
+    const time_t now = time(NULL);
+    s_shown_day = nb_day_number(now);
     time_t fetched;
     const yr_forecast_t *fc = weather_forecast(s_loc, &fetched);
-    const int n = fc ? (fc->day_count < WEEK_DAYS ? fc->day_count : WEEK_DAYS) : 0;
+    const int d0 = fc ? first_day(fc, now) : 0;
+    const int left = fc ? fc->day_count - d0 : 0;
+    const int n = left < WEEK_DAYS ? left : WEEK_DAYS;
     const int w = card_w();
     for (int d = 0; d < WEEK_DAYS; d++) {
-        if (d < n && fc->days[d].symbol_code[0]) {
+        if (d < n && fc->days[d0 + d].symbol_code[0]) {
             char path[64];
-            snprintf(path, sizeof(path), "F:%s.png", fc->days[d].symbol_code);
+            snprintf(path, sizeof(path), "F:%s.png", fc->days[d0 + d].symbol_code);
             lv_image_set_src(s_icon[d], path);
             lv_obj_set_pos(s_icon[d], WEEK_X + d * (w + WEEK_GAP) + (w - WEEK_ICON) / 2, rows().icon);
             lv_obj_clear_flag(s_icon[d], LV_OBJ_FLAG_HIDDEN);
@@ -206,9 +220,7 @@ static void week_show(void)
         }
     }
     if (fc != NULL && fetched > 0) {
-        struct tm lt;
-        localtime_r(&fetched, &lt);
-        lv_label_set_text_fmt(s_updated, "Oppdatert kl. %02d:%02d", lt.tm_hour, lt.tm_min);
+        updated_label_set(s_updated, fetched, time(NULL) - fetched >= WX_STALE_S, NULL);
     } else {
         lv_label_set_text(s_updated, "");
     }
@@ -216,12 +228,17 @@ static void week_show(void)
     lv_obj_invalidate(s_canvas);
 }
 
-/* Every second while the week is on show. */
+/* Every second while the week is on show: the clock, and the cards again
+ * at midnight, when "I dag" moves on. */
 static void week_clock_timer_cb(lv_timer_t *t)
 {
     (void)t;
     if (!lv_obj_has_flag(s_root, LV_OBJ_FLAG_HIDDEN)) {
-        big_clock_set(&s_clock, time(NULL));
+        const time_t now = time(NULL);
+        big_clock_set(&s_clock, now);
+        if (s_loc >= 0 && now > PLAUSIBLE_EPOCH_S && nb_day_number(now) != s_shown_day) {
+            week_show();
+        }
     }
 }
 

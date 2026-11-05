@@ -68,4 +68,27 @@ void test_tide(void)
         free(xml);
     }
     CHECK(!tide_parse_series("<html>502</html>", &t));
+
+    /* Levels no tide has are left out, so the chart's scale stays sane. */
+    {
+        static tide_t b;
+        memset(&b, 0, sizeof(b));
+        b.start = iso8601_to_epoch("2026-10-02T18:00:00Z");
+        b.count = 4;
+        const char *bad = "<tide><locationdata><location name=\"X\"/>"
+                          "<data type=\"prediction\">"
+                          "<waterlevel value=\"inf\" time=\"2026-10-02T18:00:00+00:00\" flag=\"high\"/>"
+                          "<waterlevel value=\"99999999\" time=\"2026-10-02T18:20:00+00:00\" flag=\"low\"/>"
+                          "<waterlevel value=\"x\" time=\"2026-10-02T18:40:00+00:00\"/>"
+                          "<waterlevel value=\"-35.5\" time=\"2026-10-02T19:00:00+00:00\" flag=\"low\"/>"
+                          "</data></locationdata></tide>";
+        CHECK(tide_parse_series(bad, &b));
+        CHECK(isnan(b.prediction[0]));
+        CHECK(isnan(b.prediction[1]));
+        CHECK(isnan(b.prediction[2]));
+        CHECK(fabsf(b.prediction[3] + 35.5f) < 0.01f);
+        CHECK(tide_parse_extremes(bad, &b));
+        CHECK_INT(b.extreme_count, 1);
+        CHECK(fabsf(b.extremes[0].cm + 35.5f) < 0.01f);
+    }
 }

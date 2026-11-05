@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cJSON.h"
 #include "sonos_client.h"
@@ -283,12 +284,79 @@ static bool starts(const char *s, const char *prefix)
     return strncmp(s, prefix, strlen(prefix)) == 0;
 }
 
-/* A cover address made absolute: "/getaa?..." is the speaker's. */
+static char s_trusted[64]; /* sonos_art_trust: a host, "" = none */
+
+/* The host of an http(s) address, into out ("" if it has none). */
+static void host_of(const char *url, char *out, size_t out_len)
+{
+    const char *h = starts(url, "http://") ? url + 7 : starts(url, "https://") ? url + 8 : NULL;
+    const size_t len = h != NULL ? strcspn(h, ":/?#") : 0;
+    snprintf(out, out_len, "%.*s", len < out_len ? (int)len : 0, h != NULL ? h : "");
+}
+
+void sonos_art_trust(const char *url)
+{
+    host_of(url, s_trusted, sizeof(s_trusted));
+}
+
+bool sonos_art_allowed(const char *url, const char *ip)
+{
+    if (starts(url, "https://")) {
+        return true;
+    }
+    if (!starts(url, "http://")) {
+        return false;
+    }
+    const char *host = url + 7;
+    const size_t len = strcspn(host, ":/?#");
+    char h[16];
+    if (len == 0 || len >= sizeof(h)) {
+        return len > 0; /* longer than an IPv4 address: a name */
+    }
+    memcpy(h, host, len);
+    h[len] = '\0';
+    if (strcmp(h, ip) == 0 || (s_trusted[0] != '\0' && strcmp(h, s_trusted) == 0)) {
+        return true;
+    }
+    unsigned a, b, c, d;
+    char extra;
+    if (sscanf(h, "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) {
+        return strcasecmp(h, "localhost") != 0; /* a name */
+    }
+    const bool private = a == 10 || a == 127 || a == 0 || (a == 172 && b >= 16 && b <= 31) ||
+                         (a == 192 && b == 168) || (a == 169 && b == 254);
+    return !private;
+}
+
+bool sonos_ssdp_household(const char *reply, char *out, size_t out_len)
+{
+    static const char KEY[] = "X-RINCON-HOUSEHOLD:";
+    for (const char *p = reply; p != NULL && *p; p = strchr(p, '\n')) {
+        p += *p == '\n';
+        if (strncasecmp(p, KEY, sizeof(KEY) - 1) == 0) {
+            p += sizeof(KEY) - 1;
+            while (*p == ' ') {
+                p++;
+            }
+            const size_t n = strcspn(p, "\r\n ");
+            if (n == 0 || n >= out_len) {
+                return false;
+            }
+            memcpy(out, p, n);
+            out[n] = '\0';
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A cover address made absolute: "/getaa?..." is the speaker's; one the
+ * display mayn't fetch (sonos_art_allowed) is left out. */
 static void art_url(const char *art, const char *ip, char *out, size_t out_len)
 {
     if (art[0] == '/') {
         snprintf(out, out_len, "http://%s:1400%s", ip, art);
-    } else if (starts(art, "http://") || starts(art, "https://")) {
+    } else if (sonos_art_allowed(art, ip)) {
         snprintf(out, out_len, "%s", art);
     } else {
         out[0] = '\0';

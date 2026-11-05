@@ -3,19 +3,8 @@
 
 #include <stddef.h>
 
+#include "civil_time.h"
 #include "holidays.h"
-
-/* Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's
- * days_from_civil). */
-static long days_from_civil(int y, int m, int d)
-{
-    y -= m <= 2;
-    const long era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = (unsigned)(y - era * 400);
-    const unsigned doy = (153 * (unsigned)(m + (m > 2 ? -3 : 9)) + 2) / 5 + (unsigned)d - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + (long)doe - 719468;
-}
 
 /* 0 = Monday ... 6 = Sunday (1970-01-01 was a Thursday). */
 static int weekday_mon0(long days)

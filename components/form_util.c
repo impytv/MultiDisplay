@@ -108,3 +108,24 @@ bool form_tenths(const char *s, int *tenths)
     *tenths = (int)(neg ? -v : v);
     return true;
 }
+
+int form_hhmm(const char *s)
+{
+    int d[4], nd = 0, sep_at = -1;
+    for (; *s != '\0'; s++) {
+        if (*s >= '0' && *s <= '9' && nd < 4) {
+            d[nd++] = *s - '0';
+        } else if ((*s == ':' || *s == '.' || *s == ',') && sep_at < 0 && nd >= 1 && nd <= 2) {
+            sep_at = nd;
+        } else {
+            return -1;
+        }
+    }
+    const int hd = (sep_at >= 0) ? sep_at : nd - 2; /* hour digits; the minutes are the last two */
+    if (nd - hd != 2 || hd < 1 || hd > 2) {
+        return -1;
+    }
+    const int h = (hd == 2) ? d[0] * 10 + d[1] : d[0];
+    const int m = d[hd] * 10 + d[hd + 1];
+    return (h > 23 || m > 59) ? -1 : h * 60 + m;
+}

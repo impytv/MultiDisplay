@@ -12,6 +12,7 @@
 #include "esp_log.h"
 
 #include "http_util.h"
+#include "nb_text.h"
 
 static const char *TAG = "yr_client";
 
@@ -137,9 +138,7 @@ static void parse_days(const cJSON *timeseries, yr_forecast_t *out)
         struct tm lt;
         localtime_r(&tt, &lt);
         const int hour = lt.tm_hour;
-        lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-        lt.tm_isdst = -1;
-        const int64_t day = (int64_t)mktime(&lt);
+        const int64_t day = (int64_t)nb_midnight(tt, 0);
 
         int d = out->day_count - 1;
         if (d < 0 || out->days[d].start != day) {

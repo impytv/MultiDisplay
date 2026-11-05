@@ -55,7 +55,7 @@ el('button',fe,e=>{e.type='button';e.className='lt2';e.textContent='Meld fra om 
 const host=new URL(fu,location.href).host;
 st2.textContent=e===429?'For mange feilmeldinger på kort tid. Prøv igjen om noen minutter.':
 e==='net'?'Får ikke kontakt med skjermen.':e===502?'Skjermen får ikke kontakt med '+host+'.':
-e===503?'Skjermen vet ikke hva klokken er ennå. Prøv igjen om litt.':'Feilmeldingen ble ikke tatt imot ('+e+').'})}})
+e===503?'Skjermen vet ikke hva klokken er ennå. Prøv igjen om litt.':e===507?'Skjermen har ikke minne nok til feilmeldingen akkurat nå. Prøv igjen om litt.':'Feilmeldingen ble ikke tatt imot ('+e+').'})}})
 .catch(e=>{msg.className='err';msg.textContent='Fikk ikke skjermbildet fra skjermen.';
 el('button',fe,b=>{b.type='button';b.className='lt2';b.textContent='Prøv igjen';b.onclick=report})})}
 // The screenshot (uncompressed from the display, about 1 MB) packed by the

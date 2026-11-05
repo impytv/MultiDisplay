@@ -223,6 +223,9 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_LWIP_SNTP_MAX_SERVERS=3
 CONFIG_LWIP_DHCP_GET_NTP_SRV=y
 # CONFIG_LWIP_SNTP_STARTUP_DELAY is not set
+# Sockets for the web server (5 clients and 3 of its own, see
+# start_web_server) with room beside them for the fetches.
+CONFIG_LWIP_MAX_SOCKETS=16
 # uxTaskGetSystemState() for each task's stack high-water mark in /status
 # (main/diag.c).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y

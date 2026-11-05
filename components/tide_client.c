@@ -18,6 +18,18 @@ static const char *TAG = "tide_client";
 #define TIDE_URL         "https://vannstand.kartverket.no/tideapi.php?tide_request=locationdata" \
                          "&lat=%.4f&lon=%.4f&refcode=CD&lang=nb&tzone=0&fromtime=%s&totime=%s"
 
+/* A level in cm the screen can draw, or NAN: "inf", a number with no
+ * digits or one far beyond any tide (the chart's scale comes from the
+ * data, and a level of 1e9 cm made its grid loop run for ever). */
+#define TIDE_CM_MAX 2000.0f
+
+static float level(const char *val)
+{
+    char *end;
+    const float v = strtof(val, &end);
+    return end != val && isfinite(v) && fabsf(v) < TIDE_CM_MAX ? v : NAN;
+}
+
 /* --------------------------------------------------------------------------
  * The replies are small XML documents of one shape:
  *   <tide><locationdata><location name=".." .../>
@@ -92,7 +104,7 @@ bool tide_parse_series(const char *xml, tide_t *out)
             const int64_t t = iso8601_to_epoch(when);
             const int64_t k = (t - out->start) / TIDE_STEP_S;
             if (t != 0 && t >= out->start && (t - out->start) % TIDE_STEP_S == 0 && k < out->count) {
-                series[k] = strtof(val, NULL);
+                series[k] = level(val);
             }
         }
     }
@@ -114,9 +126,9 @@ bool tide_parse_extremes(const char *xml, tide_t *out)
         }
         tide_extreme_t *e = &out->extremes[out->extreme_count];
         e->time = iso8601_to_epoch(when);
-        e->cm = strtof(val, NULL);
+        e->cm = level(val);
         e->high = flag[0] == 'h';
-        if (e->time != 0) {
+        if (e->time != 0 && !isnan(e->cm)) {
             out->extreme_count++;
         }
     }

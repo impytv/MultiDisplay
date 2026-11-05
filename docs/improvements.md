@@ -955,3 +955,192 @@ too heavy for the chip.
   signed, recent reports not seen before, without CORS, and at most ten
   new keys a day. Keys aren't approved beforehand (by choice): this stops
   random abuse, not a sender who makes keys of their own.*
+
+## Review of November 2026 (1.35.0)
+
+Three reviews of the firmware - reliability, security, and a daily user
+and maintainer (`docs/reviews/`). Fixed by area in the order below, the
+most important first.
+
+### The web server
+
+- [x] **124. A long header gets past the Host and cross-site checks.** A
+  `Host` of 97+ characters or an `Origin`/`Referer` of 129+ doesn't fit
+  the buffer, and `httpd_req_get_hdr_value_str`'s "truncated" was taken as
+  "no header", which lets the request through. That undid #54 (DNS
+  rebinding could read `/config.json?hemmeligheter=1`) and #26 (any
+  http:// page with a long host name could POST to `/save`, `/config.json`
+  or `/ota`) when no setup password is set.
+  *Done in 1.36.0: a header that can't be read is refused, not taken as
+  missing (`web_auth_host_hdr_ok`, `web_auth_same_origin`, host tested
+  with cut headers); Origin and Referer are read into 256 bytes.*
+- [x] **125. The fallback portal gives away the WiFi password.** When the
+  saved network doesn't answer at boot, the open AP serves
+  `/config.json?hemmeligheter=1` to anyone who joins. A phone left
+  connected also stops the retries of the saved network for good.
+  *Done in 1.36.0: `?hemmeligheter=1` is refused on the portal's network
+  unless BOOT was held, and the saved network is tried every 10 minutes
+  even with someone on the portal. The AP itself stays open (a key would
+  have to be typed from the screen).*
+- [x] **126. Script on the setup page through the update address.** The
+  Spotify redirect address, made from the update address, was printed into
+  the page unescaped; an address set through `/save` or a restored backup
+  could carry a script that runs when the owner opens `/oppsett`.
+  *Done in 1.36.0: escaped as every other address (and `'` too), and an
+  update address with characters outside RFC 3986 is refused on `/save`,
+  in a restored backup and on load (`app_config_ota_url_valid`).*
+- [x] **127. GET requests that change things.** `/screen?vis=` and
+  `/spotify/login` work from an `<img>` on any page, with no cross-site
+  check.
+  *Done in 1.36.0: both refused when the browser says the request came
+  from another site (`Sec-Fetch-Site`, `web_auth_fetch_site_ok`); curl and
+  scripts, which don't send it, still switch screens with GET.*
+- [x] **128. The web server takes every socket.** lwIP has 10, the server
+  may hold 7 plus 3 of its own and never closes idle connections, so a
+  setup page or nav tab left open can leave no socket for the fetches
+  ("Ingen internett").
+  *Done in 1.36.0: 16 sockets in lwIP, the server at 5 clients, and TCP
+  keep-alive (30 s, then 3 × 5 s) closes those whose browser is gone.
+  Checked with 12 idle connections held: the forecast was still fetched.*
+- [x] **129. One client can stall the web server.** An error report holds
+  the single server task while it is sent on (up to 30 s), and Sonos
+  events time out meanwhile.
+  *Done in 1.36.0: the report is read, sent and answered from its own task
+  (`httpd_req_async_handler_begin`), so the server goes on serving. A
+  client that sends its headers a byte at a time can still hold the task
+  (ESP-IDF has no deadline for the whole request).*
+- [x] **130. Handlers registered while the server serves.** About 18
+  handlers are added after `httpd_start`, without a lock, while the server
+  task may walk the same table; a request in that window can crash it, and
+  on a new release's first boot that rolls the release back.
+  *Done in 1.36.0: every handler is registered on the server's own task
+  through `httpd_queue_work` (`add_handler`).*
+- [x] **131. An error report's screenshot holds most of the PSRAM.** Up to
+  1.5 MB in one block while the report is sent, unknown to the memory
+  watchdog, and a failed allocation was reported as "mottak".
+  *Done in 1.36.0: refused with 507 and "ikke minne nok" on the
+  navigation page unless 512 KB stays free in one piece beside it, and
+  counted in `wd_psram_held` while it is held.*
+- [x] **132. A wrong password slows everyone.** One shared pace for wrong
+  passwords, so one host can keep the owner's logins at "Vent et sekund";
+  the comparison also returns early on a different length.
+  *Done in 1.36.0: the pace is per client address (the last 8,
+  `web_auth_pace_t`), and the comparison takes the same time whatever the
+  guess's length.*
+
+### Time and dates
+
+- [x] **133. The nightly restart around a DST change.** The next 02:00 was
+  today's plus 24 h, so the October night had an extra restart (with the
+  backlight on) and the March one was at 03:00.
+  *Done in 1.36.0: the next 02:00 by the wall clock and calendar day
+  (`nb_next_local`), host tested on both change nights: one restart a
+  night, at 03:00 only on the March night that has no 02:00.*
+- [x] **134. Date helpers copied and drifting.** `days_from_civil`, local
+  midnight, the weekday and month names and "i dag / i morgen" texts exist
+  five to eight times over; #133 came from one of the copies.
+  *Done in 1.36.0: `components/nb_text.c` (host tested) holds the names,
+  local midnight, the day number, "i dag / i morgen / i går" and the
+  numbers; `civil_from_days` joined `days_from_civil` in `civil_time.h`,
+  and the copies in `own_events.c`, `ical.c`, `holidays.c`, `sgp4.c` and
+  the screens are gone. `events.c` keeps its HTML-escaped names.*
+- [x] **135. The setup page's time parser has no host test**, and the
+  backup's parser takes other forms ("7:5" but not "0730").
+  *Done in 1.36.0: `form_hhmm` in `form_util.c`, with host tests, used by
+  the form and by the backup restore.*
+- [x] **136. Today's headings switch at the next poll, not at midnight**
+  on the calendar and week screens.
+  *Done in 1.36.0: both redraw from a 1 s timer when the local day
+  changes.*
+
+### The weather screens
+
+- [x] **137. The week screen's first card is yesterday after midnight**
+  until MET's forecast expires, and an old forecast is never marked.
+  *Done in 1.36.0: days before today are skipped, and the label turns
+  orange "Sist oppdatert" after `WX_STALE_S` as on the weather screen.*
+- [x] **138. The overview never says its forecast is old.**
+  *Done in 1.36.0: the oldest row's age top right, in orange, once it is
+  older than `WX_STALE_S`.*
+- [x] **139. Old data looks different on every screen**, and "Sist
+  oppdatert kl. 14:02" doesn't say which day.
+  *Done in 1.36.0: one `updated_label_set` (draw.c) on the weather, week,
+  air, tide, calendar and departure screens: "Sist oppdatert" in orange
+  with "i går", the weekday or the date when it isn't today
+  (`nb_updated`); the departures keep their time in it rather than "viser
+  siste data", and the rain radar's image time turns orange after 30 min.*
+- [x] **140. A decimal point on some screens, a comma on others.**
+  *Done in 1.36.0: `nb_dec` on the weather chart, the overview, the radar
+  (heights, distances, rings) and the week screen.*
+- [x] **141. "-0°", "-0.0°" and "+0 cm".**
+  *Done in 1.36.0: `nb_round`/`nb_temp`/`nb_dec` round halves away from
+  zero and never give -0; the tide's "Vær og vind" says "0 cm"; blue
+  is for a temperature that reads below zero, on every screen.*
+- [x] **142. "1.2–1.2 mm" when it rains now.**
+  *Done in 1.36.0: `nb_mm_range` gives one amount when both ends are the
+  same at a tenth.*
+- [x] **143. The week screen's wind line can wrap** at the larger text
+  sizes.
+  *Done in 1.36.0: measured; " m/s", then the gust, is left out when it
+  doesn't fit.*
+- [x] **144. Small differences in Norwegian:** "kl 14" on the overview,
+  no sign that its later columns are tomorrow, "tor 05:36" on the tide
+  screen where the ISS screen says "i morgen".
+  *Done in 1.36.0: "kl. 14", and "i morgen kl. 02" (or "i morgen 02"
+  where narrow) on the first column of the next day; the tide screen says
+  "i morgen 05:36" as the ISS screen does, the weekday after that.*
+
+### The tide screen
+
+- [x] **145. A tide level of "inf" or a huge number freezes the screen**
+  (the grid loop never ends) and restarts the display in a loop.
+  *Done in 1.36.0: levels that aren't finite or are 2000 cm or more are
+  left out (`level`, host tested), and the grid has at most some ten
+  lines and its loop a count.*
+
+### The calendars
+
+- [x] **146. The month calendar keeps a failed feed's events for ever**:
+  the 12 h check used a stamp every partly successful fetch refreshes.
+  *Done in 1.36.0: each calendar's last good read is kept, as on the
+  calendar screen, and a failing one is named in orange under the title
+  ("Kalender 2 ikke oppdatert").*
+- [x] **147. Two calendar fetch loops with different rules** on the
+  calendar and month screens.
+  *Done in 1.36.0: both keep a failed calendar's events by one rule,
+  `cal_keep_feeds` (ical.c, host tested), with a stamp per calendar. The
+  fetches stay apart: each screen fetches only while on show, for its own
+  window (two weeks, or 17 weeks around the month shown).*
+- [x] **148. A timed event over several days says "til 14:00" today**
+  when it ends days later, and isn't shown on the days after.
+  *Done in 1.36.0: a timed event is listed under each day it covers, with
+  its start, "til 14:00" on its last day, and "Hele dagen" between.*
+- [x] **149. A calendar feed with old daily rules** is walked period by
+  period from its start (a rule from 1900 is ~46,000 steps per event).
+  *Done in 1.36.0: a rule without COUNT starts at the period that can
+  reach the window (`first_period`), and one calendar walks at most
+  400,000 periods; host tested with rules from 1900 (under 200 walked).*
+
+### Sonos
+
+- [x] **150. Any LAN device can answer as a Sonos speaker**, and decide
+  the rooms and the cover addresses the display fetches.
+  *Done in 1.36.0: once a speaker has answered, only speakers of its
+  household (`X-RINCON-HOUSEHOLD`) are taken, and a cover is fetched over
+  http:// only from the speaker, the update site or a public address
+  (`sonos_art_allowed`, host tested).*
+
+### The code
+
+- [x] **151. `app_config_erase` is never called.**
+  *Done in 1.36.0: removed.*
+- [x] **152. No test that a backup restores every setting.**
+  *Done in 1.36.0: `test_config.c` saves every setting through a backup
+  with the secrets and compares the whole struct, with the fields left out
+  on purpose named; checked to fail when one restore line is taken out.*
+- [x] **153. Pure screen helpers without host tests** (departure times,
+  the week screen's numbers, day texts, rain text).
+
+  *Done in 1.36.0: the departure time and the nowcast's note are
+  `nb_departure` and `nb_rain_change` (nb_text.c); the week screen's numbers,
+  the day texts and the tide's times use nb_text too, all host tested.*

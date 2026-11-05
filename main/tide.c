@@ -27,6 +27,7 @@
 #include "tide.h"
 #include "tide_client.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "nb_text.h"
 
 static const char *TAG = "tide";
 
@@ -44,7 +45,6 @@ static const char *TAG = "tide";
 #define TIDE_NEXT        4                 /* high and low tides listed */
 #define TIDE_FORECAST    0x2E86DE
 #define TIDE_NOW         0xE07000
-#define TIDE_STALE       0xE07000
 
 static lv_obj_t *s_root, *s_canvas, *s_title, *s_updated, *s_now;
 static int s_loc = -1;
@@ -82,31 +82,33 @@ static float level_at(const tide_t *t, int64_t when)
     return isnan(f) ? tide_at(t, t->prediction, when) : f;
 }
 
-/* "17:06" today, "lør 05:36" on another day. */
-static const char *const WD[] = { "s\xC3\xB8n", "man", "tir", "ons", "tor", "fre", "l\xC3\xB8r" };
+/* "17:06" today, "i morgen 05:36", "lør 05:36" on a later day - as the
+ * ISS screen says it, with the weekday short. */
+#define TOMORROW "i morgen"
 
-static void when_text(char *dst, size_t len, int64_t t, time_t now)
+static void when_text(char *dst, size_t len, int64_t t, time_t now, bool tomorrow_word)
 {
     const time_t tt = (time_t)t;
-    struct tm a, b;
+    struct tm a;
     localtime_r(&tt, &a);
-    localtime_r(&now, &b);
-    if (a.tm_yday == b.tm_yday && a.tm_year == b.tm_year) {
+    const int64_t days = nb_day_number(tt) - nb_day_number(now);
+    if (days == 0) {
         snprintf(dst, len, "%02d:%02d", a.tm_hour, a.tm_min);
     } else {
-        snprintf(dst, len, "%s %02d:%02d", WD[a.tm_wday], a.tm_hour, a.tm_min);
+        snprintf(dst, len, "%s %02d:%02d", days == 1 && tomorrow_word ? TOMORROW : NB_WEEKDAY_SHORT[a.tm_wday], a.tm_hour,
+                 a.tm_min);
     }
 }
 
-/* The widest when_text() can be at the font size set: the widest weekday
+/* The widest when_text() can be at the font size set: the widest day word
  * with the widest digit in every place ("man 00:00" is wider than
  * "s\xC3\xB8n 88:88"). */
-static int when_max_w(void)
+static int when_max_w(bool tomorrow_word)
 {
-    const char *day = WD[0];
-    for (int i = 1; i < 7; i++) {
-        if (draw_text_w(WD[i]) > draw_text_w(day)) {
-            day = WD[i];
+    const char *day = tomorrow_word ? TOMORROW : NB_WEEKDAY_SHORT[0];
+    for (int i = 0; i < 7; i++) {
+        if (draw_text_w(NB_WEEKDAY_SHORT[i]) > draw_text_w(day)) {
+            day = NB_WEEKDAY_SHORT[i];
         }
     }
     char d[2] = "0", widest = '0';
@@ -170,13 +172,18 @@ static void tide_draw_cb(lv_event_t *e)
     const float f = tide_at(t, t->forecast, now), p = tide_at(t, t->prediction, now);
     if (!isnan(f) && !isnan(p)) {
         char line[48];
-        snprintf(line, sizeof(line), "V\xC3\xA6r og vind: %+.0f cm", f - p);
+        const int d = nb_round(f - p);
+        snprintf(line, sizeof(line), d != 0 ? "V\xC3\xA6r og vind: %+d cm" : "V\xC3\xA6r og vind: %d cm", d);
         draw_text(layer, line, TIDE_X, y, TIDE_PANEL_W, LV_TEXT_ALIGN_LEFT, c_dim);
     }
     y += lh + 16;
     /* Columns as wide as their widest text at the font size set. */
     const int time_x = TIDE_X + draw_text_w("H\xC3\xB8yvann") + 12;
-    const int time_w = when_max_w() + 8;
+    /* "i morgen" where the level still fits beside it at the text size
+     * set, otherwise the short weekday ("tor 04:13"). */
+    const int cm_w = draw_text_w("888") + 4;
+    const bool tomorrow_word = time_x + when_max_w(true) + 8 + cm_w <= TIDE_X + TIDE_PANEL_W;
+    const int time_w = when_max_w(tomorrow_word) + 8;
     int listed = 0;
     for (int i = 0; i < t->extreme_count && listed < TIDE_NEXT; i++) {
         const tide_extreme_t *x = &t->extremes[i];
@@ -184,8 +191,8 @@ static void tide_draw_cb(lv_event_t *e)
             continue;
         }
         char when[24], cm[16];
-        when_text(when, sizeof(when), x->time, now);
-        snprintf(cm, sizeof(cm), "%.0f", x->cm); /* the unit is in the footer */
+        when_text(when, sizeof(when), x->time, now, tomorrow_word);
+        snprintf(cm, sizeof(cm), "%d", nb_round(x->cm)); /* the unit is in the footer */
         draw_text(layer, x->high ? "H\xC3\xB8yvann" : "Lavvann", TIDE_X, y, time_x - TIDE_X, LV_TEXT_ALIGN_LEFT,
                   c_txt);
         draw_text(layer, when, time_x, y, time_w, LV_TEXT_ALIGN_LEFT, c_txt);
@@ -210,7 +217,13 @@ static void tide_draw_cb(lv_event_t *e)
     if (!(hi > lo)) {
         return;
     }
-    const float grid = (hi - lo) > 250.0f ? 100.0f : (hi - lo) > 100.0f ? 50.0f : 25.0f;
+    /* At most some ten lines, whatever the span (the levels are bounded by
+     * the parser, the loop below by a count too). */
+    static const float GRIDS[] = { 25.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f };
+    float grid = GRIDS[0];
+    for (size_t i = 0; i < sizeof(GRIDS) / sizeof(GRIDS[0]) && (hi - lo) / grid > 10.0f; i++) {
+        grid = GRIDS[i];
+    }
     lo = floorf((lo - 5.0f) / grid) * grid;
     hi = ceilf((hi + 5.0f) / grid) * grid;
     const int y0 = TIDE_TOP + lh + 14, y1 = BOARD_LCD_V_RES - lh - 14;
@@ -228,10 +241,11 @@ static void tide_draw_cb(lv_event_t *e)
     snprintf(label, sizeof(label), "M\xC3\xA5lested %s", t->station[0] ? t->station : "ukjent");
     draw_text_fit(layer, label, x0 - 50, TIDE_TOP, legend_x - gap - (x0 - 50), c_dim);
 
-    for (float g = lo; g <= hi + 0.5f; g += grid) {
+    for (int i = 0; i <= 20 && lo + i * grid <= hi + 0.5f; i++) {
+        const float g = lo + i * grid;
         const int gy = y1 - (int)((g - lo) * (float)(y1 - y0) / (hi - lo));
         draw_line(layer, x0, gy, x1, gy, 1, c_grid);
-        snprintf(label, sizeof(label), "%.0f", g);
+        snprintf(label, sizeof(label), "%d", nb_round(g));
         draw_text(layer, label, x0 - 70, gy - lh / 2, 62, LV_TEXT_ALIGN_RIGHT, c_dim);
     }
     /* Every six hours: a tick and the hour. */
@@ -281,24 +295,12 @@ static void tide_show(void)
     const tide_t *t = shown();
     const float v = (t != NULL && !t->no_data) ? level_at(t, time(NULL)) : NAN;
     if (!isnan(v)) {
-        lv_label_set_text_fmt(s_now, "%.0f cm", v);
+        lv_label_set_text_fmt(s_now, "%d cm", nb_round(v));
     } else {
         lv_label_set_text(s_now, "");
     }
     const fetch_stamp_t *at = &s_at[s_loc];
-    if (t != NULL && !t->no_data && at->when > 0) {
-        struct tm lt;
-        localtime_r(&at->when, &lt);
-        lv_label_set_text_fmt(s_updated, "%s kl. %02d:%02d", s_failed ? "Sist oppdatert" : "Oppdatert", lt.tm_hour,
-                              lt.tm_min);
-    } else {
-        lv_label_set_text(s_updated, "");
-    }
-    if (s_failed) {
-        lv_obj_set_style_text_color(s_updated, lv_color_hex(TIDE_STALE), 0);
-    } else {
-        lv_obj_remove_local_style_prop(s_updated, LV_STYLE_TEXT_COLOR, 0);
-    }
+    updated_label_set(s_updated, t != NULL && !t->no_data ? at->when : 0, s_failed, NULL);
     if (t == NULL) {
         lv_label_set_text(g_status_label, "Henter vannstand...");
     } else if (t->no_data) {

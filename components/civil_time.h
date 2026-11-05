@@ -14,4 +14,18 @@ static inline int64_t days_from_civil(int y, int m, int d)
     return era * 146097 + doe - 719468;
 }
 
+/* The date of day `z` (days since 1970-01-01), back from days_from_civil. */
+static inline void civil_from_days(int64_t z, int *y, int *m, int *d)
+{
+    z += 719468;
+    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    const int64_t doe = z - era * 146097;
+    const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const int64_t mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *y = (int)(yoe + era * 400 + (*m <= 2));
+}
+
 #endif

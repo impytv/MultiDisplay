@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "civil_time.h"
 #include "sgp4.h"
 
 #define TWOPI (2.0 * M_PI)
@@ -25,17 +26,6 @@
 static double xke(void)
 {
     return 60.0 / sqrt(RE_KM * RE_KM * RE_KM / MU);
-}
-
-/* Days from 1970-01-01 to y-m-d (proleptic Gregorian). */
-static long days_from_civil(int y, int m, int d)
-{
-    y -= m <= 2;
-    const long era = (y >= 0 ? y : y - 399) / 400;
-    const long yoe = y - era * 400;
-    const long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
-    const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + doe - 719468;
 }
 
 /* Columns `from`..`to` (1-based, as in the TLE format) of `line` as a number. */

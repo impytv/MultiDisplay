@@ -3,6 +3,15 @@
 
 #include "esp_lv_adapter.h"
 
+/* The colour old data is marked in, on every screen. */
+#define STALE_COLOUR 0xE07000
+
+/* A screen's "updated" label: "Oppdatert kl. 14:02" and `suffix`, or when
+ * `stale` "Sist oppdatert kl. 14:02" (with the day when it isn't today,
+ * nb_updated) in STALE_COLOUR. Empty if `when` isn't a time. Adapter lock
+ * held. */
+void updated_label_set(lv_obj_t *label, time_t when, bool stale, const char *suffix);
+
 /* Whether an area (or x1..x2, y1..y2) meets the strip being drawn. */
 bool draw_area_visible(const lv_layer_t *layer, const lv_area_t *a);
 bool draw_visible(const lv_layer_t *layer, int x1, int y1, int x2, int y2);

@@ -10,6 +10,7 @@
  * One screen for the display, after the overview. Fetched every 15
  * minutes; redrawn every few minutes so the past drops off. */
 
+#include <ctype.h>
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,6 +27,7 @@
 #include "events.h"
 #include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "nb_text.h"
 
 static const char *TAG = "calendar";
 
@@ -38,7 +40,6 @@ static const char *TAG = "calendar";
 #define CAL_POLL_MS  (5 * 60 * 1000)
 #define CAL_IDLE_MS  (10 * 60 * 1000)   /* with no calendar set up */
 #define CAL_RETRY_MS 60000
-#define CAL_STALE    0xE07000
 #define CAL_OWN_MAX  40 /* the display's own events in two weeks */
 
 /* As the dots on the setup page. */
@@ -96,12 +97,7 @@ static const cal_list_t *view(void)
 /* Local midnight `days` from the day of `t`. */
 static int64_t midnight(time_t t, int days)
 {
-    struct tm lt;
-    localtime_r(&t, &lt);
-    lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-    lt.tm_mday += days;
-    lt.tm_isdst = -1;
-    return (int64_t)mktime(&lt);
+    return (int64_t)nb_midnight(t, days);
 }
 
 /* Midnight of today and the next CAL_DAYS days, worked out again only when
@@ -117,27 +113,36 @@ static const int64_t *days(time_t now)
     return b;
 }
 
-/* Whether event e belongs under the day [ds, de): all-day events on each
- * day they cover, others on the day they start, or today if still going on.
- * What is over is left out. */
-static bool on_day(const cal_event_t *e, int64_t ds, int64_t de, bool today, time_t now)
+/* Whether event e belongs under the day [ds, de): every event on each day
+ * it covers (a conference from Monday to Wednesday under all three), what
+ * is over left out. */
+static bool on_day(const cal_event_t *e, int64_t ds, int64_t de, time_t now)
 {
     if (e->all_day) {
         return e->start < de && e->end > ds;
     }
     const int64_t end = e->end > e->start ? e->end : e->start + 1;
-    if (end <= now) {
-        return false;
+    return end > now && e->start < de && end > ds;
+}
+
+/* The time column for a timed event under the day [ds, de): its start,
+ * "til 14:00" on the day it ends after starting before, "Hele dagen" on a
+ * day it covers whole. */
+static void when_text(char *dst, size_t len, const cal_event_t *ev, int64_t ds, int64_t de)
+{
+    const bool before = ev->start < ds, after = ev->end > de;
+    if (before && after) {
+        snprintf(dst, len, "Hele dagen");
+        return;
     }
-    return (e->start >= ds && e->start < de) || (today && e->start < ds);
+    const time_t t = (time_t)(before ? ev->end : ev->start);
+    struct tm lt;
+    localtime_r(&t, &lt);
+    snprintf(dst, len, before ? "til %02d:%02d" : "%02d:%02d", lt.tm_hour, lt.tm_min);
 }
 
 static void day_heading(char *dst, size_t len, int d, int64_t ds)
 {
-    static const char *const WD[] = { "S\xC3\xB8ndag", "Mandag", "Tirsdag", "Onsdag", "Torsdag", "Fredag",
-                                      "L\xC3\xB8rdag" };
-    static const char *const MON[] = { "januar", "februar", "mars", "april", "mai", "juni", "juli", "august",
-                                       "september", "oktober", "november", "desember" };
     if (d == 0) {
         snprintf(dst, len, "I dag");
     } else if (d == 1) {
@@ -146,7 +151,8 @@ static void day_heading(char *dst, size_t len, int d, int64_t ds)
         const time_t t = (time_t)ds;
         struct tm lt;
         localtime_r(&t, &lt);
-        snprintf(dst, len, "%s %d. %s", WD[lt.tm_wday], lt.tm_mday, MON[lt.tm_mon]);
+        snprintf(dst, len, "%s %d. %s", NB_WEEKDAY[lt.tm_wday], lt.tm_mday, NB_MONTH[lt.tm_mon]);
+        dst[0] = (char)toupper((unsigned char)dst[0]); /* every weekday starts with an ASCII letter */
     }
 }
 
@@ -158,7 +164,7 @@ static int upcoming(const cal_list_t *l, time_t now)
     for (int d = 0; d < CAL_DAYS; d++) {
         const int64_t ds = b[d], de = b[d + 1];
         for (int i = 0; i < l->count; i++) {
-            n += on_day(&l->ev[i], ds, de, d == 0, now);
+            n += on_day(&l->ev[i], ds, de, now);
         }
     }
     return n;
@@ -185,7 +191,7 @@ static void calendar_draw_cb(lv_event_t *e)
         bool headed = false;
         for (int i = 0; i < l->count; i++) {
             const cal_event_t *ev = &l->ev[i];
-            if (!on_day(ev, ds, de, d == 0, now)) {
+            if (!on_day(ev, ds, de, now)) {
                 continue;
             }
             /* A heading needs room for at least one row under it. */
@@ -209,10 +215,7 @@ static void calendar_draw_cb(lv_event_t *e)
             if (ev->all_day) {
                 snprintf(when, sizeof(when), "Hele dagen");
             } else {
-                const time_t st = (time_t)(ev->start < ds ? ev->end : ev->start);
-                struct tm lt;
-                localtime_r(&st, &lt);
-                snprintf(when, sizeof(when), ev->start < ds ? "til %02d:%02d" : "%02d:%02d", lt.tm_hour, lt.tm_min);
+                when_text(when, sizeof(when), ev, ds, de);
             }
             draw_rect(layer, x, y + 2, x + 4, y + lh - 1, 2, lv_color_hex(calendar_feed_colour(ev->feed)));
             draw_text(layer, when, x + 12, y, tw, LV_TEXT_ALIGN_LEFT, c_dim);
@@ -242,14 +245,15 @@ static void build_view(void)
     cal_sort(s_view);
 }
 
+static int64_t s_shown_day; /* nb_day_number of the day drawn as today */
+
 /* Labels for what is held (adapter lock held). */
 static void calendar_show(void)
 {
+    s_shown_day = nb_day_number(time(NULL));
     build_view();
     const cal_list_t *l = shown();
     if (l != NULL && s_at.when > 0) {
-        struct tm lt;
-        localtime_r(&s_at.when, &lt);
         /* " (kalender 1 og 3 ikke oppdatert)" */
         char missing[48] = "";
         int n = 0, cnt = 0;
@@ -266,15 +270,12 @@ static void calendar_show(void)
         if (cnt > 0) {
             snprintf(missing + n, sizeof(missing) - n, " ikke oppdatert)");
         }
-        lv_label_set_text_fmt(s_updated, "%s kl. %02d:%02d%s", s_failed ? "Sist oppdatert" : "Oppdatert",
-                              lt.tm_hour, lt.tm_min, missing);
+        updated_label_set(s_updated, s_at.when, s_failed, missing);
+        if (s_feed_failed) {
+            lv_obj_set_style_text_color(s_updated, lv_color_hex(STALE_COLOUR), 0);
+        }
     } else {
-        lv_label_set_text(s_updated, "");
-    }
-    if (s_failed || s_feed_failed) {
-        lv_obj_set_style_text_color(s_updated, lv_color_hex(CAL_STALE), 0);
-    } else {
-        lv_obj_remove_local_style_prop(s_updated, LV_STYLE_TEXT_COLOR, 0);
+        updated_label_set(s_updated, 0, false, NULL);
     }
     if (!any_calendar() && upcoming(s_view, time(NULL)) == 0) {
         lv_label_set_text(g_status_label, events_count() > 0
@@ -291,6 +292,18 @@ static void calendar_show(void)
         lv_label_set_text(g_status_label, "");
     }
     lv_obj_invalidate(s_canvas);
+}
+
+/* At midnight, while on show: "I dag" and "I morgen" move on (otherwise
+ * only at the next poll, minutes later). */
+static void calendar_day_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    const time_t now = time(NULL);
+    if (!lv_obj_has_flag(s_root, LV_OBJ_FLAG_HIDDEN) && now > PLAUSIBLE_EPOCH_S &&
+        nb_day_number(now) != s_shown_day) {
+        calendar_show();
+    }
 }
 
 lv_obj_t *calendar_build(lv_obj_t *screen)
@@ -316,6 +329,7 @@ lv_obj_t *calendar_build(lv_obj_t *screen)
     s_updated = lv_label_create(s_root);
     lv_obj_align(s_updated, LV_ALIGN_TOP_RIGHT, -CAL_X, 4);
     lv_label_set_text(s_updated, "");
+    lv_timer_create(calendar_day_timer_cb, 1000, NULL);
     return s_root;
 }
 
@@ -348,18 +362,15 @@ uint32_t calendar_poll(int for_view)
         if (err == ESP_OK) {
             /* A calendar that failed keeps the events it had, for as long
              * as a whole list would be shown. */
+            uint8_t keep = 0;
             for (int i = 0; i < APP_CONFIG_CAL_FEEDS; i++) {
                 if (!(feed_failed & (1u << i))) {
                     stamp_now(&s_feed_at[i]);
                 } else if (stamp_fresh(&s_feed_at[i], CAL_KEEP_MS)) {
-                    for (int k = 0; k < s_list->count && s_scratch->count < s_scratch->max; k++) {
-                        if (s_list->ev[k].feed == i) {
-                            s_scratch->ev[s_scratch->count++] = s_list->ev[k];
-                        }
-                    }
+                    keep |= 1u << i;
                 }
             }
-            cal_sort(s_scratch);
+            cal_keep_feeds(s_scratch, s_list, keep, midnight(now, 0), midnight(now, CAL_DAYS));
             s_retried = feed_failed && quick;
             if (feed_failed) {
                 diag_fail(DIAG_CALENDAR, ESP_FAIL);

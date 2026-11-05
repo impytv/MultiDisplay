@@ -67,4 +67,58 @@ void test_web_auth(void)
     CHECK(web_auth_may_try(5000000, 0));
     CHECK(!web_auth_may_try(5000000, 4500000));
     CHECK(web_auth_may_try(5500000, 4500000));
+
+    CHECK(!web_auth_secret_equal("abcd", "abc"));
+    CHECK(web_auth_secret_equal("", ""));
+
+    /* A header too long for its buffer is refused, not taken as missing. */
+    CHECK(web_auth_host_hdr_ok(WEB_HDR_NONE, NULL, ip, portal, name));
+    CHECK(web_auth_host_hdr_ok(WEB_HDR_OK, "multidisplay.local", ip, portal, name));
+    CHECK(!web_auth_host_hdr_ok(WEB_HDR_OK, "evil.example", ip, portal, name));
+    CHECK(!web_auth_host_hdr_ok(WEB_HDR_BAD, "", ip, portal, name));
+
+    const char *h = "multidisplay.local";
+    CHECK(web_auth_same_origin(WEB_HDR_OK, "http://multidisplay.local", WEB_HDR_NONE, NULL, WEB_HDR_OK, h));
+    CHECK(web_auth_same_origin(WEB_HDR_OK, "http://MultiDisplay.local", WEB_HDR_NONE, NULL, WEB_HDR_OK, h));
+    CHECK(web_auth_same_origin(WEB_HDR_NONE, NULL, WEB_HDR_OK, "http://multidisplay.local/oppsett", WEB_HDR_OK, h));
+    CHECK(web_auth_same_origin(WEB_HDR_NONE, NULL, WEB_HDR_NONE, NULL, WEB_HDR_OK, h)); /* curl */
+    CHECK(web_auth_same_origin(WEB_HDR_NONE, NULL, WEB_HDR_NONE, NULL, WEB_HDR_NONE, NULL));
+    CHECK(!web_auth_same_origin(WEB_HDR_OK, "http://evil.example", WEB_HDR_NONE, NULL, WEB_HDR_OK, h));
+    CHECK(!web_auth_same_origin(WEB_HDR_OK, "http://multidisplay.local.evil.example", WEB_HDR_NONE, NULL,
+                                WEB_HDR_OK, h));
+    CHECK(!web_auth_same_origin(WEB_HDR_OK, "http://multidisplay.local", WEB_HDR_NONE, NULL, WEB_HDR_BAD, ""));
+    CHECK(!web_auth_same_origin(WEB_HDR_OK, "http://multidisplay.local", WEB_HDR_NONE, NULL, WEB_HDR_NONE, NULL));
+    CHECK(!web_auth_same_origin(WEB_HDR_OK, "null", WEB_HDR_NONE, NULL, WEB_HDR_OK, h));
+    /* A 200-character Origin or Referer, cut by the buffer. */
+    CHECK(!web_auth_same_origin(WEB_HDR_BAD, "http://aaaa", WEB_HDR_NONE, NULL, WEB_HDR_OK, h));
+    CHECK(!web_auth_same_origin(WEB_HDR_BAD, "http://aaaa", WEB_HDR_OK, "http://multidisplay.local/", WEB_HDR_OK, h));
+    CHECK(!web_auth_same_origin(WEB_HDR_NONE, NULL, WEB_HDR_BAD, "http://aaaa", WEB_HDR_OK, h));
+
+    /* A GET that changes something: not from another site's <img>. */
+    CHECK(web_auth_fetch_site_ok(WEB_HDR_NONE, NULL));
+    CHECK(web_auth_fetch_site_ok(WEB_HDR_OK, "same-origin"));
+    CHECK(web_auth_fetch_site_ok(WEB_HDR_OK, "none"));
+    CHECK(!web_auth_fetch_site_ok(WEB_HDR_OK, "cross-site"));
+    CHECK(!web_auth_fetch_site_ok(WEB_HDR_OK, "same-site"));
+    CHECK(!web_auth_fetch_site_ok(WEB_HDR_BAD, ""));
+
+    /* The pace per address: one guessing doesn't hold up another. */
+    web_auth_pace_t pace = { 0 };
+    CHECK(web_auth_pace_may_try(&pace, 1, 5000000));
+    web_auth_pace_fail(&pace, 1, 5000000);
+    CHECK(!web_auth_pace_may_try(&pace, 1, 5500000));
+    CHECK(web_auth_pace_may_try(&pace, 2, 5500000));
+    CHECK(web_auth_pace_may_try(&pace, 1, 6000000));
+    for (uint32_t a = 10; a < 10 + WEB_AUTH_PACE_SLOTS; a++) {
+        web_auth_pace_fail(&pace, a, 6000000 + a);
+    }
+    CHECK(web_auth_pace_may_try(&pace, 1, 6000100)); /* the oldest given up */
+    CHECK(!web_auth_pace_may_try(&pace, 12, 6000100));
+    web_auth_pace_fail(&pace, 12, 7500000);
+    CHECK(!web_auth_pace_may_try(&pace, 12, 8000000));
+    int n12 = 0;
+    for (int i = 0; i < WEB_AUTH_PACE_SLOTS; i++) {
+        n12 += pace.addr[i] == 12 && pace.at_us[i] != 0;
+    }
+    CHECK_INT(n12, 1);
 }

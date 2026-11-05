@@ -197,6 +197,20 @@ typedef struct {
  * popularity); their count into *count. */
 const sonos_radio_t *sonos_radios(int *count);
 
+/* Whether a cover at `url` may be fetched for speaker `ip`: https:// from
+ * anywhere, http:// from the speaker itself or a public address - not
+ * another address on the home network, which a device posing as a speaker
+ * could otherwise have the display fetch from. */
+bool sonos_art_allowed(const char *url, const char *ip);
+
+/* Trust covers from `url`'s host as well (the update site, whose radio
+ * service gives the radio covers and may be on the home network). */
+void sonos_art_trust(const char *url);
+
+/* The household an SSDP answer names (X-RINCON-HOUSEHOLD) into out; false
+ * if it names none. The speakers of one home share it. */
+bool sonos_ssdp_household(const char *reply, char *out, size_t out_len);
+
 /* Whether `key` is in `list`, keys separated by commas ("nrk_p1,p4"). */
 bool sonos_radio_chosen(const char *list, const char *key);
 

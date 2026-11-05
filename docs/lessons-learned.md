@@ -636,3 +636,36 @@ request that brings the header from outside (403).
 *Lesson:* anything behind the tunnel that cares who sent a request (a
 limit, a log, an allow list) sees the tunnel's address; take the
 sender from the tunnel's header only for requests that came through it.
+
+### A header too long for its buffer counted as no header
+
+The Host check (#54) and the cross-site check (#26) read their headers
+into fixed buffers, and took anything but `ESP_OK` as "not there" - which
+they let through, for curl. A `Host` or `Origin` longer than the buffer
+comes back as `ESP_ERR_HTTPD_RESULT_TRUNC`, and a host name is the
+attacker's to make long, so both checks could be walked past (found in
+the review of November 2026, #124).
+*Lesson:* a check that lets "missing" through must tell "missing" from
+"couldn't read it", and refuse the second; test it with a value longer
+than the buffer.
+
+### Adding 24 hours is not "tomorrow"
+
+The nightly restart took today's 02:00 and added 24 h when it had passed.
+On the October night that gave a second restart, and in March the 02:00
+that doesn't exist. Seven other places had worked out local days the
+right way (`tm_mday += 1`, `tm_isdst = -1`) - the one copy that didn't
+was the one that bit (#133). They are one module now (`nb_text.c`).
+*Lesson:* move by calendar day, never by 86400 s, and when the same small
+helper is written a third time, make it shared and host test it on both
+DST nights.
+
+### Screens not on show weren't checked
+
+After the review's fixes the screens set up on the display looked right,
+but the calendar, Spotify, air and tide screens weren't set up, so their
+changes had only been compiled. Turned on for a check, the tide list's
+new "i morgen 04:13" pushed its level column off the edge.
+*Lesson:* before calling a change to a screen done, turn that screen on
+(save the settings first with `/config.json`, restore them after) and
+look at it at the font size set.

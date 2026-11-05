@@ -316,13 +316,6 @@ esp_err_t app_config_save(const app_config_t *cfg);
 bool app_config_is_provisioned(void);
 
 /**
- * Forget the saved configuration. The next boot comes up in the setup
- * portal. (WiFi credentials the WiFi driver itself cached in NVS are not
- * touched here; wifi_provision always re-applies from app_config_t.)
- */
-esp_err_t app_config_erase(void);
-
-/**
  * `in` made into a host name in `out`: lower case, æ/ø/å as ae/o/aa, spaces
  * and other separators as '-', anything else left out, no '-' at either
  * end, at most out_len - 1 characters. "" if nothing usable is left.
@@ -353,6 +346,11 @@ void app_config_radio_stream_url(const char *ota_url, const char *key, char *out
  * the folder "spotify/" next to the manifest, if `ota_url` is https://
  * (Spotify takes nothing else for a home network). "" otherwise. */
 void app_config_spotify_redirect(const char *ota_url, char *out, size_t out_len);
+
+/* Whether `url` may be the update address: "" (no updates), or http:// or
+ * https:// and then only the characters an address may hold (RFC 3986),
+ * nothing that could break out of the pages it is shown on. */
+bool app_config_ota_url_valid(const char *url);
 
 /* Whether `id` looks like a Spotify client ID (32 hex digits). */
 bool app_config_spotify_id_valid(const char *id);

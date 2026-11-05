@@ -488,4 +488,27 @@ void test_sonos(void)
         CHECK_STR(tr3[0].artist, "");
         CHECK_INT(sonos_parse_queue("<x/>", tr3, 8, &first, &total), -1);
     }
+
+    /* Covers: not from other addresses on the home network. */
+    CHECK(sonos_art_allowed("https://gfx.nrk.no/x", "192.168.0.61"));
+    CHECK(sonos_art_allowed("http://192.168.0.61:1400/getaa?x", "192.168.0.61"));
+    CHECK(sonos_art_allowed("http://cdn-profiles.tunein.com/s1/logo.png", "192.168.0.61"));
+    CHECK(sonos_art_allowed("http://8.8.8.8/x.jpg", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://192.168.0.1/cgi-bin/reboot", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://10.0.0.5/x", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://172.20.1.1/x", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://127.0.0.1/x", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://localhost/x", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("ftp://x/y", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http:///x", "192.168.0.61"));
+    char hh[64];
+    CHECK(sonos_ssdp_household("HTTP/1.1 200 OK\r\nSERVER: Linux UPnP/1.0 Sonos/80.1\r\n"
+                               "X-RINCON-HOUSEHOLD: Sonos_abc123\r\n\r\n", hh, sizeof(hh)));
+    CHECK_STR(hh, "Sonos_abc123");
+    CHECK(!sonos_ssdp_household("HTTP/1.1 200 OK\r\nSERVER: x\r\n\r\n", hh, sizeof(hh)));
+    sonos_art_trust("http://192.168.0.119:8070/manifest.json");
+    CHECK(sonos_art_allowed("http://192.168.0.119:8070/radio/p1.jpg", "192.168.0.61"));
+    CHECK(!sonos_art_allowed("http://192.168.0.118/x", "192.168.0.61"));
+    sonos_art_trust("");
+    CHECK(!sonos_art_allowed("http://192.168.0.119:8070/radio/p1.jpg", "192.168.0.61"));
 }

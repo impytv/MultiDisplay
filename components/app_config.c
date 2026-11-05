@@ -171,6 +171,10 @@ static void sanitize_view_settings(app_config_t *c)
     if (!app_config_spotify_id_valid(c->sp_client_id)) {
         c->sp_client_id[0] = '\0';
     }
+    c->ota_url[APP_CONFIG_OTA_URL_MAX - 1] = '\0';
+    if (!app_config_ota_url_valid(c->ota_url)) {
+        snprintf(c->ota_url, sizeof(c->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
+    }
     c->clk_rotate = c->clk_rotate ? 1 : 0;
     if (c->clk_out > c->location_count) {
         c->clk_out = 1; /* a location since removed: the first */
@@ -564,22 +568,6 @@ bool app_config_is_provisioned(void)
     return err == ESP_OK && prov != 0;
 }
 
-esp_err_t app_config_erase(void)
-{
-    nvs_handle_t h;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = nvs_erase_all(h);
-    if (err == ESP_OK) {
-        err = nvs_commit(h);
-    }
-    nvs_close(h);
-    ESP_LOGW(TAG, "configuration erased");
-    return err;
-}
-
 void app_config_hostname(const char *in, char *out, size_t out_len)
 {
     size_t n = 0;
@@ -696,6 +684,25 @@ bool app_config_temp_offset_from(int ref_dc, int chip_dc, int16_t *out)
         return false;
     }
     *out = (int16_t)dc;
+    return true;
+}
+
+bool app_config_ota_url_valid(const char *url)
+{
+    if (url[0] == '\0') {
+        return true;
+    }
+    const char *rest = strncmp(url, "http://", 7) == 0    ? url + 7
+                       : strncmp(url, "https://", 8) == 0 ? url + 8
+                                                          : NULL;
+    if (rest == NULL || *rest == '\0' || *rest == '/') {
+        return false;
+    }
+    for (const char *c = rest; *c; c++) {
+        if (!isalnum((unsigned char)*c) && strchr("-._~:/?#[]@!$&()*+,;=%", *c) == NULL) {
+            return false;
+        }
+    }
     return true;
 }
 

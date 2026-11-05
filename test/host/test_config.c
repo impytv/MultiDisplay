@@ -96,6 +96,30 @@ void test_config(void)
     app_config_load(&b);
     CHECK(memcmp(&a, &b, sizeof(a)) == 0);
 
+    /* Every setting round-trips through a backup (with the secrets) but
+     * those left out on purpose: a field added to one side and not the
+     * other fails here, not on someone's restored display. */
+    {
+        static app_config_t d;
+        char *full = app_config_to_json(&a, true, NULL, -1);
+        CHECK(full != NULL);
+        test_nvs_clear();
+        app_config_load(&d); /* the defaults: nothing saved */
+        CHECK(app_config_save(&a) == ESP_OK); /* back, for what follows */
+        char why[96];
+        CHECK(app_config_from_json(full, &d, NULL, NULL, why, sizeof(why)));
+        /* This display's own: never in a backup. */
+        memcpy(d.web_pass, a.web_pass, sizeof(d.web_pass));
+        memcpy(d.cal_url, a.cal_url, sizeof(d.cal_url));
+        memcpy(d.device_name, a.device_name, sizeof(d.device_name));
+        d.temp_offset_dc = a.temp_offset_dc;
+        d.screen_ctl = a.screen_ctl;
+        d.nav_page = a.nav_page;
+        d.clk_in = a.clk_in; /* only onto a calibrated board, tested below */
+        CHECK(memcmp(&a, &d, sizeof(a)) == 0);
+        cJSON_free(full);
+    }
+
     /* The backup leaves out the WiFi and the secrets. */
     char *json = app_config_to_json(&a, false, NULL, -1);
     CHECK(json != NULL);

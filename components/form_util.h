@@ -23,4 +23,10 @@ char *buf_append(char *p, char *end, const char *fmt, ...) __attribute__((format
  * +-100000. */
 bool form_tenths(const char *s, int *tenths);
 
+/* A time of day typed into the form, as minutes after midnight: "22:30",
+ * "2230", "930", "22.30" or "22,30" (a phone's keypad), the hour one or two
+ * digits and the minutes two. -1 for anything else. The page's own check
+ * (setup_page.js, hm()) takes the same. */
+int form_hhmm(const char *s);
+
 #endif

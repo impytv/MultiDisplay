@@ -5,7 +5,9 @@
  * strip first: a draw task per element per strip would otherwise cost a lot
  * of transient internal DRAM. Text is in the body font. */
 
+#include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_jpeg_dec.h"
@@ -13,6 +15,7 @@
 
 #include "app.h"
 #include "draw.h"
+#include "nb_text.h"
 #include "png_decode.h"
 
 bool draw_area_visible(const lv_layer_t *layer, const lv_area_t *a)
@@ -377,4 +380,27 @@ bool draw_picture_square(const uint8_t *data, size_t len, uint16_t *out, int sid
     }
     heap_caps_free(px);
     return true;
+}
+
+void updated_label_set(lv_obj_t *label, time_t when, bool stale, const char *suffix)
+{
+    if (when <= PLAUSIBLE_EPOCH_S) {
+        lv_label_set_text(label, "");
+        lv_obj_remove_local_style_prop(label, LV_STYLE_TEXT_COLOR, 0);
+        return;
+    }
+    char text[64];
+    if (stale) {
+        nb_updated(text, sizeof(text), when, time(NULL));
+    } else {
+        struct tm lt;
+        localtime_r(&when, &lt);
+        snprintf(text, sizeof(text), "Oppdatert kl. %02d:%02d", lt.tm_hour, lt.tm_min);
+    }
+    lv_label_set_text_fmt(label, "%s%s", text, suffix != NULL ? suffix : "");
+    if (stale) {
+        lv_obj_set_style_text_color(label, lv_color_hex(STALE_COLOUR), 0);
+    } else {
+        lv_obj_remove_local_style_prop(label, LV_STYLE_TEXT_COLOR, 0);
+    }
 }

@@ -19,6 +19,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "mbedtls/base64.h"
@@ -88,7 +89,7 @@ static void status(const char *msg)
  * Small text helpers
  * ------------------------------------------------------------------------ */
 
-/* Append `src` to `dst` (bounded by dst_end), HTML-escaping " & < >. */
+/* Append `src` to `dst` (bounded by dst_end), HTML-escaping " & < > '. */
 static char *html_escape_append(char *dst, char *dst_end, const char *src)
 {
     for (; *src && dst < dst_end - 6; src++) {
@@ -97,6 +98,7 @@ static char *html_escape_append(char *dst, char *dst_end, const char *src)
         case '&': dst += sprintf(dst, "&amp;"); break;
         case '<': dst += sprintf(dst, "&lt;"); break;
         case '>': dst += sprintf(dst, "&gt;"); break;
+        case '\'': dst += sprintf(dst, "&#39;"); break;
         default:  *dst++ = *src; break;
         }
     }
@@ -332,8 +334,12 @@ static char *build_clock(char *p, char *end, const app_config_t *cfg)
 /* The Spotify screen, and the login for it (spotify_client.h). */
 static char *build_spotify(char *p, char *end, const app_config_t *cfg)
 {
-    char redirect[160];
+    char redirect[160], redirect_html[400];
     app_config_spotify_redirect(cfg->ota_url, redirect, sizeof(redirect));
+    /* Escaped like every other address on the page: it comes from the
+     * update address, which a restored backup can set. */
+    html_escape_append(redirect_html, redirect_html + sizeof(redirect_html),
+                       redirect[0] ? redirect : "https://.../spotify/");
     p = buf_append(p, end,
                    "<details class=sec id=spotify><summary>Spotify</summary>"
                    "<div class=chk><label><input type=checkbox name=spshow value=1%s>"
@@ -359,7 +365,7 @@ static char *build_spotify(char *p, char *end, const app_config_t *cfg)
                    "klient-ID kan brukes p&aring; alle skjermene.</small>",
                    cfg->sp_show ? " checked" : "", cfg->sp_rotate ? " checked" : "",
                    cfg->sp_start ? " checked" : "", cfg->sp_dark ? " checked" : "", cfg->sp_client_id,
-                   redirect[0] ? redirect : "https://.../spotify/");
+                   redirect_html);
     char user[64];
     const spotify_login_t st = spotify_login_state(user, sizeof(user));
     if (redirect[0] == '\0') {
@@ -804,21 +810,54 @@ static const char *auth_token(bool create)
 
 typedef enum { AUTH_OK, AUTH_NONE, AUTH_WRONG, AUTH_WAIT } auth_t;
 
-static int64_t s_last_fail_us; /* the last wrong password, 0 = none */
+static web_auth_pace_t s_pace; /* wrong passwords, per client (httpd task only) */
 
-/* Check a password given, at most one a second (see web_auth_may_try). */
-static auth_t try_password(const char *given, const char *what)
+/* The client's IPv4 address, 0 if it can't be had. */
+static uint32_t client_addr(httpd_req_t *req)
+{
+    struct sockaddr_storage sa;
+    socklen_t len = sizeof(sa);
+    if (getpeername(httpd_req_to_sockfd(req), (struct sockaddr *)&sa, &len) != 0) {
+        return 0;
+    }
+    if (sa.ss_family == AF_INET) {
+        return ((struct sockaddr_in *)&sa)->sin_addr.s_addr;
+    }
+#if CONFIG_LWIP_IPV6
+    if (sa.ss_family == AF_INET6) {
+        const struct sockaddr_in6 *s6 = (const struct sockaddr_in6 *)&sa;
+        return s6->sin6_addr.un.u32_addr[3]; /* IPv4-mapped, or the last part */
+    }
+#endif
+    return 0;
+}
+
+/* Check a password given, at most one a second from each client (see
+ * web_auth_pace_may_try), so one guessing doesn't keep the owner out. */
+static auth_t try_password(httpd_req_t *req, const char *given, const char *what)
 {
     const int64_t now = esp_timer_get_time();
-    if (!web_auth_may_try(now, s_last_fail_us)) {
+    const uint32_t addr = client_addr(req);
+    if (!web_auth_pace_may_try(&s_pace, addr, now)) {
         return AUTH_WAIT;
     }
     if (web_auth_secret_equal(given, s_web_pass)) {
         return AUTH_OK;
     }
     ESP_LOGW(TAG, "Wrong password (%s)", what);
-    s_last_fail_us = now;
+    web_auth_pace_fail(&s_pace, addr, now);
     return AUTH_WRONG;
+}
+
+/* A request header into `buf`: there, not there, or too long for `buf` -
+ * which the checks must refuse, never take as not there. */
+static web_hdr_t read_hdr(httpd_req_t *req, const char *name, char *buf, size_t size)
+{
+    const esp_err_t err = httpd_req_get_hdr_value_str(req, name, buf, size);
+    if (err != ESP_OK) {
+        buf[0] = '\0';
+    }
+    return err == ESP_OK ? WEB_HDR_OK : err == ESP_ERR_NOT_FOUND ? WEB_HDR_NONE : WEB_HDR_BAD;
 }
 
 /* Whether the request is for this display by name or address; when not,
@@ -829,11 +868,9 @@ static bool host_ok(httpd_req_t *req)
         return true;
     }
     char host[96];
-    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) {
-        return true; /* HTTP/1.0 without a Host: no browser */
-    }
-    if (web_auth_host_ok(host, s_sta_ip, PORTAL_AP_IP, s_hostname)) {
-        return true;
+    const web_hdr_t st = read_hdr(req, "Host", host, sizeof(host));
+    if (web_auth_host_hdr_ok(st, host, s_sta_ip, PORTAL_AP_IP, s_hostname)) {
+        return true; /* or HTTP/1.0 without a Host: no browser */
     }
     ESP_LOGW(TAG, "Refused a %s for host %s", req->uri, host);
     httpd_resp_set_status(req, "403 Forbidden");
@@ -865,7 +902,7 @@ static auth_t auth_check(httpd_req_t *req)
         dec[len] = '\0';
         colon = strchr((const char *)dec, ':');
     }
-    return try_password(colon != NULL ? colon + 1 : "", "HTTP Basic");
+    return try_password(req, colon != NULL ? colon + 1 : "", "HTTP Basic");
 }
 
 /* Every request but the pages checks this first. When refused, the 401
@@ -953,29 +990,45 @@ static bool page_authorized(httpd_req_t *req)
 
 /* A POST must come from this page, not from another web site open in a
  * browser on the home network (which could otherwise change the WiFi or
- * start an update without a setup password): a browser names the page a
- * request comes from in Origin (or at least Referer), and its host must be
- * the one the request went to. Requests without either - curl - are let
- * through. When refused, the 403 has been sent. */
+ * start an update without a setup password); see web_auth_same_origin.
+ * When refused, the 403 has been sent. */
 static bool same_origin(httpd_req_t *req)
 {
     if (!host_ok(req)) {
         return false;
     }
-    char host[64], from[128];
-    if (httpd_req_get_hdr_value_str(req, "Origin", from, sizeof(from)) != ESP_OK &&
-        httpd_req_get_hdr_value_str(req, "Referer", from, sizeof(from)) != ESP_OK) {
+    /* On the heap: the httpd task's stack is shared by every handler. */
+    char *buf = malloc(96 + 2 * 256);
+    if (buf == NULL) {
+        httpd_resp_send_500(req);
+        return false;
+    }
+    char *host = buf, *origin = buf + 96, *referer = buf + 96 + 256;
+    const web_hdr_t ost = read_hdr(req, "Origin", origin, 256);
+    const web_hdr_t rst = read_hdr(req, "Referer", referer, 256);
+    const web_hdr_t hst = read_hdr(req, "Host", host, 96);
+    const bool ok = web_auth_same_origin(ost, origin, rst, referer, hst, host);
+    if (!ok) {
+        ESP_LOGW(TAG, "Refused a %s from another site (%.64s)", req->uri, ost == WEB_HDR_OK ? origin : referer);
+    }
+    free(buf);
+    if (ok) {
         return true;
     }
-    const char *h = strstr(from, "://");
-    h = h ? h + 3 : from;
-    const size_t len = strcspn(h, "/");
-    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK && strlen(host) == len &&
-        strncasecmp(h, host, len) == 0) {
-        return true;
-    }
-    ESP_LOGW(TAG, "Refused a %s from another site (%s)", req->uri, from);
     httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_sendstr(req, "Foresp\xC3\xB8rselen kom fra en annen side.");
+    return false;
+}
+
+bool wifi_provision_not_cross_site(httpd_req_t *req)
+{
+    char site[24];
+    if (web_auth_fetch_site_ok(read_hdr(req, "Sec-Fetch-Site", site, sizeof(site)), site)) {
+        return true;
+    }
+    ESP_LOGW(TAG, "Refused a %s from another site (%s)", req->uri, site);
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
     httpd_resp_sendstr(req, "Foresp\xC3\xB8rselen kom fra en annen side.");
     return false;
 }
@@ -1101,7 +1154,7 @@ static esp_err_t h_login(httpd_req_t *req)
     if (!form_field(body, "pass", pass, sizeof(pass))) {
         pass[0] = '\0';
     }
-    const auth_t a = try_password(pass, "login page");
+    const auth_t a = try_password(req, pass, "login page");
     if (a != AUTH_OK) {
         return send_login(req, to, a);
     }
@@ -1295,29 +1348,6 @@ static esp_err_t h_ota(httpd_req_t *req)
 
 /* "HH:MM" (as an <input type=time> sends it) to minutes after midnight, or
  * -1 if it isn't a valid time. */
-/* "22:30", "22.30", "22,30", "2230" or "930" (phones' number pads often
- * have no ':') as minutes after midnight; -1 if it isn't a time. */
-static int parse_hhmm(const char *s)
-{
-    int d[4], nd = 0, sep_at = -1;
-    for (; *s != '\0'; s++) {
-        if (*s >= '0' && *s <= '9' && nd < 4) {
-            d[nd++] = *s - '0';
-        } else if ((*s == ':' || *s == '.' || *s == ',') && sep_at < 0 && nd >= 1 && nd <= 2) {
-            sep_at = nd;
-        } else {
-            return -1;
-        }
-    }
-    const int hd = (sep_at >= 0) ? sep_at : nd - 2; /* hour digits; the minutes are the last two */
-    if (nd - hd != 2 || hd < 1 || hd > 2) {
-        return -1;
-    }
-    const int h = (hd == 2) ? d[0] * 10 + d[1] : d[0];
-    const int m = d[hd] * 10 + d[hd + 1];
-    return (h > 23 || m > 59) ? -1 : h * 60 + m;
-}
-
 static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t *cfg)
 {
     app_config_load(cfg); /* keep the WiFi fields at their current value if omitted */
@@ -1360,10 +1390,10 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
                 }
             }
         }
-        if ((m = parse_hhmm(hhmm)) >= 0) {
+        if ((m = form_hhmm(hhmm)) >= 0) {
             cfg->dim_start = (uint16_t)m;
         }
-        if (form_field(body, "dimend", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
+        if (form_field(body, "dimend", hhmm, sizeof(hhmm)) && (m = form_hhmm(hhmm)) >= 0) {
             cfg->dim_end = (uint16_t)m;
         }
     }
@@ -1496,7 +1526,8 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         }
     }
     /* Firmware updates: the address is always sent, the checkbox only when
-     * ticked. Blank turns checking off; anything but http(s) is refused. */
+     * ticked. Blank turns checking off; anything but an http(s) address is
+     * refused. */
     char url[APP_CONFIG_OTA_URL_MAX];
     if (form_field(body, "otaurl", url, sizeof(url))) {
         char val[4];
@@ -1506,7 +1537,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->swipe_nav = form_field(body, "swipenav", val, sizeof(val)) ? 1 : 0;
         char hhmm[8];
         int m;
-        if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = parse_hhmm(hhmm)) >= 0) {
+        if (form_field(body, "otaat", hhmm, sizeof(hhmm)) && (m = form_hhmm(hhmm)) >= 0) {
             cfg->ota_at = (uint16_t)m;
         }
         if (form_field(body, "otaevery", val, sizeof(val))) {
@@ -1515,7 +1546,7 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
                 cfg->ota_every_h = (uint8_t)v;
             }
         }
-        if (url[0] == '\0' || strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
+        if (app_config_ota_url_valid(url)) {
             snprintf(cfg->ota_url, sizeof(cfg->ota_url), "%s", url);
         }
     }
@@ -1791,6 +1822,15 @@ static esp_err_t h_config_get(httpd_req_t *req)
     const bool secrets = httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
                          httpd_query_key_value(q, "hemmeligheter", val, sizeof(val)) == ESP_OK &&
                          strcmp(val, "1") == 0;
+    /* The portal's network is open to anyone nearby: the home WiFi's
+     * password only to one who held BOOT at power-on. */
+    if (secrets && s_portal && !s_auth_bypass) {
+        free(cfg);
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_set_type(req, "text/plain; charset=utf-8");
+        return httpd_resp_sendstr(req, "Hemmelighetene hentes ikke over oppsettnettet. Hold BOOT inne mens "
+                                       "skjermen sl\xC3\xA5s p\xC3\xA5, eller hent dem p\xC3\xA5 hjemmenettet.");
+    }
     app_config_load(cfg);
     /* The display's own events go with them, read from NVS. */
     own_event_t *ev = heap_caps_malloc(OWN_MAX * sizeof(own_event_t), MALLOC_CAP_SPIRAM);
@@ -1913,6 +1953,52 @@ static esp_err_t h_catchall(httpd_req_t *req)
     return h_root(req);
 }
 
+/* Registering a handler, done on the web server's own task: the server
+ * walks its table for every request, and ESP-IDF's register and
+ * unregister take no lock, so one done from another task while a request
+ * comes in (a nav tab polling, a speaker's NOTIFY just after a restart)
+ * could find a half-made entry. */
+typedef struct {
+    const httpd_uri_t *uri;
+    bool before_catchall; /* a GET: ahead of the catch-all, which must match last */
+    esp_err_t err;
+    SemaphoreHandle_t done;
+} add_job_t;
+
+static void add_work(void *arg)
+{
+    add_job_t *j = arg;
+    const httpd_uri_t catchall = { .uri = "/*", .method = HTTP_GET, .handler = h_catchall };
+    if (j->before_catchall) {
+        httpd_unregister_uri_handler(s_httpd, catchall.uri, catchall.method);
+    }
+    j->err = httpd_register_uri_handler(s_httpd, j->uri);
+    if (j->before_catchall) {
+        httpd_register_uri_handler(s_httpd, &catchall);
+    }
+    xSemaphoreGive(j->done);
+}
+
+static esp_err_t add_handler(const httpd_uri_t *uri, bool before_catchall)
+{
+    if (s_httpd == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    add_job_t j = { .uri = uri, .before_catchall = before_catchall, .done = xSemaphoreCreateBinary() };
+    if (j.done == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    j.err = httpd_queue_work(s_httpd, add_work, &j);
+    if (j.err == ESP_OK) {
+        xSemaphoreTake(j.done, portMAX_DELAY);
+    }
+    vSemaphoreDelete(j.done);
+    if (j.err != ESP_OK) {
+        ESP_LOGE(TAG, "Couldn't add %s: %s", uri->uri, esp_err_to_name(j.err));
+    }
+    return j.err;
+}
+
 static void start_web_server(void)
 {
     if (s_httpd) {
@@ -1927,30 +2013,39 @@ static void start_web_server(void)
     config.max_uri_handlers = 48; /* room for a few more than are registered */
     config.lru_purge_enable = true;
     config.uri_match_fn = httpd_uri_match_wildcard;
+    /* lwIP has 16 sockets (sdkconfig); the server takes these and 3 of its
+     * own, leaving the rest for the fetches. A browser that leaves without
+     * closing (a phone gone from the WiFi) is found by TCP keep-alive. */
+    config.max_open_sockets = 5;
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 30;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     if (httpd_start(&s_httpd, &config) != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed");
         s_httpd = NULL;
         return;
     }
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/save", .method = HTTP_POST, .handler = h_save });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/ota", .method = HTTP_POST, .handler = h_ota });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/scan", .method = HTTP_GET, .handler = h_scan });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js });
-    httpd_register_uri_handler(s_httpd,
-                               &(httpd_uri_t){ .uri = "/setup.css", .method = HTTP_GET, .handler = h_setup_css });
-    httpd_register_uri_handler(s_httpd,
-                               &(httpd_uri_t){ .uri = "/setup.js", .method = HTTP_GET, .handler = h_setup_js });
-    httpd_register_uri_handler(s_httpd,
-                               &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_GET, .handler = h_config_get });
-    httpd_register_uri_handler(s_httpd,
-                               &(httpd_uri_t){ .uri = "/config.json", .method = HTTP_POST, .handler = h_config_put });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/nav.js", .method = HTTP_GET, .handler = h_nav_js });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/oppsett", .method = HTTP_GET, .handler = h_setup });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/login", .method = HTTP_POST, .handler = h_login });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/logout", .method = HTTP_POST, .handler = h_logout });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/", .method = HTTP_GET, .handler = h_root });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
+    static const httpd_uri_t own[] = {
+        { .uri = "/save", .method = HTTP_POST, .handler = h_save },
+        { .uri = "/ota", .method = HTTP_POST, .handler = h_ota },
+        { .uri = "/scan", .method = HTTP_GET, .handler = h_scan },
+        { .uri = "/dep.js", .method = HTTP_GET, .handler = h_dep_js },
+        { .uri = "/setup.css", .method = HTTP_GET, .handler = h_setup_css },
+        { .uri = "/setup.js", .method = HTTP_GET, .handler = h_setup_js },
+        { .uri = "/config.json", .method = HTTP_GET, .handler = h_config_get },
+        { .uri = "/config.json", .method = HTTP_POST, .handler = h_config_put },
+        { .uri = "/nav.js", .method = HTTP_GET, .handler = h_nav_js },
+        { .uri = "/oppsett", .method = HTTP_GET, .handler = h_setup },
+        { .uri = "/login", .method = HTTP_POST, .handler = h_login },
+        { .uri = "/logout", .method = HTTP_POST, .handler = h_logout },
+        { .uri = "/", .method = HTTP_GET, .handler = h_root },
+        { .uri = "/*", .method = HTTP_GET, .handler = h_catchall },
+    };
+    for (size_t i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+        add_handler(&own[i], false);
+    }
 }
 
 /* An added handler, behind the same password as the setup page. */
@@ -1965,15 +2060,8 @@ static esp_err_t h_added(httpd_req_t *req)
 
 esp_err_t wifi_provision_add_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
 {
-    if (s_httpd == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    /* Wildcard URIs match in registration order: move the catch-all last. */
-    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
-    esp_err_t err = httpd_register_uri_handler(
-        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
-    return err;
+    return add_handler(&(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added, .user_ctx = handler },
+                       true);
 }
 
 /* An added page: as h_added, but without the password the login form,
@@ -1989,14 +2077,8 @@ static esp_err_t h_added_page(httpd_req_t *req)
 
 esp_err_t wifi_provision_add_page_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
 {
-    if (s_httpd == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
-    esp_err_t err = httpd_register_uri_handler(
-        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_page, .user_ctx = handler });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
-    return err;
+    return add_handler(
+        &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_page, .user_ctx = handler }, true);
 }
 
 const char *wifi_provision_page_head(void)
@@ -2016,33 +2098,21 @@ static esp_err_t h_added_open(httpd_req_t *req)
 
 esp_err_t wifi_provision_add_open_get_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
 {
-    if (s_httpd == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    httpd_unregister_uri_handler(s_httpd, "/*", HTTP_GET);
-    esp_err_t err = httpd_register_uri_handler(
-        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_open, .user_ctx = handler });
-    httpd_register_uri_handler(s_httpd, &(httpd_uri_t){ .uri = "/*", .method = HTTP_GET, .handler = h_catchall });
-    return err;
+    return add_handler(
+        &(httpd_uri_t){ .uri = uri, .method = HTTP_GET, .handler = h_added_open, .user_ctx = handler }, true);
 }
 
 esp_err_t wifi_provision_add_open_handler(const char *uri, httpd_method_t method,
                                           esp_err_t (*handler)(httpd_req_t *req))
 {
-    if (s_httpd == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return httpd_register_uri_handler(
-        s_httpd, &(httpd_uri_t){ .uri = uri, .method = method, .handler = h_added_open, .user_ctx = handler });
+    return add_handler(
+        &(httpd_uri_t){ .uri = uri, .method = method, .handler = h_added_open, .user_ctx = handler }, false);
 }
 
 esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req))
 {
-    if (s_httpd == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    return httpd_register_uri_handler(
-        s_httpd, &(httpd_uri_t){ .uri = uri, .method = HTTP_POST, .handler = h_added, .user_ctx = handler });
+    return add_handler(&(httpd_uri_t){ .uri = uri, .method = HTTP_POST, .handler = h_added, .user_ctx = handler },
+                       false);
 }
 
 /* --------------------------------------------------------------------------
@@ -2226,15 +2296,19 @@ static bool sta_try_connect(const app_config_t *cfg)
     return false;
 }
 
-/* How often the portal tries the saved network again (see portal_run). */
-#define PORTAL_STA_RETRY_MS     60000
+/* How often the portal tries the saved network again (see portal_run), and
+ * how often at the most when someone stays on the portal's network. */
+#define PORTAL_STA_RETRY_MS      60000
+#define PORTAL_STA_RETRY_BUSY_MS (10 * 60000)
 
 /* Run the setup portal until the form is saved (h_save reboots). With
  * `retry_sta` - a provisioned device whose network didn't answer, typically
  * because the router is still booting after a power cut - the saved network
  * is also tried again every PORTAL_STA_RETRY_MS, and the device restarts
- * into normal operation once it connects. Not while someone is on the
- * portal's own network: a connect attempt hops channels and would drop them. */
+ * into normal operation once it connects. Only every 10 minutes while
+ * someone is on the portal's own network: a connect attempt hops channels
+ * and would drop them, but a phone left on it mustn't keep the display
+ * from its network for good. */
 static void portal_run(bool retry_sta)
 {
     s_portal = true;
@@ -2277,11 +2351,8 @@ static void portal_run(bool retry_sta)
             restart_device();
         }
         wifi_sta_list_t clients;
-        if (esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num > 0) {
-            last_try = xTaskGetTickCount(); /* someone is setting it up: leave them be */
-            continue;
-        }
-        if (xTaskGetTickCount() - last_try >= pdMS_TO_TICKS(PORTAL_STA_RETRY_MS)) {
+        const bool busy = esp_wifi_ap_get_sta_list(&clients) == ESP_OK && clients.num > 0;
+        if (xTaskGetTickCount() - last_try >= pdMS_TO_TICKS(busy ? PORTAL_STA_RETRY_BUSY_MS : PORTAL_STA_RETRY_MS)) {
             last_try = xTaskGetTickCount();
             ESP_LOGI(TAG, "Trying the saved network again...");
             esp_wifi_connect();

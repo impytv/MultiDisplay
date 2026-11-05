@@ -56,6 +56,7 @@
 #include "yr_client.h"
 #include "restart.h"
 #include "cJSON.h"
+#include "nb_text.h"
 
 static const char *TAG = "main";
 
@@ -929,6 +930,9 @@ static esp_err_t screen_handler(httpd_req_t *req)
         httpd_resp_set_type(req, "text/plain; charset=utf-8");
         return httpd_resp_sendstr(req, "Ingen slik skjerm - se /screen for listen.\n");
     }
+    if (!wifi_provision_not_cross_site(req)) {
+        return ESP_OK; /* not from an <img> on another site */
+    }
     screen_go(want);
     return screen_send_list(req);
 }
@@ -1097,21 +1101,13 @@ static void provision_status_cb(const char *msg)
     }
 }
 
-/* The next local NIGHTLY_REBOOT_HOUR:00:00 at or after `now` - today's if it
- * hasn't happened yet, otherwise tomorrow's. `now` must already be a plausible
- * (synced) epoch. */
+/* The next local NIGHTLY_REBOOT_HOUR:00 - today's if the clock hasn't
+ * reached it yet, otherwise tomorrow's, by calendar day so that a DST
+ * change doesn't make two (nb_next_local). `now` must already be a
+ * plausible (synced) epoch. */
 static time_t compute_next_nightly_reboot(time_t now)
 {
-    struct tm local;
-    localtime_r(&now, &local);
-    local.tm_hour = NIGHTLY_REBOOT_HOUR;
-    local.tm_min = 0;
-    local.tm_sec = 0;
-    time_t target = mktime(&local); /* re-normalizes via the TZ set in app_main */
-    if (target <= now) {
-        target += 24 * 3600;
-    }
-    return target;
+    return nb_next_local(now, NIGHTLY_REBOOT_HOUR, 0);
 }
 
 /* The night window's look (adapter lock held): the dimming layer, or the

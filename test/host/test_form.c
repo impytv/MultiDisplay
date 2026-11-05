@@ -62,4 +62,24 @@ void test_form(void)
     CHECK_STR(b, "abc1234");
     char c1[1];
     CHECK(buf_append(c1, c1 + 1, "x") == c1);
+
+    /* Times as the setup page takes them, the same rules as its hm(). */
+    CHECK_INT(form_hhmm("22:30"), 22 * 60 + 30);
+    CHECK_INT(form_hhmm("2230"), 22 * 60 + 30);
+    CHECK_INT(form_hhmm("930"), 9 * 60 + 30);
+    CHECK_INT(form_hhmm("9:30"), 9 * 60 + 30);
+    CHECK_INT(form_hhmm("07:05"), 7 * 60 + 5);
+    CHECK_INT(form_hhmm("22.30"), 22 * 60 + 30);
+    CHECK_INT(form_hhmm("22,30"), 22 * 60 + 30);
+    CHECK_INT(form_hhmm("0000"), 0);
+    CHECK_INT(form_hhmm("23:59"), 23 * 60 + 59);
+    CHECK_INT(form_hhmm("24:00"), -1);
+    CHECK_INT(form_hhmm("12:60"), -1);
+    CHECK_INT(form_hhmm("7:5"), -1);
+    CHECK_INT(form_hhmm("7"), -1);
+    CHECK_INT(form_hhmm("12345"), -1);
+    CHECK_INT(form_hhmm("12::30"), -1);
+    CHECK_INT(form_hhmm(":30"), -1);
+    CHECK_INT(form_hhmm("ab"), -1);
+    CHECK_INT(form_hhmm(""), -1);
 }

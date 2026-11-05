@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "civil_time.h"
 #include "esp_log.h"
 #include "nvs.h"
 
@@ -97,36 +98,11 @@ void own_title(const own_event_t *e, int year, char *dst, size_t len)
     }
 }
 
-/* Days since 1970-01-01 of a Gregorian date, and back (Howard Hinnant's
- * days_from_civil and civil_from_days). */
-static long civil_days(int y, int m, int d)
-{
-    y -= m <= 2;
-    const long era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = (unsigned)(y - era * 400);
-    const unsigned doy = (153 * (unsigned)(m + (m > 2 ? -3 : 9)) + 2) / 5 + (unsigned)d - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    return era * 146097 + (long)doe - 719468;
-}
-
-static void civil_from(long z, int *y, int *m, int *d)
-{
-    z += 719468;
-    const long era = (z >= 0 ? z : z - 146096) / 146097;
-    const unsigned doe = (unsigned)(z - era * 146097);
-    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const unsigned mp = (5 * doy + 2) / 153;
-    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
-    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
-    *y = (int)(yoe + era * 400) + (*m <= 2);
-}
-
-/* Local midnight starting day z (civil_days), and the midnight after. */
+/* Local midnight starting day z (days_from_civil), and the midnight after. */
 static int64_t midnight(long z, int64_t *end)
 {
     int y, m, d;
-    civil_from(z, &y, &m, &d);
+    civil_from_days(z, &y, &m, &d);
     struct tm t = { .tm_year = y - 1900, .tm_mon = m - 1, .tm_mday = d, .tm_isdst = -1 };
     const int64_t start = (int64_t)mktime(&t);
     struct tm u = { .tm_year = y - 1900, .tm_mon = m - 1, .tm_mday = d + 1, .tm_isdst = -1 };
@@ -134,27 +110,27 @@ static int64_t midnight(long z, int64_t *end)
     return start;
 }
 
-/* The local day (civil_days) t falls on. */
+/* The local day (days_from_civil) t falls on. */
 static long day_of(int64_t t)
 {
     const time_t tt = (time_t)t;
     struct tm lt;
     localtime_r(&tt, &lt);
-    return civil_days(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
+    return days_from_civil(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
 }
 
 /* e's day in `year` (29 February on the 28th in other years). */
 static long day_in(const own_event_t *e, int year)
 {
     const int d = e->month == 2 && e->day == 29 && !leap(year) ? 28 : e->day;
-    return civil_days(year, e->month, d);
+    return days_from_civil(year, e->month, d);
 }
 
 /* A monthly event's day in month m of y: its day, or the month's last. */
 static long day_in_month(const own_event_t *e, int y, int m)
 {
     const int last = month_days(y, m);
-    return civil_days(y, m, e->day < last ? e->day : last);
+    return days_from_civil(y, m, e->day < last ? e->day : last);
 }
 
 /* The first day e is on from day z on (z included), or -1 if none. */
@@ -162,14 +138,14 @@ static long first_from(const own_event_t *e, long z)
 {
     if (yearly(e)) {
         int y, m, d;
-        civil_from(z, &y, &m, &d);
+        civil_from_days(z, &y, &m, &d);
         if (e->year > y) {
             y = e->year;
         }
         long day = day_in(e, y);
         return day >= z ? day : day_in(e, y + 1);
     }
-    const long start = civil_days(e->year, e->month, e->day);
+    const long start = days_from_civil(e->year, e->month, e->day);
     if (z <= start || e->repeat == OWN_ONCE) {
         return z <= start ? start : -1;
     }
@@ -181,7 +157,7 @@ static long first_from(const own_event_t *e, long z)
     /* The first month of the series, counted from its own, not before z's;
      * then a step on if its day there is before z. */
     int y, m, d;
-    civil_from(z, &y, &m, &d);
+    civil_from_days(z, &y, &m, &d);
     const int since = (y - e->year) * 12 + (m - e->month); /* > 0 or 0: z is past the start */
     int k = (since + n - 1) / n * n;
     for (;; k += n) {
@@ -212,7 +188,7 @@ int own_days(const own_event_t *e, int n, int64_t from, int64_t to, uint8_t wher
                 continue;
             }
             int y, m, d;
-            civil_from(z, &y, &m, &d);
+            civil_from_days(z, &y, &m, &d);
             cal_event_t *c = &out->ev[out->count++];
             memset(c, 0, sizeof(*c));
             c->start = start;
@@ -243,7 +219,7 @@ int own_prune(own_event_t *e, int n, int64_t today, int days)
     for (int i = 0; i < n; i++) {
         /* By the calendar, so summer time doesn't move it. */
         if (!yearly(&e[i]) && e[i].repeat == OWN_ONCE &&
-            civil_days(e[i].year, e[i].month, e[i].day) + 1 + days <= day_of(today)) {
+            days_from_civil(e[i].year, e[i].month, e[i].day) + 1 + days <= day_of(today)) {
             continue;
         }
         e[kept++] = e[i];

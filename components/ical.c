@@ -10,13 +10,20 @@
 #include <time.h>
 
 #include "civil_time.h"
+#include "esp_log.h"
 #include "ical.h"
+
+static const char *TAG = "ical";
 
 #define LINE_MAX_LEN 1024 /* longer lines (descriptions) are cut; nothing needed is in them */
 #define EXDATES_MAX  48
 #define MOVED_MAX    128
 #define RRULE_MAX    256
 #define PERIODS_MAX  200000 /* daily for 500 years, as a stop for a broken rule */
+/* Periods walked for one calendar in all, as a stop for a hostile one (a
+ * large feed of rules from long ago): with the jump to the window (see
+ * first_period) an ordinary calendar walks a few thousand. */
+#define PERIODS_FEED_MAX 400000
 
 enum { K_DATE, K_LOCAL, K_UTC };
 
@@ -53,24 +60,12 @@ struct ical_parser {
     /* Instances replaced by a moved one, removed at the end. */
     moved_t moved[MOVED_MAX];
     int moved_count;
+    int32_t periods; /* walked so far, up to PERIODS_FEED_MAX */
 };
 
 /* --------------------------------------------------------------------------
  * Dates
  * ------------------------------------------------------------------------ */
-
-static void civil_from_days(int64_t z, int *y, int *m, int *d)
-{
-    z += 719468;
-    const int64_t era = (z >= 0 ? z : z - 146096) / 146097;
-    const int64_t doe = z - era * 146097;
-    const int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    const int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const int64_t mp = (5 * doy + 2) / 153;
-    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
-    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
-    *y = (int)(yoe + era * 400 + (*m <= 2));
-}
 
 /* 0 = Monday. 1970-01-01 was a Thursday. */
 static int weekday(int64_t day)
@@ -224,6 +219,17 @@ void cal_list_copy(cal_list_t *dst, const cal_list_t *src)
 void cal_sort(cal_list_t *list)
 {
     qsort(list->ev, (size_t)list->count, sizeof(list->ev[0]), cmp_event);
+}
+
+void cal_keep_feeds(cal_list_t *out, const cal_list_t *prev, uint8_t feeds, int64_t from, int64_t to)
+{
+    for (int k = 0; feeds != 0 && prev != NULL && k < prev->count && out->count < out->max; k++) {
+        const cal_event_t *e = &prev->ev[k];
+        if (e->feed < 8 && (feeds & (1u << e->feed)) && e->start < to && e->end > from) {
+            out->ev[out->count++] = *e;
+        }
+    }
+    cal_sort(out);
 }
 
 /* Keep an instance that meets the window; when the list is full, the
@@ -398,6 +404,29 @@ static int cmp_day(const void *a, const void *b)
 }
 
 /* Every instance of the event being read, from its rule. */
+/* The first period of rule `r` from `start` that can reach `from_day`
+ * with instances `span_days` long - a period or so early, never late. Only
+ * for a rule without COUNT, where the periods before don't matter: a rule
+ * from 1900 starts at the window, not 46,000 days before it. */
+static int64_t first_period(const rule_t *r, const ical_time_t *start, int64_t from_day, int64_t span_days)
+{
+    const int64_t reach = from_day - span_days - start->day; /* days from the start */
+    if (reach <= 0 || r->count) {
+        return 0;
+    }
+    int64_t k;
+    if (r->freq == F_DAILY) {
+        k = reach / r->interval;
+    } else if (r->freq == F_WEEKLY) {
+        k = (reach - 7) / (7 * (int64_t)r->interval);
+    } else if (r->freq == F_MONTHLY) {
+        k = (reach / 31 - 1) / r->interval;
+    } else {
+        k = (reach / 366 - 1) / r->interval;
+    }
+    return k > 1 ? k - 1 : 0;
+}
+
 static void expand(ical_parser_t *p, const rule_t *r, int64_t dur_days, int64_t dur_s)
 {
     const ical_time_t *s = &p->start;
@@ -410,7 +439,14 @@ static void expand(ical_parser_t *p, const rule_t *r, int64_t dur_days, int64_t 
     const int64_t span_days = all_day ? dur_days : dur_s / 86400 + 1; /* how far an instance reaches */
     int counted = 0;
 
-    for (int64_t k = 0; k < PERIODS_MAX; k++) {
+    const int64_t k0 = first_period(r, s, from_day, span_days);
+    for (int64_t k = k0; k < k0 + PERIODS_MAX; k++) {
+        if (++p->periods > PERIODS_FEED_MAX) {
+            if (p->periods == PERIODS_FEED_MAX + 1) {
+                ESP_LOGW(TAG, "Calendar %d: too many repeats, the rest left out", p->feed);
+            }
+            return;
+        }
         int64_t c[62];
         int n = 0;
         int64_t period_first;

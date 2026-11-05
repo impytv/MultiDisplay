@@ -10,8 +10,9 @@
  * body's SHA-256. The site takes only signed reports, recent and not seen
  * before, and no longer lets other web pages send them; it doesn't know
  * the keys beforehand, so this stops random abuse, not a determined one
- * (anyone can make a key). The sending runs in a task of its own, as TLS
- * and the signing need more stack than the web server's. */
+ * (anyone can make a key). The reading and sending run in a task of their
+ * own, as TLS and the signing need more stack than the web server's, and
+ * so the web server isn't held up while the site answers. */
 
 #include <stdio.h>
 #include <string.h>
@@ -23,7 +24,6 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include "mbedtls/ecp.h"
@@ -39,6 +39,7 @@
 #include "diag.h"
 #include "report.h"
 #include "report_util.h"
+#include "watchdog.h"
 #include "wifi_provision.h"
 #include "yr_client.h"
 
@@ -51,6 +52,8 @@ static const char *TAG = "report";
 #define REPORT_TIMEOUT_MS 30000
 #define REPORT_STACK 12288
 #define REPORT_ANSWER_MAX 256
+/* PSRAM left free in one piece beside a report's body. */
+#define REPORT_PSRAM_LEFT (512 * 1024)
 
 typedef struct {
     char *body;
@@ -60,7 +63,8 @@ typedef struct {
     int status;  /* the site's, or 0 if it couldn't be reached */
     char answer[REPORT_ANSWER_MAX];
     size_t answer_len;
-    SemaphoreHandle_t done;
+    httpd_req_t *req; /* the browser's, taken off the web server's task */
+    char boundary[72];
 } job_t;
 
 static volatile bool s_busy;
@@ -171,14 +175,6 @@ static void send_report(job_t *j)
     ESP_LOGI(TAG, "Report of %u bytes to %s: %s %d", (unsigned)j->len, j->url, esp_err_to_name(err), j->status);
 }
 
-static void report_task(void *arg)
-{
-    job_t *j = arg;
-    send_report(j);
-    xSemaphoreGive(j->done);
-    vTaskDelete(NULL);
-}
-
 /* One form part, `name` with `value`, into p (as far as end). */
 static char *part(char *p, const char *end, const char *boundary, const char *name, const char *value, size_t len)
 {
@@ -201,13 +197,91 @@ static esp_err_t answer(httpd_req_t *req, const char *status, const char *json)
     return httpd_resp_sendstr(req, json);
 }
 
+/* The browser's form read, the report made and sent, and the site's answer
+ * given back - all with the request taken off the web server's task
+ * (httpd_req_async_handler_begin), which goes on serving others meanwhile. */
+static void handle(job_t *j, httpd_req_t *req, const char *boundary)
+{
+    size_t log_len = 0;
+    char *log = diag_log_text(&log_len);
+    char *status = diag_status_json();
+    const char *log_from = log ? log + (log_len > REPORT_LOG_MAX ? log_len - REPORT_LOG_MAX : 0) : "";
+    log_len = log ? log_len - (size_t)(log_from - log) : 0;
+    const size_t cap = req->content_len + (status ? strlen(status) : 0) + log_len + 512;
+    /* An unpacked screenshot is 1.1 MB: not if that would leave too little
+     * for the forecasts meanwhile (they parse in ~370 KB). */
+    const size_t room = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    j->body = cap + REPORT_PSRAM_LEFT <= room ? heap_caps_malloc(cap, MALLOC_CAP_SPIRAM) : NULL;
+    if (j->body == NULL) {
+        ESP_LOGW(TAG, "No room for a report of %u bytes (largest free %u)", (unsigned)cap, (unsigned)room);
+        if (log) {
+            heap_caps_free(log);
+        }
+        cJSON_free(status);
+        answer(req, "507 Insufficient Storage", "{\"feil\":\"minne\"}");
+        return;
+    }
+    wd_psram_held((int)cap); /* given back below, the sending timed out */
+    char *p = j->body, *end = j->body + cap;
+    p = part(p, end, boundary, "status", status ? status : "", status ? strlen(status) : 0);
+    if (p != NULL) {
+        p = part(p, end, boundary, "logg", log_from, log_len);
+    }
+    if (log) {
+        heap_caps_free(log);
+    }
+    cJSON_free(status);
+    /* The browser's form after them, as it came. */
+    size_t got = 0;
+    int timeouts = 0;
+    while (p != NULL && got < req->content_len) {
+        const int r = httpd_req_recv(req, p + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 5) {
+            continue;
+        }
+        if (r <= 0) {
+            p = NULL;
+            break;
+        }
+        got += (size_t)r;
+    }
+    if (p == NULL) {
+        answer(req, "400 Bad Request", "{\"feil\":\"mottak\"}");
+    } else {
+        j->len = (size_t)(p - j->body) + got;
+        send_report(j);
+        if (j->status == 0) {
+            answer(req, "502 Bad Gateway", "{\"feil\":\"ingen kontakt\"}");
+        } else {
+            char st[16];
+            snprintf(st, sizeof(st), "%d %s", j->status, j->status == 200 ? "OK" : "Feil");
+            httpd_resp_set_status(req, st);
+            httpd_resp_set_type(req, "application/json");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+            httpd_resp_send(req, j->answer, (ssize_t)j->answer_len);
+        }
+    }
+    heap_caps_free(j->body);
+    j->body = NULL;
+    wd_psram_held(-(int)cap);
+}
+
+static void report_task(void *arg)
+{
+    job_t *j = arg;
+    handle(j, j->req, j->boundary);
+    httpd_req_async_handler_complete(j->req);
+    heap_caps_free(j);
+    s_busy = false;
+    vTaskDelete(NULL);
+}
+
 static esp_err_t h_report(httpd_req_t *req)
 {
     job_t *j = heap_caps_calloc(1, sizeof(*j), MALLOC_CAP_SPIRAM);
     if (j == NULL) {
         return answer(req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
     }
-    char boundary[72];
     app_config_report_url(g_cfg->ota_url, j->url, sizeof(j->url));
     esp_err_t ret;
     if (j->url[0] == '\0') {
@@ -217,72 +291,20 @@ static esp_err_t h_report(httpd_req_t *req)
     } else if (req->content_len == 0 || req->content_len > REPORT_MAX_IN) {
         ret = answer(req, "413 Payload Too Large", "{\"feil\":\"for stor\"}");
     } else if (httpd_req_get_hdr_value_str(req, "Content-Type", j->ctype, sizeof(j->ctype)) != ESP_OK ||
-               !report_boundary(j->ctype, boundary, sizeof(boundary))) {
+               !report_boundary(j->ctype, j->boundary, sizeof(j->boundary))) {
         ret = answer(req, "400 Bad Request", "{\"feil\":\"ikke et skjema\"}");
     } else if (s_busy) {
         ret = answer(req, "429 Too Many Requests", "{\"feil\":\"opptatt\"}");
+    } else if (httpd_req_async_handler_begin(req, &j->req) != ESP_OK) {
+        ret = answer(req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
     } else {
         s_busy = true;
-        ret = ESP_OK;
-        size_t log_len = 0;
-        char *log = diag_log_text(&log_len);
-        char *status = diag_status_json();
-        const char *log_from = log ? log + (log_len > REPORT_LOG_MAX ? log_len - REPORT_LOG_MAX : 0) : "";
-        log_len = log ? log_len - (size_t)(log_from - log) : 0;
-        const size_t cap = req->content_len + (status ? strlen(status) : 0) + log_len + 512;
-        j->body = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM);
-        char *p = j->body, *end = j->body + cap;
-        if (p != NULL) {
-            p = part(p, end, boundary, "status", status ? status : "", status ? strlen(status) : 0);
+        if (xTaskCreate(report_task, "report", REPORT_STACK, j, 4, NULL) == pdPASS) {
+            return ESP_OK; /* the task answers, completes the request and frees the job */
         }
-        if (p != NULL) {
-            p = part(p, end, boundary, "logg", log_from, log_len);
-        }
-        if (log) {
-            heap_caps_free(log);
-        }
-        cJSON_free(status);
-        /* The browser's form after them, as it came. */
-        size_t got = 0;
-        int timeouts = 0;
-        while (p != NULL && got < req->content_len) {
-            const int r = httpd_req_recv(req, p + got, req->content_len - got);
-            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 5) {
-                continue;
-            }
-            if (r <= 0) {
-                p = NULL;
-                break;
-            }
-            got += (size_t)r;
-        }
-        if (p == NULL) {
-            ret = answer(req, "400 Bad Request", "{\"feil\":\"mottak\"}");
-        } else {
-            j->len = (size_t)(p - j->body) + got;
-            j->done = xSemaphoreCreateBinary();
-            if (j->done != NULL && xTaskCreate(report_task, "report", REPORT_STACK, j, 4, NULL) == pdPASS) {
-                /* The task always ends: the sending times out. */
-                xSemaphoreTake(j->done, portMAX_DELAY);
-                if (j->status == 0) {
-                    ret = answer(req, "502 Bad Gateway", "{\"feil\":\"ingen kontakt\"}");
-                } else {
-                    char st[16];
-                    snprintf(st, sizeof(st), "%d %s", j->status, j->status == 200 ? "OK" : "Feil");
-                    httpd_resp_set_status(req, st);
-                    httpd_resp_set_type(req, "application/json");
-                    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-                    ret = httpd_resp_send(req, j->answer, (ssize_t)j->answer_len);
-                }
-            } else {
-                ret = answer(req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
-            }
-            if (j->done != NULL) {
-                vSemaphoreDelete(j->done);
-            }
-        }
-        heap_caps_free(j->body);
         s_busy = false;
+        ret = answer(j->req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
+        httpd_req_async_handler_complete(j->req);
     }
     heap_caps_free(j);
     return ret;

@@ -1636,6 +1636,7 @@ static lv_obj_t *text_label(const lv_font_t *font, lv_color_t colour, int y)
 
 lv_obj_t *sonos_build(lv_obj_t *screen)
 {
+    sonos_art_trust(g_cfg->ota_url); /* the radio covers from the update site */
     s_root = screen_root_create(screen);
     if (g_cfg->so_dark && g_cfg->theme != APP_THEME_DARK) {
         /* Dark on its own: the dark theme's background and text. */

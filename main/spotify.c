@@ -1174,6 +1174,10 @@ void spotify_enter(void)
 /* GET /spotify/login (password as for the setup page): on to Spotify. */
 static esp_err_t h_login(httpd_req_t *req)
 {
+    /* A new login replaces the one under way: not from another site. */
+    if (!wifi_provision_not_cross_site(req)) {
+        return ESP_OK;
+    }
     char host[96] = "";
     httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host));
     char *url = malloc(1024);

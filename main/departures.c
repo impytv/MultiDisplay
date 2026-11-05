@@ -20,6 +20,7 @@
 #include "draw.h"
 #include "entur_client.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "nb_text.h"
 
 #define DEP_POLL_MS         30000
 #define DEP_RETRY_MS        15000
@@ -70,23 +71,6 @@ static uint32_t dep_mode_colour(const char *mode)
     return 0x607D8B;
 }
 
-/* "Nå" (under a minute), "N min" (under 15; "N m" if `short_min`),
- * otherwise HH:MM - as the web page. */
-static void dep_fmt_time(char *buf, size_t n, int64_t t, time_t now, bool short_min)
-{
-    const int64_t mins = (t - (int64_t)now) / 60;
-    if (mins < 1) {
-        snprintf(buf, n, "N\xC3\xA5");
-    } else if (mins < 15) {
-        snprintf(buf, n, short_min ? "%d m" : "%d min", (int)mins);
-    } else {
-        time_t tt = (time_t)t;
-        struct tm lt;
-        localtime_r(&tt, &lt);
-        snprintf(buf, n, "%02d:%02d", lt.tm_hour, lt.tm_min);
-    }
-}
-
 /* One departure in the time column `w` wide ending at x_right ("N m" for
  * minutes if `short_min`): red "Innstilt" if cancelled, orange if a bus
  * goes in place of the train (as the row's "Buss for tog" notice), dimmed
@@ -101,7 +85,7 @@ static void dep_draw_call(lv_layer_t *layer, const entur_call_t *c, int x_right,
         snprintf(buf, sizeof(buf), "%s", draw_text_w("Innstilt") <= w ? "Innstilt" : "Innst.");
         color = lv_palette_main(LV_PALETTE_RED);
     } else {
-        dep_fmt_time(buf, sizeof(buf), c->expected, now, short_min);
+        nb_departure(buf, sizeof(buf), c->expected, now, short_min);
         if (c->replacement_bus) {
             color = lv_color_hex(DEP_NOTICE_COLOUR);
         } else if (!c->realtime) {
@@ -557,8 +541,7 @@ uint32_t departures_poll(int loc, int for_view)
     } else if (!s_dep_valid) {
         lv_label_set_text(g_status_label, "Kunne ikke hente avganger. Pr\xC3\xB8ver igjen...");
     } else {
-        lv_obj_set_style_text_color(s_dep_updated, lv_color_hex(0xE07000), 0);
-        lv_label_set_text(s_dep_updated, "Kunne ikke oppdatere - viser siste data");
+        updated_label_set(s_dep_updated, s_dep_at[loc].when, true, NULL); /* when the data shown is from */
     }
     const bool shown = s_dep_valid;
     esp_lv_adapter_unlock();

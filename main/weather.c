@@ -25,6 +25,7 @@
 #include "watchdog.h"
 #include "weather.h"
 #include "yr_client.h"
+#include "nb_text.h"
 
 static const char *TAG = "weather";
 
@@ -177,12 +178,12 @@ static void alert_lines_update(int loc);
 static lv_obj_t *s_alert_label; /* between the name and the clock: the worst active alert, if any */
 #define WX_CACHE_MAX_MS     (30 * 60 * 1000)
 /* A forecast fetched this long ago is flagged as old on screen. */
-#define WX_STALE_S          (30 * 60)
 static yr_forecast_t *s_wx_shown[APP_CONFIG_MAX_LOCATIONS];
 static fetch_stamp_t s_wx_shown_at[APP_CONFIG_MAX_LOCATIONS];
 
 /* Overview table widgets (built only when >= 2 locations). */
 static lv_obj_t *s_ov_title;
+static lv_obj_t *s_ov_updated; /* top right: how old the oldest forecast is, when old */
 static lv_obj_t *s_ov_hdr[OV_COLS];
 static lv_obj_t *s_ov_name[APP_CONFIG_MAX_LOCATIONS];
 static lv_obj_t *s_ov_icon[APP_CONFIG_MAX_LOCATIONS][OV_COLS];
@@ -382,6 +383,10 @@ lv_obj_t *overview_build(lv_obj_t *screen)
     lv_obj_set_style_text_font(s_ov_title, g_font_large, 0);
     lv_obj_set_pos(s_ov_title, OV_X, OV_TITLE_Y);
     lv_label_set_text(s_ov_title, "Oversikt");
+
+    s_ov_updated = lv_label_create(root);
+    lv_obj_align(s_ov_updated, LV_ALIGN_TOP_RIGHT, -OV_X, OV_TITLE_Y + 6);
+    lv_label_set_text(s_ov_updated, "");
 
     lv_obj_t *sted = lv_label_create(root);
     lv_obj_set_pos(sted, OV_X, OV_HDR_Y);
@@ -612,9 +617,11 @@ static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
         return;
     }
     lv_obj_t *label = s_temp_markers[(*used)++];
-    lv_label_set_text_fmt(label, "%.1f\xC2\xB0", (double)fc->points[m].air_temperature_c);
-    lv_obj_set_style_text_color(label,
-                                fc->points[m].air_temperature_c < 0.0f ? s_temp_cold_color : s_temp_marker_warm_color, 0);
+    char t[16];
+    nb_dec(t, sizeof(t), fc->points[m].air_temperature_c, 1);
+    lv_label_set_text_fmt(label, "%s\xC2\xB0", t);
+    /* Blue when it reads below zero ("-0,0" never does). */
+    lv_obj_set_style_text_color(label, t[0] == '-' ? s_temp_cold_color : s_temp_marker_warm_color, 0);
     lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
     place_marker_label(label, CHART_X + s_temp_line_points[m].x,
                        CHART_Y + s_temp_line_points[m].y, above);
@@ -810,8 +817,9 @@ static void place_precip_markers(const yr_forecast_t *fc, int32_t precip_range_m
         int32_t y = CHART_H - (int32_t)(((float)s_precip_max_chart_data[m] / (float)precip_axis_max) * CHART_H);
 
         lv_obj_t *label = s_precip_markers[k];
-        lv_label_set_text_fmt(label, "%.1f\xE2\x80\x93%.1f mm", (double)fc->points[m].precipitation_min_mm,
-                              (double)fc->points[m].precipitation_max_mm);
+        char mm[32];
+        nb_mm_range(mm, sizeof(mm), fc->points[m].precipitation_min_mm, fc->points[m].precipitation_max_mm);
+        lv_label_set_text(label, mm); /* one amount where they're the same, as in the nowcast */
         lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
         place_marker_label(label, CHART_X + x, CHART_Y + y, true);
     }
@@ -846,8 +854,8 @@ static void place_wind_markers(const yr_forecast_t *fc)
         int m = gust_idx[k];
         int32_t x = (fc->point_count > 1) ? (int32_t)m * (CHART_W - 1) / (fc->point_count - 1) : 0;
         lv_obj_t *label = s_wind_markers[used];
-        lv_label_set_text_fmt(label, "%.0f (%.0f) m/s", (double)fc->points[m].wind_speed_ms,
-                              (double)fc->points[m].wind_speed_of_gust_ms);
+        lv_label_set_text_fmt(label, "%d (%d) m/s", nb_round(fc->points[m].wind_speed_ms),
+                              nb_round(fc->points[m].wind_speed_of_gust_ms));
         lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
         const int32_t x1 = place_marker_label(label, CHART_X + x, WIND_CHART_Y, false);
         const int32_t x2 = x1 + lv_obj_get_width(label);
@@ -914,22 +922,11 @@ static bool rain_text(int loc, time_t now, char *out, size_t out_len)
     if (!stamp_fresh(&s_rain_stamp[loc], RAIN_NOTE_MAX_MS) || now <= PLAUSIBLE_EPOCH_S) {
         return false;
     }
-    /* Whole 5 minutes, rounded up: the nowcast's own steps. */
     const int64_t left = s_rain_at[loc] - now;
-    const int min = (int)((left + 299) / 300 * 5);
     switch (s_rain[loc]) {
     case YR_RAIN_STARTS:
-        if (left <= 0) {
-            return false; /* started since; the next nowcast says more */
-        }
-        snprintf(out, out_len, "Nedb\xC3\xB8r om %d min", min);
-        return true;
     case YR_RAIN_STOPS:
-        if (left <= 0) {
-            return false;
-        }
-        snprintf(out, out_len, "Opphold om %d min", min);
-        return true;
+        return nb_rain_change(out, out_len, s_rain[loc] == YR_RAIN_STARTS, left);
     case YR_RAIN_ONGOING:
         snprintf(out, out_len, "Nedb\xC3\xB8r den neste timen");
         return true;
@@ -1107,16 +1104,7 @@ static void update_ui_with_forecast(const yr_forecast_t *fc, time_t fetched, int
 
     const time_t wall = time(NULL);
     if (fetched > 0) {
-        struct tm lt;
-        localtime_r(&fetched, &lt);
-        const bool stale = wall - fetched >= WX_STALE_S;
-        lv_label_set_text_fmt(s_updated_label, "%s kl. %02d:%02d", stale ? "Sist oppdatert" : "Oppdatert",
-                              lt.tm_hour, lt.tm_min);
-        if (stale) {
-            lv_obj_set_style_text_color(s_updated_label, lv_palette_main(LV_PALETTE_ORANGE), 0);
-        } else {
-            lv_obj_remove_local_style_prop(s_updated_label, LV_STYLE_TEXT_COLOR, 0);
-        }
+        updated_label_set(s_updated_label, fetched, wall - fetched >= WX_STALE_S, NULL);
     } else {
         lv_label_set_text_fmt(s_updated_label, "Varsel fra kl. %s", fc->updated_hour_minute);
     }
@@ -1486,11 +1474,40 @@ static void update_overview(void)
     }
     int64_t t0 = (now_epoch / 3600) * 3600;
 
+    /* "kl. 20", then "i morgen kl. 02" for the first column on the next
+     * day ("i morgen 02" where that is too wide), and "kl. 08" after it. */
+    int64_t prev_day = nb_day_number((time_t)now_epoch);
     for (int c = 0; c < OV_COLS; c++) {
         time_t tt = (time_t)(t0 + (int64_t)c * OV_STEP_H * 3600);
         struct tm lt;
         localtime_r(&tt, &lt);
-        lv_label_set_text_fmt(s_ov_hdr[c], "kl %02d", lt.tm_hour);
+        char hdr[40];
+        const int64_t day = nb_day_number(tt);
+        if (day != prev_day) {
+            char word[16];
+            nb_day_word(word, sizeof(word), tt, (time_t)now_epoch);
+            snprintf(hdr, sizeof(hdr), "%s kl. %02d", word, lt.tm_hour);
+            if (draw_text_w(hdr) > OV_COL_W - 4) {
+                snprintf(hdr, sizeof(hdr), "%s %02d", word, lt.tm_hour);
+            }
+            prev_day = day;
+        } else {
+            snprintf(hdr, sizeof(hdr), "kl. %02d", lt.tm_hour);
+        }
+        lv_label_set_text(s_ov_hdr[c], hdr);
+    }
+
+    /* Old forecasts marked as on the weather screen: the oldest row's. */
+    time_t oldest = 0;
+    for (int row = 0; row < s_weather_count; row++) {
+        const int i = s_wx_loc[row];
+        if (s_fc_valid[i] && s_fc_when[i] > 0 && (oldest == 0 || s_fc_when[i] < oldest)) {
+            oldest = s_fc_when[i];
+        }
+    }
+    updated_label_set(s_ov_updated, oldest, true, NULL);
+    if (oldest == 0 || wall - oldest < WX_STALE_S) {
+        lv_label_set_text(s_ov_updated, "");
     }
 
     for (int row = 0; row < s_weather_count; row++) {
@@ -1528,16 +1545,17 @@ static void update_overview(void)
 
             /* Below 0 C the temperature (not the amount) in blue, by the
              * label's recolour command. */
-            char temp[48];
-            const float tc = np->air_temperature_c;
-            if (tc < 0.0f) {
-                snprintf(temp, sizeof(temp), "#%06" PRIx32 " %.0f\xC2\xB0#", lv_color_to_u32(temp_cold_color()) & 0xFFFFFF,
-                         (double)tc);
+            char temp[48], deg[16];
+            nb_temp(deg, sizeof(deg), np->air_temperature_c);
+            if (deg[0] == '-') {
+                snprintf(temp, sizeof(temp), "#%06" PRIx32 " %s#", lv_color_to_u32(temp_cold_color()) & 0xFFFFFF, deg);
             } else {
-                snprintf(temp, sizeof(temp), "%.0f\xC2\xB0", (double)tc);
+                snprintf(temp, sizeof(temp), "%s", deg);
             }
             if (psum >= 0.05f) {
-                lv_label_set_text_fmt(cell, "%s\n%.1f mm", temp, (double)psum);
+                char mm[16];
+                nb_dec(mm, sizeof(mm), psum, 1);
+                lv_label_set_text_fmt(cell, "%s\n%s mm", temp, mm);
             } else {
                 lv_label_set_text(cell, temp);
             }

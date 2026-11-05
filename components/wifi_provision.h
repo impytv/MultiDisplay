@@ -54,6 +54,10 @@ esp_err_t wifi_provision_add_post_handler(const char *uri, esp_err_t (*handler)(
  * browser without it gets the login form, and comes back after. */
 esp_err_t wifi_provision_add_page_handler(const char *uri, esp_err_t (*handler)(httpd_req_t *req));
 
+/* For a GET that changes something: false, with the 403 sent, if it came
+ * from another site's page (Sec-Fetch-Site), as an <img> there would. */
+bool wifi_provision_not_cross_site(httpd_req_t *req);
+
 /* What a page starts with: the charset, the viewport and the setup page's
  * look (/setup.css). */
 const char *wifi_provision_page_head(void);

@@ -26,6 +26,9 @@ void overview_enter(void);
  * changed. Weather task. */
 uint32_t weather_poll(bool overview, int sel, bool refetch_sel, int for_view);
 
+/* A forecast this old (s) is shown as old: "Sist oppdatert" in orange. */
+#define WX_STALE_S (30 * 60)
+
 /* Location `loc`'s forecast if one is held, else NULL; *fetched is when it
  * was fetched (0 if the clock wasn't set). Read it with the adapter lock
  * held. */

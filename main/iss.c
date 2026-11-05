@@ -37,6 +37,7 @@
 #include "sun.h"
 #include "watchdog.h"
 #include "yr_client.h"
+#include "nb_text.h"
 
 static const char *TAG = "iss";
 
@@ -417,24 +418,6 @@ static bool in_shadow(double t)
     return off2 < 6371.0 * 6371.0;
 }
 
-/* "i dag 19:42", "i morgen 05:51", "fredag 05:51". */
-static void day_time_text(char *buf, size_t len, double t, time_t now)
-{
-    static const char *const WD[] = { "s\xC3\xB8ndag", "mandag", "tirsdag", "onsdag", "torsdag", "fredag",
-                                      "l\xC3\xB8rdag" };
-    struct tm a, b;
-    const time_t tt = (time_t)t;
-    localtime_r(&now, &a);
-    localtime_r(&tt, &b);
-    int days = b.tm_yday - a.tm_yday;
-    if (b.tm_year != a.tm_year) {
-        const int y = a.tm_year + 1900;
-        days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
-    }
-    snprintf(buf, len, "%s %02d:%02d", days == 0 ? "i dag" : days == 1 ? "i morgen" : WD[b.tm_wday], b.tm_hour,
-             b.tm_min);
-}
-
 /* "i dag 19:42-19:48, 54 degrees high", or "now, until 19:48, ..." while it is up. */
 static void pass_span_text(char *buf, size_t len, double from, double to, double el, time_t now)
 {
@@ -446,7 +429,7 @@ static void pass_span_text(char *buf, size_t len, double from, double to, double
         return;
     }
     char when[32];
-    day_time_text(when, sizeof(when), from, now);
+    nb_day_time(when, sizeof(when), (time_t)from, now);
     snprintf(buf, len, "%s\xE2\x80\x93%02d:%02d, %d\xC2\xB0 h\xC3\xB8yt", when, lt.tm_hour, lt.tm_min, (int)lround(el));
 }
 

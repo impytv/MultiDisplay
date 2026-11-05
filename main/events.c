@@ -25,6 +25,7 @@
 #include "form_util.h"
 #include "own_events.h"
 #include "wifi_provision.h"
+#include "nb_text.h"
 
 static const char *TAG = "events";
 
@@ -92,12 +93,7 @@ static char *esc(char *p, char *end, const char *s)
 
 static int64_t today_midnight(void)
 {
-    const time_t now = time(NULL);
-    struct tm lt;
-    localtime_r(&now, &lt);
-    lt.tm_hour = lt.tm_min = lt.tm_sec = 0;
-    lt.tm_isdst = -1;
-    return (int64_t)mktime(&lt);
+    return (int64_t)nb_midnight(time(NULL), 0);
 }
 
 /* "Vises p&aring; kalenderen, m&aring;nedskalenderen og klokken". */

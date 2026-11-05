@@ -153,4 +153,54 @@ void test_ical(void)
     CHECK_INT(l->count, CAL_EVENTS_MAX);
     free(big);
     free(l);
+
+    /* A failed calendar's events kept from the list before, by feed and
+     * window. */
+    {
+        cal_list_t *prev = cal_list_new(8), *out = cal_list_new(8);
+        const cal_event_t a = { .start = 100, .end = 200, .feed = 0 }, b = { .start = 150, .end = 250, .feed = 1 },
+                          c = { .start = 900, .end = 950, .feed = 1 }, d = { .start = 50, .end = 60, .feed = 2 };
+        prev->ev[prev->count++] = a;
+        prev->ev[prev->count++] = b;
+        prev->ev[prev->count++] = c;
+        prev->ev[prev->count++] = d;
+        out->ev[out->count++] = (cal_event_t){ .start = 120, .end = 130, .feed = 0 };
+        cal_keep_feeds(out, prev, 1u << 1, 0, 500);
+        CHECK_INT(out->count, 2); /* b only: c is outside, a and d not feed 1 */
+        CHECK_INT(out->ev[0].start, 120);
+        CHECK_INT(out->ev[1].start, 150);
+        cal_keep_feeds(out, prev, 0, 0, 1000);
+        CHECK_INT(out->count, 2);
+        free(prev);
+        free(out);
+    }
+
+    /* Rules from long ago: the same instances, and the walk starts at the
+     * window rather than in 1900. */
+    {
+        cal_list_t *o = cal_list_new(64);
+        const int64_t wf = mk(2026, 10, 5, 0, 0), wt = mk(2026, 11, 2, 0, 0);
+        ical_parser_t *q = ical_begin(o, 0, wf, wt);
+        static const char OLD[] =
+            "BEGIN:VCALENDAR\nBEGIN:VEVENT\nDTSTART:19000101T080000\nDTEND:19000101T090000\n"
+            "RRULE:FREQ=DAILY;INTERVAL=3\nSUMMARY:D\nUID:o1\nEND:VEVENT\n"
+            "BEGIN:VEVENT\nDTSTART:19000102T100000\nRRULE:FREQ=WEEKLY;BYDAY=TU\nSUMMARY:W\nUID:o2\nEND:VEVENT\n"
+            "BEGIN:VEVENT\nDTSTART:19000115T120000\nRRULE:FREQ=MONTHLY\nSUMMARY:M\nUID:o3\nEND:VEVENT\n"
+            "BEGIN:VEVENT\nDTSTART;VALUE=DATE:19001010\nRRULE:FREQ=YEARLY\nSUMMARY:Y\nUID:o4\nEND:VEVENT\n"
+            "BEGIN:VEVENT\nDTSTART:19000101T070000\nRRULE:FREQ=DAILY;UNTIL=19500101T000000Z\nSUMMARY:U\n"
+            "UID:o5\nEND:VEVENT\nEND:VCALENDAR\n";
+        ical_feed(q, OLD, sizeof(OLD) - 1);
+        CHECK(q->periods < 200);
+        CHECK_INT(ical_end(q), 9 + 4 + 1 + 1);
+        static const int d3[] = { 6, 9, 12, 15, 18, 21, 24, 27, 30 };
+        for (size_t i = 0; i < sizeof(d3) / sizeof(d3[0]); i++) {
+            CHECK(find(o, mk(2026, 10, d3[i], 8, 0)) != NULL);
+        }
+        for (int d = 6; d <= 27; d += 7) {
+            CHECK(find(o, mk(2026, 10, d, 10, 0)) != NULL);
+        }
+        CHECK(find(o, mk(2026, 10, 15, 12, 0)) != NULL);
+        CHECK(find(o, mk(2026, 10, 10, 0, 0)) != NULL);
+        free(o);
+    }
 }
