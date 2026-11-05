@@ -1144,3 +1144,38 @@ most important first.
   *Done in 1.36.0: the departure time and the nowcast's note are
   `nb_departure` and `nb_rain_change` (nb_text.c); the week screen's numbers,
   the day texts and the tide's times use nb_text too, all host tested.*
+## Second pass (November 2026, 1.36.0)
+
+What the 1.35.0 reviews didn't reach (docs/reviews/review-second-pass.md).
+
+- [x] **154. Only the first four weather alerts are kept.** A red or
+  orange alert after the fourth MetAlerts lists is dropped, and "(+N)"
+  counts only the four. Keep the four most severe and count them all.
+  *Done in 1.36.1: when full, a worse alert takes the mildest one's place,
+  and those left out are counted in `more` for the "(+N)"; host tested with
+  six alerts.*
+- [x] **155. A Spotify artist line cut in the middle of a name**
+  (`artists()` leaves the part snprintf wrote before the break).
+  *Done in 1.36.1: the names that fit whole, the first cut at a whole
+  character if it alone doesn't fit; host tested.*
+- [x] **156. An air quality value of null is read as 0** (the best air)
+  instead of the hour being skipped.
+  *Done in 1.36.1: a value that doesn't start like a number is NAN, so the
+  hour is skipped; host tested.*
+- [x] **157. The watchdog can read a beat time half written** (64-bit on a
+  32-bit CPU): a false restart, very unlikely.
+  *Done in 1.36.1: the beats are 32-bit seconds since boot.*
+- [x] **158. A stray comment from 1.36.0** above `save_form_into` in
+  wifi_provision.c.
+  *Done in 1.36.1: removed.*
+- [x] **159. The radio proxy fetches any https picture a stream's metadata
+  names**, up to 8 MB, from inside the home network. Only the stations'
+  image hosts.
+  *Done in 1.36.1: only https from P4's and Bauer's image hosts
+  (`ART_HOSTS`, others logged and left out), and Pillow's pixel cap at 4096
+  x 4096.*
+- [x] **160. nginx lets 192.168.0.0/16 reach /radio/**, which Docker may
+  also give a compose network: allow the home /24 only.
+  *Done in 1.36.1: a request with Cloudflare's CF-Connecting-IP is refused
+  first, whatever address the tunnel has; checked: 200 from the LAN, 403
+  with the header.*

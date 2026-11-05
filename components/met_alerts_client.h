@@ -6,8 +6,8 @@
 #include "esp_err.h"
 #include "http_util.h"
 
-/* A point on the map is essentially never covered by more than a couple of
- * simultaneously active warnings. */
+/* The alerts kept for a point: the most severe, when it has more (a storm
+ * can bring wind, waves, flood, landslide and avalanche at once). */
 #define MET_ALERTS_MAX 4
 
 /* MET Norway's three warning colours, in increasing severity - the numeric
@@ -33,6 +33,7 @@ typedef struct {
     int count; /* number of entries in alerts[] (<= MET_ALERTS_MAX); 0 is a
                 * valid, successful result - it just means nothing is active
                 * there right now. */
+    int more;  /* milder ones left out for want of room */
     met_alert_t alerts[MET_ALERTS_MAX];
 } met_alerts_t;
 

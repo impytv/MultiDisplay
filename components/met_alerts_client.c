@@ -55,41 +55,43 @@ bool met_alerts_parse(const char *json, met_alerts_t *out)
     cJSON *feature = NULL;
     cJSON_ArrayForEach(feature, features)
     {
-        if (n >= MET_ALERTS_MAX) {
-            break;
-        }
-
         cJSON *props = cJSON_GetObjectItemCaseSensitive(feature, "properties");
         if (props == NULL) {
             continue;
         }
-
-        met_alert_t *a = &out->alerts[n];
-        memset(a, 0, sizeof(*a));
-
+        met_alert_t a = { 0 };
         cJSON *name = cJSON_GetObjectItemCaseSensitive(props, "eventAwarenessName");
         if (cJSON_IsString(name)) {
-            snprintf(a->event_name, sizeof(a->event_name), "%s", name->valuestring);
+            snprintf(a.event_name, sizeof(a.event_name), "%s", name->valuestring);
         }
-
         cJSON *area = cJSON_GetObjectItemCaseSensitive(props, "area");
         if (cJSON_IsString(area)) {
-            snprintf(a->area, sizeof(a->area), "%s", area->valuestring);
+            snprintf(a.area, sizeof(a.area), "%s", area->valuestring);
         }
-
         cJSON *color = cJSON_GetObjectItemCaseSensitive(props, "riskMatrixColor");
-        a->color = parse_color(cJSON_IsString(color) ? color->valuestring : NULL);
-
+        a.color = parse_color(cJSON_IsString(color) ? color->valuestring : NULL);
         /* "when": {"interval": ["<start>", "<end>"]} */
         cJSON *interval = cJSON_GetObjectItemCaseSensitive(cJSON_GetObjectItemCaseSensitive(feature, "when"),
                                                            "interval");
         cJSON *from = cJSON_GetArrayItem(interval, 0), *to = cJSON_GetArrayItem(interval, 1);
-        a->start = cJSON_IsString(from) ? iso8601_to_epoch(from->valuestring) : 0;
-        a->end = cJSON_IsString(to) ? iso8601_to_epoch(to->valuestring) : 0;
-
-        n++;
+        a.start = cJSON_IsString(from) ? iso8601_to_epoch(from->valuestring) : 0;
+        a.end = cJSON_IsString(to) ? iso8601_to_epoch(to->valuestring) : 0;
+        if (n < MET_ALERTS_MAX) {
+            out->alerts[n++] = a;
+            continue;
+        }
+        /* Full: it takes the place of the mildest kept, if it is worse. */
+        out->more++;
+        int mild = 0;
+        for (int i = 1; i < n; i++) {
+            if (out->alerts[i].color < out->alerts[mild].color) {
+                mild = i;
+            }
+        }
+        if (a.color > out->alerts[mild].color) {
+            out->alerts[mild] = a;
+        }
     }
-
     out->count = n;
     out->valid = true;
     ok = true;

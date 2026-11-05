@@ -73,6 +73,10 @@ SEEK_S = 5  # how long after a skip the speaker's seek is waited for
 ART_SIDE = 240  # the display's cover
 ART_KEPT = 40  # pictures kept made
 PLANET = "https://listenapi.planetradio.co.uk/"  # Bauer's song details
+# Where the stations' pictures are (P4's, Bauer's): the stream says what is
+# fetched, so only from these - not anywhere, nor inside the home network.
+ART_HOSTS = ("ddjh0q34m0xak.cloudfront.net", "media.bauerradio.com")
+Image.MAX_IMAGE_PIXELS = 4096 * 4096  # a cover, not a decompression bomb
 STATIONS = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "stations.json")))
 
 
@@ -118,7 +122,7 @@ def song_of(offset, title, url):
             d = {}
         if d.get("type") == "music" and d.get("title"):
             song.title, song.artist = d["title"], d.get("artist", "")
-        if str(d.get("imageUrl", "")).startswith("https://"):
+        if art_ok(d.get("imageUrl")):
             song.image = art_id(d["imageUrl"])
     return song
 
@@ -132,14 +136,25 @@ def details(song, url):
         return
     if d.get("eventSongTitle"):
         song.title, song.artist = d["eventSongTitle"], d.get("eventSongArtist", "")
-    image = d.get("eventImageUrl") or ""
-    if image.startswith("https://"):
+    image = d.get("eventImageUrl")
+    if art_ok(image):
         song.image = art_id(image)
 
 
 art_urls = {}  # id -> the picture's address, of the ids given out
 art_made = OrderedDict()  # id -> the JPEG made, the newest last
 art_lock = threading.Lock()
+
+
+def art_ok(url):
+    """Whether `url` is a picture of the stations' own hosts."""
+    if not isinstance(url, str) or not url:
+        return False
+    u = urllib.parse.urlsplit(url)
+    if u.scheme == "https" and u.hostname in ART_HOSTS and u.port is None:
+        return True
+    log("picture from elsewhere left out:", url[:200])
+    return False
 
 
 def art_id(url):

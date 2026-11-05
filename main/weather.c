@@ -1331,6 +1331,7 @@ static const met_alert_t *alert_worst_n(int loc, int *count)
                 worst = a;
             }
         }
+        n += worst != NULL ? s_alert_cache[loc]->more : 0; /* left out; in force as far as is known */
     }
     if (count != NULL) {
         *count = n;

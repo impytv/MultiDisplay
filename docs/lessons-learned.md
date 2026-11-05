@@ -669,3 +669,13 @@ new "i morgen 04:13" pushed its level column off the edge.
 *Lesson:* before calling a change to a screen done, turn that screen on
 (save the settings first with `/config.json`, restore them after) and
 look at it at the font size set.
+
+### A cap that keeps the first, not the worst
+
+MetAlerts' reply was cut at four alerts in the order it lists them, so in a
+storm a red alert could be dropped for a yellow one, and nobody noticed
+because a point rarely has more than two. Spotify's artist list, cut when
+full, kept the half name that snprintf had already written.
+*Lesson:* where a list from a server is capped, decide what to keep (the
+most severe, the nearest) and count what is left out; and when a write
+doesn't fit, undo the part of it that did.

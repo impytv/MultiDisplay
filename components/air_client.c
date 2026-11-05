@@ -85,7 +85,10 @@ static float variable(const char *obj, const char *end, const char *name)
     }
     const char *vend = skip_value(v, end);
     const char *num = find_key(v, vend, "value");
-    return num ? strtof(num, NULL) : NAN;
+    if (num == NULL || !(*num == '-' || (*num >= '0' && *num <= '9'))) {
+        return NAN; /* none, or null */
+    }
+    return strtof(num, NULL);
 }
 
 bool air_quality_parse(const char *json, size_t len, air_quality_t *out)

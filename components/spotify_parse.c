@@ -76,7 +76,8 @@ static const char *pick_image(const cJSON *images)
     return best;
 }
 
-/* A track's artists, "A, B". */
+/* A track's artists, "A, B": the names that fit whole (the first cut
+ * short if it alone doesn't). */
 static void artists(const cJSON *item, char *out, size_t len)
 {
     char *p = out, *end = out + len;
@@ -86,6 +87,11 @@ static void artists(const cJSON *item, char *out, size_t len)
     {
         const int n = snprintf(p, (size_t)(end - p), "%s%s", p == out ? "" : ", ", str_at(a, "name"));
         if (n < 0 || n >= end - p) {
+            if (p == out) {
+                copy(out, len, str_at(a, "name"));
+            } else {
+                *p = '\0'; /* not the part of this name that fit */
+            }
             break;
         }
         p += n;

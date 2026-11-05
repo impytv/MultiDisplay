@@ -43,6 +43,25 @@ void test_alerts(void)
     CHECK_INT(a.alerts[0].color, MET_ALERT_RED);
     CHECK_INT(a.alerts[0].start, 0);
     CHECK_INT(a.alerts[0].end, 0);
+    /* Six: the red and the orange after the fourth take yellow places, and
+     * the two left out are counted. */
+    CHECK(met_alerts_parse("{\"features\":["
+                           "{\"properties\":{\"riskMatrixColor\":\"Yellow\",\"eventAwarenessName\":\"a\"}},"
+                           "{\"properties\":{\"riskMatrixColor\":\"Yellow\",\"eventAwarenessName\":\"b\"}},"
+                           "{\"properties\":{\"riskMatrixColor\":\"Orange\",\"eventAwarenessName\":\"c\"}},"
+                           "{\"properties\":{\"riskMatrixColor\":\"Yellow\",\"eventAwarenessName\":\"d\"}},"
+                           "{\"properties\":{\"riskMatrixColor\":\"Red\",\"eventAwarenessName\":\"e\"}},"
+                           "{\"properties\":{\"riskMatrixColor\":\"Orange\",\"eventAwarenessName\":\"f\"}}]}",
+                           &a));
+    CHECK_INT(a.count, 4);
+    CHECK_INT(a.more, 2);
+    int red = 0, orange = 0;
+    for (int i = 0; i < a.count; i++) {
+        red += a.alerts[i].color == MET_ALERT_RED;
+        orange += a.alerts[i].color == MET_ALERT_ORANGE;
+    }
+    CHECK_INT(red, 1);
+    CHECK_INT(orange, 2);
     CHECK(!met_alerts_parse("{\"type\":\"FeatureCollection\"}", &a));
     CHECK(!met_alerts_parse("not json", &a));
 }

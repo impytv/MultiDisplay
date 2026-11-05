@@ -47,13 +47,20 @@ static const char *TAG = "watchdog";
 #define WD_TRIP_WEATHER     0x57445754u
 #define WD_TRIP_MEMORY      0x5744454du
 
-/* esp_timer_get_time() of each task's last sign of life; 0 = not watched
- * (the weather task sits in the setup portal indefinitely, legitimately). */
-static volatile int64_t s_wd_lvgl_us;
-static volatile int64_t s_wd_weather_us;
+/* The second (from beat_s) of each task's last sign of life; 0 = not
+ * watched (the weather task sits in the setup portal indefinitely,
+ * legitimately). 32 bits, so the timer task never reads one half written. */
+static volatile uint32_t s_wd_lvgl_s;
+static volatile uint32_t s_wd_weather_s;
 /* Survives the restart, so the next boot can say why it happened. */
 static RTC_NOINIT_ATTR uint32_t s_wd_tripped;
 static const char *s_boot_trip; /* why the watchdog caused this boot, or NULL */
+
+/* Seconds since boot, from 1. */
+static uint32_t beat_s(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000000) + 1;
+}
 
 const char *wd_boot_trip(void)
 {
@@ -62,13 +69,13 @@ const char *wd_boot_trip(void)
 
 void wd_weather_beat(void)
 {
-    s_wd_weather_us = esp_timer_get_time();
+    s_wd_weather_s = beat_s();
 }
 
 static void wd_lvgl_beat_cb(lv_timer_t *t)
 {
     (void)t;
-    s_wd_lvgl_us = esp_timer_get_time();
+    s_wd_lvgl_s = beat_s();
 }
 
 /* The same for the setup page. */
@@ -122,8 +129,8 @@ static void wd_check_cb(void *arg)
 {
     (void)arg;
     static int low_checks, checks;
-    const int64_t now = esp_timer_get_time();
-    const int64_t lvgl = s_wd_lvgl_us, weather = s_wd_weather_us;
+    const uint32_t now = beat_s();
+    const uint32_t lvgl = s_wd_lvgl_s, weather = s_wd_weather_s;
 
     if (++checks * WD_CHECK_S >= WD_MEM_LOG_S) {
         checks = 0;
@@ -131,9 +138,9 @@ static void wd_check_cb(void *arg)
     }
     low_checks = memory_low() ? low_checks + 1 : 0;
 
-    if (lvgl != 0 && now - lvgl > WD_LVGL_MAX_S * 1000000LL) {
+    if (lvgl != 0 && now - lvgl > WD_LVGL_MAX_S) {
         s_wd_tripped = WD_TRIP_LVGL;
-    } else if (weather != 0 && now - weather > WD_WEATHER_MAX_S * 1000000LL) {
+    } else if (weather != 0 && now - weather > WD_WEATHER_MAX_S) {
         s_wd_tripped = WD_TRIP_WEATHER;
     } else if (low_checks * WD_CHECK_S >= WD_LOW_MEM_S) {
         s_wd_tripped = WD_TRIP_MEMORY;
@@ -154,7 +161,7 @@ void wd_start(void)
         s_boot_trip = trip_reason_no(s_wd_tripped);
     }
     s_wd_tripped = 0;
-    s_wd_lvgl_us = esp_timer_get_time();
+    s_wd_lvgl_s = beat_s();
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         lv_timer_create(wd_lvgl_beat_cb, 1000, NULL);
         esp_lv_adapter_unlock();

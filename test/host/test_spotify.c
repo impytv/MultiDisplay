@@ -68,6 +68,22 @@ void test_spotify(void)
     CHECK_STR(p.title, "Kj\xC3\xA6rlighetsvise");
     CHECK_STR(p.artist, "A, B \xC3\x98");
     CHECK_STR(p.album, "Album");
+    {
+        /* Names that don't fit: the whole ones before, never part of one. */
+        char json[1024], name[SPOTIFY_TEXT_MAX];
+        memset(name, 'x', sizeof(name) - 3); /* "A, " and it: one over */
+        name[sizeof(name) - 3] = '\0';
+        snprintf(json, sizeof(json),
+                 "{\"item\":{\"album\":{},\"artists\":[{\"name\":\"A\"},{\"name\":\"%s\"}]}}", name);
+        spotify_player_t q;
+        CHECK(spotify_parse_player(json, &q));
+        CHECK_STR(q.artist, "A");
+        snprintf(json, sizeof(json), "{\"item\":{\"album\":{},\"artists\":[{\"name\":\"%s\xC3\x98\xC3\x98"
+                 "\xC3\x98\xC3\x98\xC3\x98\"}]}}", name);
+        CHECK(spotify_parse_player(json, &q));
+        CHECK(strlen(q.artist) < sizeof(q.artist) && strncmp(q.artist, name, strlen(name)) == 0);
+        CHECK((strlen(q.artist) - strlen(name)) % 2 == 0); /* whole Øs only */
+    }
     CHECK_STR(p.image_url, "https://i.scdn.co/300"); /* the nearest 300 px */
     CHECK_INT(p.progress_ms, 61234);
     CHECK_INT(p.duration_ms, 215000);

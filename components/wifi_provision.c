@@ -1346,8 +1346,6 @@ static esp_err_t h_ota(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* "HH:MM" (as an <input type=time> sends it) to minutes after midnight, or
- * -1 if it isn't a valid time. */
 static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t *cfg)
 {
     app_config_load(cfg); /* keep the WiFi fields at their current value if omitted */

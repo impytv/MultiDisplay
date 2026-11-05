@@ -40,6 +40,14 @@ void test_air(void)
     CHECK(air_quality_parse(gap, strlen(gap), &q));
     CHECK_INT(q.count, 2);
     CHECK(q.sub[AIR_NO2][1] == 2.5f && q.sub[AIR_PM10][1] == 0);
+    /* An hour whose AQI is null is no hour, not the best air. */
+    static const char null_aqi[] = "{\"data\":{\"time\":["
+        "{\"from\":\"2026-09-28T18:00:00Z\",\"variables\":{\"AQI\":{\"value\":null}}},"
+        "{\"from\":\"2026-09-28T19:00:00Z\",\"variables\":{\"AQI\":{\"value\":2.5}}}]}}";
+    CHECK(air_quality_parse(null_aqi, strlen(null_aqi), &q));
+    CHECK_INT(q.count, 1);
+    CHECK_INT(q.start, iso8601_to_epoch("2026-09-28T19:00:00Z"));
+    CHECK(q.aqi[0] == 2.5f);
     CHECK(!air_quality_parse("{\"data\":{}}", 11, &q));
     CHECK(!air_quality_parse("x", 1, &q));
 
