@@ -112,7 +112,6 @@ typedef struct {
     bool has_lat, has_lon, has_dst, has_dir;
     bool on_ground;
     bool has_alt;
-    float lat, lon; /* only checked for presence */
     float alt, gs, track, true_heading, mag_heading, dst, dir, seen_pos;
     bool has_track, has_true_heading, has_mag_heading;
     char flight[sizeof(((adsb_aircraft_t *)0)->callsign)], reg[sizeof(((adsb_aircraft_t *)0)->callsign)],

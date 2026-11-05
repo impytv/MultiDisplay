@@ -61,6 +61,7 @@ static const char *TAG = "spotify_screen";
 #define SP_PLAYING_MS 5000
 #define SP_PAUSED_MS  10000
 #define SP_IDLE_MS    30000   /* not logged in */
+#define SP_RATE_WAIT_S 300 /* the longest wait at a time while Spotify says wait */
 #define SP_RETRY_MS   15000
 #define SP_SETTLE_MS  400     /* after a command, before asking what plays */
 #define SP_NOTE_MS    10000   /* a message under the cover stays this long */
@@ -452,7 +453,7 @@ static void spotify_show(void)
  * held). */
 static void show_login_status(void)
 {
-    const char *msg = "";
+    const char *msg;
     if (g_cfg->sp_client_id[0] == '\0') {
         msg = "Legg inn klient-ID fra Spotify p\xC3\xA5 oppsettsiden (Andre skjermer \xE2\x86\x92 Spotify).";
     } else {
@@ -467,6 +468,7 @@ static void show_login_status(void)
             msg = "Innloggingen hos Spotify mislyktes. Pr\xC3\xB8v igjen p\xC3\xA5 oppsettsiden.";
             break;
         case SPOTIFY_CONNECTED:
+        default:
             msg = s_have ? "" : "Henter fra Spotify...";
             break;
         }
@@ -1035,7 +1037,10 @@ uint32_t spotify_poll(int for_view)
             esp_lv_adapter_unlock();
         }
         if (err == SPOTIFY_ERR_RATE) {
-            return (uint32_t)spotify_retry_after_s() * 1000;
+            /* A few minutes at a time: the wait can be hours, and the task
+             * must come round for the watchdog meanwhile. */
+            const int left_s = spotify_retry_after_s();
+            return (uint32_t)(left_s < 1 ? 1 : left_s > SP_RATE_WAIT_S ? SP_RATE_WAIT_S : left_s) * 1000;
         }
         return backoff_ms(&s_fail, SP_RETRY_MS);
     }

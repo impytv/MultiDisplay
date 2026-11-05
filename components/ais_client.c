@@ -471,13 +471,13 @@ static esp_err_t fetch_token(const char *client_id, const char *client_secret)
     }
     memcpy(s_token, v, vlen);
     s_token[vlen] = '\0';
-    if (vlen + 64 > AIS_TOKEN_MAX + 512) {
-        ESP_LOGW(TAG, "access token is %u bytes, may not fit the request buffer", (unsigned)vlen);
-    }
 
     int expires_s = 3600;
     if (json_find(s_resp.buf, "expires_in", &v, &vlen)) {
-        expires_s = (int)to_double(v, v + vlen);
+        /* From the server: a minute to a day (and not NaN), or the
+         * arithmetic below overflows. */
+        const double e = to_double(v, v + vlen);
+        expires_s = e >= 60 && e <= 86400 ? (int)e : e > 86400 ? 86400 : 60;
     }
     if (expires_s < 2 * AIS_TOKEN_MARGIN_S) {
         expires_s = 2 * AIS_TOKEN_MARGIN_S;

@@ -204,7 +204,9 @@ esp_err_t spotify_get_playlist(const char *uri, char *name, size_t name_len, cha
 /* The image at `url` (a cover), in PSRAM for the caller to free(). */
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len);
 
-/* After SPOTIFY_ERR_RATE: seconds to wait. */
+/* After SPOTIFY_ERR_RATE: the seconds left of the wait Spotify asked for
+ * (up to a day), 0 when it is over. Until then every request gives
+ * SPOTIFY_ERR_RATE without asking. */
 int spotify_retry_after_s(void);
 
 /* Drop the kept-alive connection to api.spotify.com, and the replies'

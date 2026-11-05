@@ -373,7 +373,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *even
         *n_events = -1;
     }
     const cJSON *ev = cJSON_GetObjectItemCaseSensitive(root, "events");
-    if (ok && ev != NULL && events != NULL) {
+    if (ok && ev != NULL && events != NULL && n_events != NULL) {
         const int n = own_from_json(ev, events, err, err_len);
         ok = n >= 0;
         if (ok) {

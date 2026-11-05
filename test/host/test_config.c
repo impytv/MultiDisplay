@@ -216,6 +216,16 @@ void test_config(void)
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");
     CHECK(app_config_from_json(json, &c, NULL, NULL, err, sizeof(err)));
     CHECK_STR(c.ais_client_secret, "");
+    /* Events asked for but no count to put it in: no crash. */
+    {
+        static own_event_t ev[OWN_MAX];
+        ev[0] = (own_event_t){ .kind = OWN_BIRTHDAY, .day = 5, .month = 11, .year = 1990, .show = OWN_ON_ALL };
+        snprintf(ev[0].text, sizeof(ev[0].text), "Kari");
+        char *with = app_config_to_json(&c, false, ev, 1);
+        CHECK(with != NULL && strstr(with, "Kari") != NULL);
+        CHECK(app_config_from_json(with, &c, ev, NULL, err, sizeof(err)));
+        cJSON_free(with);
+    }
     cJSON_free(json);
 
     /* Asked for, the backup has the WiFi and the BarentsWatch secret - but

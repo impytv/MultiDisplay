@@ -679,3 +679,13 @@ full, kept the half name that snprintf had already written.
 *Lesson:* where a list from a server is capped, decide what to keep (the
 most severe, the nearest) and count what is left out; and when a write
 doesn't fit, undo the part of it that did.
+
+### A wait longer than the watchdog's limit
+
+The Spotify screen returned Spotify's Retry-After as its wait, and the
+weather task doesn't beat while it waits; anything over 20 minutes would
+have had the watchdog restart the display, over and over, while Spotify
+was still saying wait. Found only by following a static analyser's warning
+about the header's `atoi`.
+*Lesson:* a screen's poll must never return more than a few minutes; keep
+a longer wait as a deadline in the client, and let the loop come round.

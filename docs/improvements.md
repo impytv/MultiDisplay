@@ -1179,3 +1179,35 @@ What the 1.35.0 reviews didn't reach (docs/reviews/review-second-pass.md).
   *Done in 1.36.1: a request with Cloudflare's CF-Connecting-IP is refused
   first, whatever address the tunnel has; checked: 200 from the LAN, 403
   with the header.*
+
+## Static analysis (November 2026, 1.36.1)
+
+clang-tidy (with the Clang Static Analyzer), cppcheck, flawfinder and
+semgrep over the display's code (docs/reviews/static-analysis.md).
+
+- [x] **161. A long Spotify Retry-After restarts the display.** The weather
+  task waits the whole Retry-After without a beat, so anything over 20
+  minutes trips the watchdog, and the display restarts and asks again every
+  20 minutes; past 4.29 million seconds the wait wraps. Keep the deadline in
+  spotify_client and wait a few minutes at a time.
+  *Done in 1.36.2: spotify_client keeps the deadline (Retry-After read with
+  strtol, 1 s to a day) and answers SPOTIFY_ERR_RATE without asking until it
+  has passed; the screen waits at most 5 minutes at a time.*
+- [x] **162. The ship service's `expires_in` isn't clamped** (undefined
+  behaviour over ~2.1 million seconds), and a token length check after it
+  can never be true.
+  *Done in 1.36.2: clamped to a minute to a day (NaN counts as a minute),
+  the dead check removed; ships still fetched with the 3600 s token.*
+- [x] **163. `app_config_from_json` writes `*n_events` without a NULL
+  check** when `events` is given (no caller does that yet).
+  *Done in 1.36.2: checked; host tested with an event in the backup (seen to
+  crash under ASan without the check).*
+- [x] **164. Tidying:** a dead store in `show_login_status`, and
+  `raw_ac_t`'s unused `lat`/`lon` values.
+  *Done in 1.36.2: `show_login_status` sets its message in every case (a
+  `default` with the connected one's), and the unused fields are gone.*
+- [ ] **165. Run the static analysis again** before the next release with
+  many changes, or by May 2027 at the latest: the same four tools as in
+  docs/reviews/static-analysis.md ("Running them again"), and compare with
+  what that found. Newer versions find more, and new code hasn't been
+  through them.

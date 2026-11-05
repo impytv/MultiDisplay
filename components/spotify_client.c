@@ -64,6 +64,8 @@ static char s_w_auth[SP_TOKEN_MAX + 8];
 static EXT_RAM_BSS_ATTR char s_w_code[SP_CODE_MAX];
 static int64_t s_access_until_us;
 static int s_retry_after_s;
+/* esp_timer time before which nothing is asked, after a 429 (0 = none). */
+static int64_t s_rate_until_us;
 static esp_http_client_handle_t s_client; /* kept alive to api.spotify.com */
 static http_buf_t s_resp = { .max = SP_REPLY_MAX };
 
@@ -241,7 +243,9 @@ void spotify_disconnect(void)
 static esp_err_t on_event(esp_http_client_event_t *evt)
 {
     if (evt->event_id == HTTP_EVENT_ON_HEADER && strcasecmp(evt->header_key, "Retry-After") == 0) {
-        s_retry_after_s = atoi(evt->header_value);
+        /* Seconds (an HTTP date is taken as none): 1 s to a day. */
+        const long v = strtol(evt->header_value, NULL, 10);
+        s_retry_after_s = v < 1 ? 0 : v > 86400 ? 86400 : (int)v;
     } else if (evt->event_id == HTTP_EVENT_ON_DATA) {
         return http_buf_append(&s_resp, evt->data, evt->data_len, TAG);
     }
@@ -402,6 +406,10 @@ static int api_once(esp_http_client_method_t method, const char *path, const cha
  * kept-alive one was dropped. The HTTP status, or <0 with *err set. */
 static int api(esp_http_client_method_t method, const char *path, const char *body, esp_err_t *err)
 {
+    if (esp_timer_get_time() < s_rate_until_us) {
+        *err = SPOTIFY_ERR_RATE; /* still told to wait: not asked */
+        return 429;
+    }
     for (int attempt = 0; attempt < 2; attempt++) {
         if ((*err = ensure_access()) != ESP_OK) {
             return -1;
@@ -423,7 +431,9 @@ static int api(esp_http_client_method_t method, const char *path, const char *bo
             *err = SPOTIFY_ERR_LOGIN;
         } else if (status == 429) {
             *err = SPOTIFY_ERR_RATE;
-            ESP_LOGW(TAG, "Asked too often: wait %d s", s_retry_after_s);
+            const int wait_s = s_retry_after_s > 0 ? s_retry_after_s : 30;
+            s_rate_until_us = esp_timer_get_time() + wait_s * 1000000LL;
+            ESP_LOGW(TAG, "Asked too often: wait %d s", wait_s);
         }
         return status;
     }
@@ -767,7 +777,8 @@ void spotify_name_playlists(spotify_recent_t *list, int n, int budget)
 
 int spotify_retry_after_s(void)
 {
-    return s_retry_after_s > 0 ? s_retry_after_s : 30;
+    const int64_t left = s_rate_until_us - esp_timer_get_time();
+    return left > 0 ? (int)(left / 1000000) + 1 : 0;
 }
 
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len)
