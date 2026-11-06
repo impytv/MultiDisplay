@@ -1211,3 +1211,14 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   docs/reviews/static-analysis.md ("Running them again"), and compare with
   what that found. Newer versions find more, and new code hasn't been
   through them.
+
+## From error reports
+
+- [x] **166. Two temperatures on top of each other at the start of the
+  weather chart** (report 20261106-061730-abde42, Nittedal): "now" (-3,6°)
+  was labelled as well as the low an hour later (-3,7°), as one low with two
+  numbers.
+  *Done in 1.36.3: "now" gets no label when it only falls (rises) into a
+  labelled trough (peak), the global one or a prominent one, at most 2 hours
+  on and 1 degree off, so only the lowest (highest) is shown; further off,
+  both are. Checked on the reported shape and at and past each limit.*

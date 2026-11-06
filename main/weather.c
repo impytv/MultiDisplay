@@ -102,6 +102,11 @@ static const char *TAG = "weather";
  * least this far (deg C) clear of its surroundings - keeps a shallow wiggle
  * next to a real peak or trough from getting its own number. */
 #define MARKER_TEMP_MIN_SWING 1.0f
+/* "Now" gets no label of its own when the low (high) it runs straight into
+ * is labelled and at most this many hours on and degrees off: one low with
+ * two numbers. Further off, both are shown. */
+#define NOW_MERGE_H   2
+#define NOW_MERGE_DEG 1.0f
 /* Pools sized for the realistic worst case under the 8 h same-type spacing
  * over a ~48 h forecast (a handful of maxima + minima for temperature; fewer
  * peaks for the smoother precipitation and wind series). An overflow just
@@ -635,6 +640,35 @@ static void temp_emit(const yr_forecast_t *fc, int m, bool above, int *used,
     }
 }
 
+/* Whether "now" only runs down (or up) into a trough (peak) at most
+ * NOW_MERGE_H hours on and NOW_MERGE_DEG degrees off that gets its own label:
+ * the global one, or one prominent enough for pass 2 of place_temp_markers.
+ * Then the two numbers would sit on top of each other at the same low
+ * (high), and only the lowest (highest) is shown. */
+static bool now_leads_to_marked(const yr_forecast_t *fc, int temp_min_idx, int temp_max_idx)
+{
+    const bool down = fc->points[1].air_temperature_c <= fc->points[0].air_temperature_c;
+    int m = 0;
+    while (m + 1 < fc->point_count) {
+        float d = fc->points[m + 1].air_temperature_c - fc->points[m].air_temperature_c;
+        if (down ? d > 0.0f : d < 0.0f) {
+            break;
+        }
+        m++;
+    }
+    /* Never turning (falling to the forecast's end), only flat, or the turn
+     * further off than the limits: "now" stays. */
+    const float t = fc->points[m].air_temperature_c;
+    const float t0 = fc->points[0].air_temperature_c;
+    if (m + 1 >= fc->point_count || t == t0 ||
+        fc->points[m].epoch_utc - fc->points[0].epoch_utc > (int64_t)NOW_MERGE_H * 3600 ||
+        fabsf(t - t0) > NOW_MERGE_DEG) {
+        return false;
+    }
+    return t == fc->points[down ? temp_min_idx : temp_max_idx].air_temperature_c ||
+           temp_prominence(fc, m, !down) >= MARKER_TEMP_MIN_SWING;
+}
+
 /* Place the temperature value markers. The global high and low - and the
  * leftmost "now" point - are labelled first so they are never crowded out by
  * lesser extrema. A left-to-right pass then adds other local extrema, each
@@ -654,7 +688,8 @@ static void place_temp_markers(const yr_forecast_t *fc, int temp_min_idx, int te
     if (temp_min_idx != temp_max_idx) {
         temp_emit(fc, temp_min_idx, false, &used, placed_max, &n_max, placed_min, &n_min);
     }
-    if (fc->point_count > 1 && temp_max_idx != 0 && temp_min_idx != 0) {
+    if (fc->point_count > 1 && temp_max_idx != 0 && temp_min_idx != 0 &&
+        !now_leads_to_marked(fc, temp_min_idx, temp_max_idx)) {
         bool now_above = fc->points[0].air_temperature_c > fc->points[1].air_temperature_c;
         temp_emit(fc, 0, now_above, &used, placed_max, &n_max, placed_min, &n_min);
     }
