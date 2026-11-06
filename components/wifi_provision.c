@@ -142,17 +142,23 @@ static const char PAGE_MAINT[] =
 static const char PAGE_SCRIPTS[] = "<script src=/setup.js></script><script src=/dep.js></script>";
 
 /* The screens a location can show, in their order: the "show" and "in the
- * rotation" checkbox names (with the location's index after them) and the
- * APP_SHOW_* bit. */
+ * rotation" checkbox names (with the location's index after them), the
+ * label, the APP_SHOW_* bit, and a short name for the location's summary
+ * line (setup_page.js). */
 static const struct {
     const char *vis, *rot, *label;
     uint16_t bit;
+    const char *brief;
 } SCREENS[] = {
-    { "wx", "aw", "V&aelig;r", APP_SHOW_WEATHER }, { "uk", "au", "Uke", APP_SHOW_WEEK },
-    { "ac", "aa", "Fly", APP_SHOW_RADAR },         { "sh", "as", "Skip", APP_SHOW_SHIPS },
-    { "rn", "ar", "Nedb&oslash;r", APP_SHOW_RAIN }, { "dp", "ad", "Avganger", APP_SHOW_DEPARTURES },
-    { "lq", "al", "Luft", APP_SHOW_AIR },          { "td", "at", "Tidevann", APP_SHOW_TIDE },
-    { "sat", "asat", "Satellitt", APP_SHOW_SAT },
+    { "wx", "aw", "V&aelig;r neste to dager", APP_SHOW_WEATHER, "v&aelig;r" },
+    { "uk", "au", "V&aelig;r neste 7 dager", APP_SHOW_WEEK, "uke" },
+    { "ac", "aa", "Fly", APP_SHOW_RADAR, "fly" },
+    { "sh", "as", "Skip", APP_SHOW_SHIPS, "skip" },
+    { "rn", "ar", "Nedb&oslash;r", APP_SHOW_RAIN, "nedb&oslash;r" },
+    { "dp", "ad", "Avganger", APP_SHOW_DEPARTURES, "avganger" },
+    { "lq", "al", "Luft", APP_SHOW_AIR, "luft" },
+    { "td", "at", "Tidevann", APP_SHOW_TIDE, "tidevann" },
+    { "sat", "asat", "Satellittbilde", APP_SHOW_SAT, "satellitt" },
 };
 
 /* A screen's own settings, right under its checkboxes; shown only while
@@ -257,9 +263,10 @@ static char *build_location(char *p, char *end, const app_config_t *cfg, int i)
     const int auto_show = filled ? cfg->auto_show[i] : 0;
     for (size_t k = 0; k < sizeof(SCREENS) / sizeof(SCREENS[0]); k++) {
         p = buf_append(p, end,
-                      "<div class=sg><div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s>%s</label>"
+                      "<div class=sg><div class=sr><label><input type=checkbox class=vis name=%s%d value=1%s data-s=\"%s\">%s</label>"
                       "<label class=rot><input type=checkbox name=%s%d value=1%s>i automatisk bytte</label></div>",
-                      SCREENS[k].vis, i, (show & SCREENS[k].bit) ? " checked" : "", SCREENS[k].label,
+                      SCREENS[k].vis, i, (show & SCREENS[k].bit) ? " checked" : "",
+                      SCREENS[k].brief, SCREENS[k].label,
                       SCREENS[k].rot, i, (auto_show & SCREENS[k].bit) ? " checked" : "");
         p = build_screen_settings(p, end, cfg, i, SCREENS[k].bit);
         p = buf_append(p, end, "</div>");

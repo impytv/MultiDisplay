@@ -36,9 +36,9 @@ let L=[...document.querySelectorAll('fieldset[data-loc]')];
 const N=(f,n)=>f.querySelector('[name='+n+f.dataset.loc+']');
 /* Each location: its summary line, and only the fields its screens need. */
 function T(f){let i=f.dataset.loc,n=N(f,'name').value.trim(),
-v=[...f.querySelectorAll('.vis')].filter(x=>x.checked).map(x=>x.parentNode.textContent.trim().toLowerCase());
+v=[...f.querySelectorAll('.vis')].filter(x=>x.checked).map(x=>x.dataset.s);
 f.parentNode.querySelector('.lt').innerHTML='Sted '+(+i+1)+': '+(n?E(n)+' <span class=ls>'+E(v.join(', '))+'</span>':'<span class=ls>uten navn</span>');
-f.querySelectorAll('.sr').forEach(r=>{r.querySelector('.rot').style.visibility=r.querySelector('.vis').checked?'':'hidden'});
+f.querySelectorAll('.sr').forEach(r=>{r.querySelector('.rot').hidden=!r.querySelector('.vis').checked});
 f.querySelectorAll('[data-need]').forEach(d=>{d.hidden=!N(f,d.dataset.need).checked});O()}
 /* The clock's outdoor temperature and the place on the ISS map: a choice
 among the locations in use, by their place in the form, kept as they are

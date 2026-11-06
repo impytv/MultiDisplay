@@ -1222,3 +1222,11 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   labelled trough (peak), the global one or a prominent one, at most 2 hours
   on and 1 degree off, so only the lowest (highest) is shown; further off,
   both are. Checked on the reported shape and at and past each limit.*
+- [x] **167. The setup page's names for the two weather screens** ("Vær"
+  and "Uke") don't say how far ahead they look, and "Satellitt" for a
+  place's satellite picture.
+  *Done in 1.36.4: "Vær neste to dager", "Vær neste 7 dager" and
+  "Satellittbilde" (as the display-wide one is called); a place's
+  summary line keeps the short names ("vær, uke, ..."), and "i automatisk
+  bytte" goes on its own line where it doesn't fit beside the longer name
+  (checked at 320, 375 and 800 px).*
