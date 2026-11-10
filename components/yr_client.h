@@ -63,6 +63,10 @@ typedef struct {
     float wind_speed_ms;        /* only meaningful when has_instant_details */
     float wind_speed_of_gust_ms; /* only meaningful when has_instant_details */
     float wind_from_deg;        /* only meaningful when has_instant_details */
+    /* MET's "feels like" (apparent_air_temperature, Yr's "Føles som": the
+     * wind chill when cold, the humidity's effect when warm), when given. */
+    float apparent_c;
+    bool has_apparent;
     bool has_instant_details;   /* true for the steps that carry temperature/wind (the first) */
     char symbol_code[48];       /* usually only the first step carries one; "" otherwise */
 } yr_nowcast_point_t;
@@ -74,6 +78,15 @@ typedef struct {
     int point_count;
     yr_nowcast_point_t points[YR_NOWCAST_MAX_POINTS];
 } yr_nowcast_t;
+
+/**
+ * What `air_c` feels like in a wind of `wind_ms` (10 m above ground), for
+ * a nowcast without MET's own apparent temperature: the
+ * wind chill index MET Norway and Environment Canada use, for 10 °C and
+ * below in winds of at least 4.8 km/h; otherwise `air_c` itself. (The
+ * warm side, the heat index, needs the humidity, which the nowcast hasn't.)
+ */
+float yr_feels_like_c(float air_c, float wind_ms);
 
 /**
  * Set the contact email sent to api.met.no, making the User-Agent

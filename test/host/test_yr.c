@@ -29,6 +29,15 @@ void test_yr(void)
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
     tzset();
 
+    /* Feels like: the wind chill table's values, and the air itself where
+     * the index doesn't apply. */
+    CHECK(fabsf(yr_feels_like_c(-10.0f, 20.0f / 3.6f) - -17.9f) < 0.1f);
+    CHECK(fabsf(yr_feels_like_c(0.0f, 10.0f / 3.6f) - -3.3f) < 0.1f);
+    CHECK(fabsf(yr_feels_like_c(-20.0f, 50.0f / 3.6f) - -35.4f) < 0.1f); /* -35 in the table */
+    CHECK(yr_feels_like_c(5.0f, 1.0f) == 5.0f);    /* under 4.8 km/h: calm */
+    CHECK(yr_feels_like_c(12.0f, 15.0f) == 12.0f); /* over 10 degrees */
+    CHECK(yr_feels_like_c(10.0f, 1.4f) <= 10.0f);  /* never warmer than the air */
+
     /* A real forecast for Nittedal; the expected days were worked out
      * separately (Python, same rules). */
     static yr_forecast_t fc;
@@ -123,6 +132,7 @@ void test_yr(void)
     CHECK(!nc.radar_ok);
     CHECK_INT(nc.point_count, 1);
     CHECK(nc.points[0].has_instant_details && fabsf(nc.points[0].air_temperature_c - 5.4f) < 0.05f);
+    CHECK(!nc.points[0].has_apparent); /* none given: the clock works it out */
     CHECK(yr_rain_change(&nc, 1792322700, &at) == YR_RAIN_NONE);
 
     /* With the radar up, a step without a rate is still skipped, and a
@@ -135,6 +145,15 @@ void test_yr(void)
     CHECK(parse_nowcast(radar_ok, &nc));
     CHECK_INT(nc.point_count, 1);
     CHECK(!nc.points[0].has_instant_details && fabsf(nc.points[0].precipitation_rate - 0.3f) < 0.01f);
+    /* MET's own "feels like", as in the nowcast of 2026-11-10 (trimmed). */
+    static const char *const apparent =
+        "{\"properties\":{\"meta\":{\"radar_coverage\":\"ok\"},\"timeseries\":["
+        "{\"time\":\"2026-11-10T17:55:00Z\",\"data\":{\"instant\":{\"details\":{\"air_temperature\":-1.8,"
+        "\"apparent_air_temperature\":-6.4,\"precipitation_rate\":0.0,\"relative_humidity\":95.1,"
+        "\"wind_from_direction\":104.0,\"wind_speed\":4.5,\"wind_speed_of_gust\":7.4}}}}]}}";
+    memset(&nc, 0, sizeof(nc));
+    CHECK(parse_nowcast(apparent, &nc));
+    CHECK(nc.points[0].has_apparent && fabsf(nc.points[0].apparent_c - -6.4f) < 0.05f);
     static const char *const nothing =
         "{\"properties\":{\"meta\":{\"radar_coverage\":\"temporarily unavailable\"},\"timeseries\":["
         "{\"time\":\"2026-10-18T11:25:00Z\",\"data\":{\"instant\":{\"details\":{\"wind_speed\":1}}}}]}}";

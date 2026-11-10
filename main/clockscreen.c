@@ -5,7 +5,12 @@
  * thermometer on the setup page, and outdoors at the location chosen there
  * (g_cfg->clk_out; none, and the line shows indoors only) from MET's
  * nowcast (its temperature now, which MET corrects with the observations
- * around, Netatmo stations among them).
+ * around, Netatmo stations among them). Beside the outdoor one, smaller,
+ * what it feels like ("føles som -6°": MET's apparent temperature from the
+ * nowcast, as Yr shows it, or the wind chill, yr_feels_like_c, if it has
+ * none) when that is at least a degree off. The line
+ * keeps to the screen's width: the gaps narrow, and if that isn't enough
+ * the line is drawn in smaller digits (temps_fit).
  *
  * Under them, only when there are any, the display's own events
  * (main/events.c) ticked for the clock, today's and tomorrow's: "I dag:
@@ -42,6 +47,9 @@ static const char *TAG = "clock";
 #define CLK_TIME_PX 180 /* hours and minutes */
 #define CLK_SEC_PX  72  /* seconds, and the temperature */
 #define CLK_DATE_PX 40
+#define CLK_TEMP_SMALL_PX 52 /* the temperatures, when the line is too wide */
+#define CLK_FEEL_SMALL_PX 30 /* "føles som" beside them then */
+#define CLK_TEMP_MARGIN 16   /* kept free at each side of the line */
 #define CLK_POLL_MS (10 * 60 * 1000) /* the outdoor temperature */
 #define CLK_RETRY_MS 30000
 #define CLK_OUT_KEEP_MS (30 * 60 * 1000) /* older than this isn't shown */
@@ -54,6 +62,10 @@ static const char *TAG = "clock";
 #define CLK_EV_DOT   18
 
 static lv_obj_t *s_root, *s_time, *s_hhmm[CLK_HHMM], *s_sec, *s_date, *s_temp, *s_out;
+/* The temperatures' line, the outdoor one and its "føles som" together,
+ * and the fonts for the line at full size and at the smaller one. */
+static lv_obj_t *s_temps, *s_out_box, *s_feel;
+static const lv_font_t *s_temp_font[2], *s_feel_font[2];
 static time_t s_shown = -1; /* the second on show */
 static int s_shown_dc = CLK_REDRAW;  /* indoors on show, whole degrees, or CLK_NONE / CLK_REDRAW */
 static int s_shown_out = CLK_REDRAW; /* outdoors, in half degrees */
@@ -73,6 +85,8 @@ static int s_trim_top, s_trim_bottom;
 static yr_nowcast_t *s_nowcast;
 static http_cache_t s_nc_http;
 static float s_out_c;
+static float s_out_wind_ms;
+static float s_out_feel_c = NAN; /* MET's "feels like", or NAN without one */
 static fetch_stamp_t s_out_at;
 static backoff_t s_out_fail;
 
@@ -119,6 +133,8 @@ static void show_time(time_t now)
     }
 }
 
+static void temps_fit(void);
+
 static void show_temp(void)
 {
     float raw;
@@ -135,23 +151,66 @@ static void show_temp(void)
     if (deg != s_shown_dc) {
         s_shown_dc = deg;
         lv_label_set_text_fmt(s_temp, "Inne  %d\xC2\xB0", deg);
+        temps_fit();
+    }
+}
+
+/* The line at full size (0) or small (1), with this gap between inside
+ * and outside. The "føles som" sits on the outdoor temperature's baseline. */
+static void temps_style(int size, int gap)
+{
+    lv_obj_set_style_text_font(s_temp, s_temp_font[size], 0);
+    lv_obj_set_style_text_font(s_out, s_temp_font[size], 0);
+    lv_obj_set_style_text_font(s_feel, s_feel_font[size], 0);
+    lv_obj_set_style_pad_column(s_temps, gap, 0);
+    lv_obj_set_style_pad_column(s_out_box, gap / 4, 0);
+    lv_obj_set_style_translate_y(s_feel, -(s_temp_font[size]->base_line - s_feel_font[size]->base_line), 0);
+}
+
+/* Within the screen's width: the gaps narrowed first, then the smaller
+ * digits. */
+static void temps_fit(void)
+{
+    static const struct { int size, gap; } steps[] = { { 0, 64 }, { 0, 32 }, { 1, 32 }, { 1, 20 } };
+    const int room = BOARD_LCD_H_RES - 2 * CLK_TEMP_MARGIN;
+    for (size_t i = 0; i < sizeof(steps) / sizeof(steps[0]); i++) {
+        temps_style(steps[i].size, steps[i].gap);
+        lv_obj_update_layout(s_temps);
+        if (lv_obj_get_width(s_temps) <= room) {
+            return;
+        }
     }
 }
 
 static void show_out(void)
 {
-    /* To the nearest half degree: "6,5°", "-0,5°", "7°". */
-    const int halves = stamp_fresh(&s_out_at, CLK_OUT_KEEP_MS) ? (int)lroundf(s_out_c * 2.0f) : CLK_NONE;
-    if (halves == s_shown_out) {
+    /* To the nearest half degree: "6,5°", "-0,5°", "7°"; what it feels
+     * like in whole degrees - MET's, or the wind chill without it - shown
+     * when at least a degree off (rounding alone would put "-2°" beside a
+     * calm "-1,5°"). */
+    const bool fresh = stamp_fresh(&s_out_at, CLK_OUT_KEEP_MS);
+    const int halves = fresh ? (int)lroundf(s_out_c * 2.0f) : CLK_NONE;
+    const float feel_c = isnan(s_out_feel_c) ? yr_feels_like_c(s_out_c, s_out_wind_ms) : s_out_feel_c;
+    const int feel = fresh && fabsf(s_out_c - feel_c) >= 1.0f ? (int)lroundf(feel_c) : CLK_NONE;
+    static int s_shown_feel = CLK_REDRAW;
+    if (halves == s_shown_out && feel == s_shown_feel) {
         return;
     }
     s_shown_out = halves;
+    s_shown_feel = feel;
     if (halves == CLK_NONE) {
         lv_label_set_text(s_out, "Ute  \xE2\x80\x93");
     } else {
         const int a = abs(halves);
         lv_label_set_text_fmt(s_out, "Ute  %s%d%s\xC2\xB0", halves < 0 ? "-" : "", a / 2, a % 2 ? ",5" : "");
     }
+    if (feel == CLK_NONE) {
+        lv_obj_add_flag(s_feel, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_label_set_text_fmt(s_feel, "f\xC3\xB8les som %d\xC2\xB0", feel);
+        lv_obj_clear_flag(s_feel, LV_OBJ_FLAG_HIDDEN);
+    }
+    temps_fit();
 }
 
 /* Today's and tomorrow's events, worked out again when the day or the
@@ -282,21 +341,36 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
     s_date = label(s_root, date_font, muted);
     lv_obj_set_style_margin_bottom(s_date, 24, 0);
 
-    /* Inside and outside side by side. */
-    lv_obj_t *temps = lv_obj_create(s_root);
+    /* Inside and outside side by side, and what outside feels like beside
+     * it, smaller and dimmed. */
+    lv_obj_t *temps = s_temps = lv_obj_create(s_root);
     lv_obj_remove_style_all(temps);
     lv_obj_clear_flag(temps, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_size(temps, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(temps, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(temps, 64, 0);
+    lv_obj_set_flex_align(temps, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     s_temp = label(temps, sec_font, fg);
-    s_out = label(temps, sec_font, fg);
+    s_out_box = lv_obj_create(temps);
+    lv_obj_remove_style_all(s_out_box);
+    lv_obj_clear_flag(s_out_box, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_size(s_out_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(s_out_box, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_out_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    s_out = label(s_out_box, sec_font, fg);
+    s_feel = label(s_out_box, date_font, muted);
+    lv_obj_add_flag(s_feel, LV_OBJ_FLAG_HIDDEN);
+    s_temp_font[0] = sec_font;
+    s_feel_font[0] = date_font;
+    /* The smaller sizes only where there is an outdoor temperature. */
+    s_temp_font[1] = g_cfg->clk_out != 0 ? load_font(CLK_TEMP_SMALL_PX, true) : sec_font;
+    s_feel_font[1] = g_cfg->clk_out != 0 ? load_font(CLK_FEEL_SMALL_PX, false) : date_font;
+    temps_style(0, 64);
     /* The settings are read once: saving restarts. */
     if (!g_cfg->clk_in) {
         lv_obj_add_flag(s_temp, LV_OBJ_FLAG_HIDDEN);
     }
     if (g_cfg->clk_out == 0) {
-        lv_obj_add_flag(s_out, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_out_box, LV_OBJ_FLAG_HIDDEN);
     }
 
     /* The events, hidden until there are any. */
@@ -372,12 +446,14 @@ uint32_t clockscreen_poll(int for_view)
     esp_err_t err = yr_client_fetch_nowcast(atof(loc->lat), atof(loc->lon), s_nowcast, &s_nc_http, false);
     /* One request every 10 minutes: not worth a kept-alive TLS connection. */
     http_met_close();
-    float c = 0;
+    float c = 0, wind = 0, feel = NAN;
     bool got = false;
     if (err == ESP_OK) {
         for (int i = 0; i < s_nowcast->point_count && !got; i++) {
             if (s_nowcast->points[i].has_instant_details) {
                 c = s_nowcast->points[i].air_temperature_c;
+                wind = s_nowcast->points[i].wind_speed_ms;
+                feel = s_nowcast->points[i].has_apparent ? s_nowcast->points[i].apparent_c : NAN;
                 got = true;
             }
         }
@@ -395,6 +471,8 @@ uint32_t clockscreen_poll(int for_view)
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         if (got) {
             s_out_c = c;
+            s_out_wind_ms = wind;
+            s_out_feel_c = feel;
         }
         if (got || err == HTTP_NOT_MODIFIED) {
             stamp_now(&s_out_at);

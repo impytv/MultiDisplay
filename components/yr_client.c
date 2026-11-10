@@ -355,6 +355,17 @@ done:
 /* The User-Agent MET asks for: the app and a contact (see the setup page). */
 static char s_user_agent[96];
 
+float yr_feels_like_c(float air_c, float wind_ms)
+{
+    const float kmh = wind_ms * 3.6f;
+    if (air_c > 10.0f || kmh < 4.8f) {
+        return air_c;
+    }
+    const float v = powf(kmh, 0.16f);
+    const float wc = 13.12f + 0.6215f * air_c - 11.37f * v + 0.3965f * air_c * v;
+    return wc < air_c ? wc : air_c;
+}
+
 void yr_client_set_contact_email(const char *email)
 {
     if (email == NULL || email[0] == '\0') {
@@ -468,6 +479,11 @@ static bool parse_nowcast(const char *json, yr_nowcast_t *out)
             cJSON *wind = cJSON_GetObjectItemCaseSensitive(idetails, "wind_speed");
             if (cJSON_IsNumber(wind)) {
                 point->wind_speed_ms = (float)wind->valuedouble;
+            }
+            cJSON *apparent = cJSON_GetObjectItemCaseSensitive(idetails, "apparent_air_temperature");
+            if (cJSON_IsNumber(apparent)) {
+                point->apparent_c = (float)apparent->valuedouble;
+                point->has_apparent = true;
             }
             cJSON *gust = cJSON_GetObjectItemCaseSensitive(idetails, "wind_speed_of_gust");
             if (cJSON_IsNumber(gust)) {

@@ -544,6 +544,16 @@ Fetched every 10 minutes while the clock is shown; "Ute –" after half an
 hour without an answer. With the rain radar down ("temporarily
 unavailable") the nowcast still has the temperature.
 
+Beside the outdoor temperature, smaller and dimmed, is what it feels like,
+in whole degrees ("Ute 2°  føles som -3°"), shown only when that is at
+least a degree off. It is MET's apparent temperature from the same nowcast
+(`apparent_air_temperature`, Yr's "Føles som": the wind chill when cold,
+the humidity's effect when warm). A nowcast without it gets the wind chill
+MET Norway and Environment Canada use (`yr_feels_like_c`; 10 °C and below,
+in winds of at least 4.8 km/h). When the
+line doesn't fit the screen (indoors shown as well), the gaps narrow and
+then the line is drawn in smaller digits.
+
 The temperature comes from the ESP32-S3's own sensor (`components/chip_temp.c`),
 read every 5 s and smoothed over about a minute. It measures the chip,
 which runs some 15 °C above the room, so an offset is added: type what a

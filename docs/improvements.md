@@ -1230,3 +1230,12 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   summary line keeps the short names ("vær, uke, ..."), and "i automatisk
   bytte" goes on its own line where it doesn't fit beside the longer name
   (checked at 320, 375 and 800 px).*
+- [x] **168. The clock screen's outdoor temperature** doesn't say how cold
+  it feels in the wind.
+  *Done in 1.36.5: "føles som -3°" beside it, smaller and dimmed, when
+  MET's apparent temperature in the nowcast (Yr's "Føles som") is at least
+  a degree off (rounding alone put "-2°" beside a calm "-1,5°"); without it,
+  the wind chill index from the nowcast's wind (10 °C and below, at least
+  4.8 km/h). The
+  line narrows its gaps and then drops to 52 px digits to fit: the widest
+  case ("Inne 28°", "Ute -25,5°", "føles som -38°") is 748 px of 768.*
