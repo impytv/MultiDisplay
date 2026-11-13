@@ -12,8 +12,8 @@ LDFLAGS += -fsanitize=address,undefined
 LDLIBS  += -lm -lz
 
 SRCS := main.c stubs/stubs.c test_version.c test_form.c test_http.c test_sun.c test_entur.c \
-        test_adsb.c test_routes.c test_owners.c test_config.c test_air.c test_yr.c test_tide.c test_ical.c test_sat.c test_aurora.c test_alerts.c test_web_auth.c test_holidays.c test_astro.c test_spotify.c test_sonos.c test_sgp4.c test_png.c test_own_events.c test_report.c test_iss_pass.c test_nb_text.c png_inflate_zlib.c \
-        $(ROOT)/components/app_config.c $(ROOT)/components/app_config_json.c $(ROOT)/components/holidays.c $(ROOT)/components/astro.c $(ROOT)/components/sgp4.c $(ROOT)/main/iss_pass.c $(ROOT)/components/nb_text.c $(CJSON)/cJSON.c
+        test_adsb.c test_routes.c test_owners.c test_config.c test_air.c test_yr.c test_tide.c test_ical.c test_sat.c test_aurora.c test_alerts.c test_web_auth.c test_holidays.c test_astro.c test_spotify.c test_sonos.c test_sgp4.c test_png.c test_own_events.c test_report.c test_iss_pass.c test_nb_text.c test_pics.c png_inflate_zlib.c \
+        $(ROOT)/components/app_config.c $(ROOT)/components/app_config_json.c $(ROOT)/components/holidays.c $(ROOT)/components/astro.c $(ROOT)/components/sgp4.c $(ROOT)/main/iss_pass.c $(ROOT)/components/nb_text.c $(ROOT)/components/pic_util.c $(CJSON)/cJSON.c
 
 run: host_tests
 	./host_tests

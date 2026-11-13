@@ -7,7 +7,7 @@
 // what is wrong, then gives the screenshot and the text to the display
 // (POST /feil, main/report.c), which adds its /status and /log, signs the
 // report and sends it there.
-const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',sonos:'Sonos',europa:'Europa',iss:'ISS',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
+const N={oversikt:'Oversikt',kalender:'Kalender',maned:'Måned',klokke:'Klokke',spotify:'Spotify',sonos:'Sonos',europa:'Europa',iss:'ISS',bilder:'Bilder',vaer:'Vær',uke:'Uke',fly:'Fly',skip:'Skip',
 nedbor:'Nedbør',avganger:'Avganger',luft:'Luft',tidevann:'Tidevann',satellitt:'Satellitt'};
 const nav=document.getElementById('nav'),st=document.createElement('small');
 let last=null;

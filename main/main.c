@@ -35,6 +35,8 @@
 #include "spotify_client.h"
 #include "chip_temp.h"
 #include "iss.h"
+#include "pictures.h"
+#include "sd_card.h"
 #include "satellite.h"
 #include "tide.h"
 #include "week.h"
@@ -115,9 +117,9 @@ typedef struct {
     uint8_t loc;  /* location index; unused for the overview */
 } view_stop_t;
 /* The screens one for the display (overview, calendar, month, clock,
- * Spotify, Sonos, Europe), and the most a location can have (build_stops'
- * order[]). */
-#define STOPS_GLOBAL  8
+ * Spotify, Sonos, Europe, ISS, pictures), and the most a location can have
+ * (build_stops' order[]). */
+#define STOPS_GLOBAL  9
 #define STOPS_PER_LOC 9
 static view_stop_t s_stops[STOPS_GLOBAL + STOPS_PER_LOC * APP_CONFIG_MAX_LOCATIONS];
 static int s_stop_count;
@@ -156,6 +158,7 @@ static lv_obj_t *s_spotify_root;  /* the Spotify screen; only if shown */
 static lv_obj_t *s_sonos_root;    /* the Sonos screen; only if shown */
 static lv_obj_t *s_sat_root;      /* the satellite image; only if Europe or a close-up is shown */
 static lv_obj_t *s_iss_root;      /* the ISS screen; only if shown */
+static lv_obj_t *s_pic_root;      /* the picture screen; likewise */
 static lv_obj_t *s_tap_layer;     /* full-screen tap catcher; also the night-dim overlay */
 static volatile bool s_night_dim; /* inside the night window (see nightly_housekeeping) */
 static volatile bool s_backlight_on = true; /* written in the LVGL task, read by the weather task too */
@@ -338,6 +341,9 @@ static void build_stops(void)
     if (g_cfg->iss_show) {
         s_stops[s_stop_count++] = (view_stop_t){ STOP_ISS, 0 };
     }
+    if (g_cfg->pic_show) {
+        s_stops[s_stop_count++] = (view_stop_t){ STOP_PICTURES, 0 };
+    }
     static const struct {
         uint16_t show;
         uint8_t kind;
@@ -385,7 +391,7 @@ static void show_view(stop_kind_t kind)
 {
     lv_obj_t *const roots[] = { s_overview_root, s_detail_root, s_radar_root, s_dep_root, s_air_root, s_week_root,
                                 s_tide_root, s_cal_root, s_month_root, s_clock_root, s_spotify_root, s_sonos_root, s_sat_root,
-                                s_iss_root };
+                                s_iss_root, s_pic_root };
     lv_obj_t *shown = (kind == STOP_OVERVIEW) ? s_overview_root
                     : (kind == STOP_WEATHER) ? s_detail_root
                     : (kind == STOP_DEPARTURES) ? s_dep_root
@@ -398,6 +404,7 @@ static void show_view(stop_kind_t kind)
                     : (kind == STOP_SPOTIFY) ? s_spotify_root
                     : (kind == STOP_SONOS) ? s_sonos_root
                     : (kind == STOP_ISS) ? s_iss_root
+                    : (kind == STOP_PICTURES) ? s_pic_root
                     : (kind == STOP_SAT_EUROPE || kind == STOP_SAT) ? s_sat_root : s_radar_root;
     for (size_t k = 0; k < sizeof(roots) / sizeof(roots[0]); k++) {
         if (roots[k] == NULL) {
@@ -416,7 +423,8 @@ static void show_view(stop_kind_t kind)
     if (kind == STOP_RADAR || kind == STOP_SHIPS || kind == STOP_RAIN) {
         lv_obj_set_style_text_color(g_status_label, lv_color_hex(radar_status_colour()), 0);
         lv_obj_align(g_status_label, LV_ALIGN_CENTER, 212, 0); /* over the table half */
-    } else if ((kind == STOP_SPOTIFY && g_cfg->sp_dark) || (kind == STOP_SONOS && g_cfg->so_dark)) {
+    } else if ((kind == STOP_SPOTIFY && g_cfg->sp_dark) || (kind == STOP_SONOS && g_cfg->so_dark) ||
+               kind == STOP_PICTURES) {
         lv_obj_set_style_text_color(g_status_label, lv_palette_lighten(LV_PALETTE_GREY, 5), 0);
         lv_obj_align(g_status_label, LV_ALIGN_CENTER, 0, 0);
     } else {
@@ -480,6 +488,9 @@ static void view_enter(int idx)
     case STOP_ISS:
         iss_enter();
         break;
+    case STOP_PICTURES:
+        pictures_enter();
+        break;
     }
 }
 
@@ -542,6 +553,7 @@ static const char *const STOP_TITLES[] = {
     [STOP_TIDE] = "Tidevann", [STOP_CALENDAR] = "Kalender", [STOP_SAT_EUROPE] = "Europa",
     [STOP_SAT] = "Satellitt", [STOP_MONTH] = "M\xC3\xA5ned", [STOP_CLOCK] = "Klokke",
     [STOP_SPOTIFY] = "Spotify", [STOP_SONOS] = "Sonos", [STOP_ISS] = "ISS",
+    [STOP_PICTURES] = "Bilder",
 };
 
 static void nav_close(void)
@@ -785,6 +797,9 @@ static bool stop_in_rotation(int i)
     if (st->kind == STOP_ISS) {
         return g_cfg->iss_rotate;
     }
+    if (st->kind == STOP_PICTURES) {
+        return g_cfg->pic_rotate;
+    }
     return (g_cfg->auto_show[st->loc] & bit[st->kind]) != 0;
 }
 
@@ -839,6 +854,7 @@ static const char *const STOP_NAMES[] = {
     [STOP_TIDE] = "tidevann", [STOP_CALENDAR] = "kalender", [STOP_SAT_EUROPE] = "europa",
     [STOP_SAT] = "satellitt", [STOP_MONTH] = "maned", [STOP_CLOCK] = "klokke",
     [STOP_SPOTIFY] = "spotify", [STOP_SONOS] = "sonos", [STOP_ISS] = "iss",
+    [STOP_PICTURES] = "bilder",
 };
 
 static esp_err_t screen_send_list(httpd_req_t *req)
@@ -1035,6 +1051,9 @@ static void build_ui(lv_obj_t *screen)
     }
     if (g_cfg->iss_show) {
         s_iss_root = iss_build(screen);
+    }
+    if (g_cfg->pic_show) {
+        s_pic_root = pictures_build(screen);
     }
 
     /* Created after the screens so it sits on top of whichever is shown:
@@ -1245,6 +1264,7 @@ static void yr_weather_task(void *arg)
     wifi_provision_add_post_handler("/nav", nav_go_handler);
     spotify_add_handlers();
     events_add_handlers();
+    pictures_add_handlers();
     sonos_events_add_handler();
     diag_start();
     report_start();
@@ -1300,6 +1320,9 @@ static void yr_weather_task(void *arg)
             }
             if (stop->kind != STOP_ISS) {
                 iss_release();
+            }
+            if (stop->kind != STOP_PICTURES) {
+                pictures_release();
             }
             if (stop->kind != STOP_OVERVIEW && stop->kind != STOP_WEATHER && stop->kind != STOP_WEEK &&
                 stop->kind != STOP_AIR) {
@@ -1400,6 +1423,9 @@ static void yr_weather_task(void *arg)
                 break;
             case STOP_ISS:
                 wait_ms = iss_poll(active_view);
+                break;
+            case STOP_PICTURES:
+                wait_ms = pictures_poll(active_view);
                 break;
             default:
                 wait_ms = weather_poll(stop->kind == STOP_OVERVIEW, stop->loc, refetch_sel, active_view);
@@ -1523,6 +1549,7 @@ void app_main(void)
     assert(g_cfg != NULL);
     app_config_load(g_cfg);
     events_init();
+    sd_card_init();
     yr_client_set_contact_email(g_cfg->yr_email);
     char sp_redirect[160];
     app_config_spotify_redirect(g_cfg->ota_url, sp_redirect, sizeof(sp_redirect));

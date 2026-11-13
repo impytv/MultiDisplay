@@ -24,6 +24,7 @@ idf_component_register(
         "music_tiles.c"
         "satellite.c"
         "iss.c"
+        "pictures.c"
         "events.c"
         "report.c"
         "lv_mem_psram.c"
@@ -65,6 +66,8 @@ idf_component_register(
         "../components/png_inflate.c"
         "../components/sgp4.c"
         "../components/report_util.c"
+        "../components/pic_util.c"
+        "../components/sd_card.c"
     INCLUDE_DIRS
         "."
         "../components"
@@ -80,6 +83,7 @@ idf_component_register(
         "../components/setup_page.css"
         "../components/setup_page.js"
         "../components/nav_page.js"
+        "../components/pictures_page.js"
     PRIV_REQUIRES
         esp_wifi
         esp_psram
@@ -108,7 +112,12 @@ idf_component_register(
         espressif__libpng
         # Decodes Spotify's album covers (main/spotify.c); likewise already
         # in the build for esp_lv_decoder.
-        espressif__esp_new_jpeg)
+        espressif__esp_new_jpeg
+        # The microSD card for the picture screen (components/sd_card.c).
+        fatfs
+        sdmmc
+        esp_driver_sdspi
+        esp_driver_spi)
 
 idf_build_get_property(build_components BUILD_COMPONENTS)
 if("lvgl" IN_LIST build_components)

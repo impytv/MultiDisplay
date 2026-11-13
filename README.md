@@ -176,7 +176,7 @@ with a throwaway key, so displays won't accept it.
   - `/screen`: the screens a tap cycles through, numbered, and which one is
     on show. `/screen?vis=9` or `/screen?sted=2&type=tidevann` switches to
     one as a tap would (types: `oversikt`, `kalender`, `maned`, `klokke`, `vaer`, `uke`, `fly`,
-    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`, `iss`;
+    `skip`, `nedbor`, `avganger`, `luft`, `tidevann`, `europa`, `satellitt`, `iss`, `bilder`;
     `sted` counts from 1),
     so `/screen.png` can capture it. Refused unless **Tillat å velge skjerm
     over nettet** is ticked under **Vedlikehold → Skjermbilder** (off by
@@ -272,7 +272,8 @@ Navigasjonsside**. The screens, in order:
 5. **Spotify** and **Sonos**, if shown (see [Spotify](#spotify) and [Sonos](#sonos)).
 6. **Satellittbilde over Europa**, if shown (see [Satellite](#satellite)).
 7. **Romstasjonen ISS**, if shown (see [ISS](#iss)).
-8. For each location in order, whichever of its screens are enabled.
+8. **Bilder**, if shown (see [Pictures](#pictures)).
+9. For each location in order, whichever of its screens are enabled.
 
 The setup page also has a **Tema** choice (light or dark) that applies to
 every screen.
@@ -904,6 +905,59 @@ pixel in 5 seconds, so it is moved on that often. The map is Natural Earth's
 2 bits) by `python3 scripts/build_world.py`, and shaded into a 16-colour
 image of 160 KB of PSRAM, held only while the screen is on show.
 In backups: `iss.show`, `iss.rotate`, `iss.location` (1 = the first, 0 = none).
+
+### Pictures
+
+Pictures from a microSD (TF) card in the display, one at a time in random
+order (each once before any comes again), under **Andre skjermer → Bilder**
+on the setup page (**Vis bildene**, **i automatisk bytte**, and **Bytt
+bilde**: every 10 or 30 seconds, every minute, or every 2, 5 or 15
+minutes); one screen, after the ISS. Each is shown whole, centred on black.
+Without a card the setup page greys out **Vis bildene** and says the
+screen needs one, and leaves the two choices as they were saved.
+
+Pictures are added and deleted on the **Bilder** page (`/bilder`, linked
+from the navigation page and the setup page): from files (several at once)
+or from an address. Each picture is shown first as the screen will show it,
+one at a time, to choose how: **Vis hele bildet** (shrunk to fit, both
+sides a multiple of 8, black around it where the shape differs) or **Fyll
+skjermen** - drag the picture to choose which part shows, and zoom in up
+to 4 times with the slider, the mouse wheel or two fingers. **Last opp**
+sends it as adjusted, **Hopp over** leaves it out, and **Last opp resten
+uten å justere** sends it and the rest in the same mode, filled from the
+middle. The mode last chosen is kept for next time (in the browser). The
+browser makes each picture to that and sends it as a JPEG of some
+100-250 KB, so the display never has a large photo to decode. A picture from an address is
+fetched by the display for the page (`/bilder/hent`, as a page can't read
+other sites' pictures), at most 20 MB, and only if it starts like a picture
+(JPEG, PNG, GIF, WebP, BMP, HEIC/AVIF); the page then shows it to adjust
+the same way. What the browser can't read (HEIC outside Safari, for one) is refused
+with a message.
+
+The card can be exFAT (as cards over 32 GB come), FAT32 or FAT16, with an
+MBR or a GPT partition table (a Mac's), so it works as it comes out of the
+pack; NTFS isn't read. ESP-IDF's FatFs has no setting for exFAT and is
+built without GPT, so `components/fatfs` builds it with both on (see its
+README.md). A card in the slot that can't be read is told apart from no
+card: the log names what is on it, and the screen, the setup page and
+`/bilder` say to format it. The pictures are in the card's `BILDER` folder, named
+`B0000001.JPG` and up; JPEGs copied there from a computer are shown too, by
+their own names (long ones, in UTF-8, up to 63 bytes), if at most 1.5 MB and no more
+than 8 times the screen's size (a 12 MP photo of 4000 × 3000 is, as 640 ×
+480; one on its side, 3000 × 4000, isn't). Up to 1000 pictures.
+
+Memory: one 800 × 480 picture (750 KB of PSRAM) while the screen is on
+show, given back on any other, and the file being decoded (~200 KB) for a
+moment. The card is mounted the first time it is needed and checked before
+each use, so it can be put in or taken out while the display runs; without
+one, it is looked for at most every 10 seconds.
+
+The slot is wired on the board as SPI on GPIO 11, 12 and 13, with the
+card's chip select on the CH422G expander's EXIO4, which is held low for
+good (`components/sd_card.c`). **Not yet tried with a card** (1.37.0): the
+display without a card, the page and the shrinking are tested; reading and
+writing a card isn't.
+In backups: `pictures.show`, `pictures.rotate`, `pictures.seconds`.
 
 ### Night
 

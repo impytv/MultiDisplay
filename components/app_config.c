@@ -165,6 +165,18 @@ static void sanitize_view_settings(app_config_t *c)
     c->so_dark = c->so_dark ? 1 : 0;
     c->iss_show = c->iss_show ? 1 : 0;
     c->iss_rotate = c->iss_rotate ? 1 : 0;
+    c->pic_show = c->pic_show ? 1 : 0;
+    c->pic_rotate = c->pic_rotate ? 1 : 0;
+    {
+        static const uint16_t secs[] = APP_CONFIG_PIC_SECS;
+        bool known = false;
+        for (size_t k = 0; k < sizeof(secs) / sizeof(secs[0]); k++) {
+            known |= c->pic_secs == secs[k];
+        }
+        if (!known) {
+            c->pic_secs = APP_CONFIG_PIC_SECS_DEFAULT;
+        }
+    }
     c->so_room[APP_CONFIG_SONOS_ROOM_MAX - 1] = '\0';
     c->so_radios[APP_CONFIG_SONOS_RADIOS_MAX - 1] = '\0';
     c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
@@ -219,6 +231,7 @@ static void seed_defaults(app_config_t *out)
     snprintf(out->so_radios, sizeof(out->so_radios), "%s", APP_CONFIG_SONOS_RADIOS_DEFAULT);
     out->clk_out = 1;
     out->iss_loc = 1;
+    out->pic_secs = APP_CONFIG_PIC_SECS_DEFAULT;
     out->sat_zoom = APP_CONFIG_SAT_ZOOM_DEFAULT;
     snprintf(out->ota_url, sizeof(out->ota_url), "%s", CONFIG_MULTIDISPLAY_OTA_DEFAULT_URL);
     out->ota_at = APP_CONFIG_OTA_AT_DEFAULT;
@@ -371,6 +384,9 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "issshow", &out->iss_show); /* no ISS screen if never saved */
     nvs_get_u8(h, "issrot", &out->iss_rotate);
     nvs_get_u8(h, "issloc", &out->iss_loc); /* the first location if never saved */
+    nvs_get_u8(h, "picshow", &out->pic_show); /* no picture screen if never saved */
+    nvs_get_u8(h, "picrot", &out->pic_rotate);
+    nvs_get_u16(h, "picsec", &out->pic_secs); /* the default if never saved */
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     if (!clkin_saved) {
@@ -526,6 +542,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "issshow", cfg->iss_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "issrot", cfg->iss_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "issloc", cfg->iss_loc);
+    if (err == ESP_OK) err = nvs_set_u8(h, "picshow", cfg->pic_show ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, "picrot", cfg->pic_rotate ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u16(h, "picsec", cfg->pic_secs);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {

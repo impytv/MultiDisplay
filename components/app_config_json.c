@@ -118,6 +118,11 @@ char *app_config_to_json(const app_config_t *c, bool secrets, const own_event_t 
     cJSON_AddBoolToObject(iss, "rotate", c->iss_rotate);
     cJSON_AddNumberToObject(iss, "location", c->iss_loc); /* 1 = the first, 0 = none */
 
+    cJSON *pic = cJSON_AddObjectToObject(root, "pictures");
+    cJSON_AddBoolToObject(pic, "show", c->pic_show);
+    cJSON_AddBoolToObject(pic, "rotate", c->pic_rotate);
+    cJSON_AddNumberToObject(pic, "seconds", c->pic_secs);
+
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
         cJSON *l = cJSON_CreateObject();
@@ -316,6 +321,10 @@ bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *even
     get_bool(iss, "show", &c->iss_show);
     get_bool(iss, "rotate", &c->iss_rotate);
     get_u8(iss, "location", &c->iss_loc);
+    const cJSON *pic = cJSON_GetObjectItemCaseSensitive(root, "pictures");
+    get_bool(pic, "show", &c->pic_show);
+    get_bool(pic, "rotate", &c->pic_rotate);
+    get_u16(pic, "seconds", &c->pic_secs);
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

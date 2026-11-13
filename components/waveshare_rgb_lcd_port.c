@@ -204,17 +204,19 @@ esp_err_t waveshare_rgb_lcd_backlight_on(void)
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_ERROR_CHECK(i2c_master_write_to_device(I2C_MASTER_NUM, 0x24, &write_buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
 
-    // Pull the backlight pin high to light the screen backlight
-    write_buf = 0x1E;
+    // Pull the backlight pin high to light the screen backlight. EXIO4, the
+    // microSD card's chip select, goes low and stays there (sd_card.c).
+    write_buf = 0x0E;
     ESP_ERROR_CHECK(i2c_master_write_to_device(I2C_MASTER_NUM, 0x38, &write_buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS));
     return ESP_OK;
 }
 
-/* The backlight is the CH422G's EXIO2 (bit 2 of its output byte); the other
- * outputs (touch and LCD reset) stay high. The bus is shared with the touch
+/* The backlight is the CH422G's EXIO2 (bit 2 of its output byte); the touch
+ * and LCD resets (EXIO1, EXIO3) stay high and the microSD card's chip select
+ * (EXIO4) low, as set at start. The bus is shared with the touch
  * controller, so call this with the LVGL adapter lock held. */
 esp_err_t waveshare_rgb_lcd_backlight_set(bool on)
 {
-    uint8_t write_buf = on ? 0x1E : 0x1A;
+    uint8_t write_buf = on ? 0x0E : 0x0A;
     return i2c_master_write_to_device(I2C_MASTER_NUM, 0x38, &write_buf, 1, I2C_MASTER_TIMEOUT_MS / portTICK_PERIOD_MS);
 }

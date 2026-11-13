@@ -1,0 +1,3 @@
+# ESP-IDF's own FatFs settings; this component only builds it with exFAT on
+# (see CMakeLists.txt here).
+source "$IDF_PATH/components/fatfs/Kconfig"

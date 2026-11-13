@@ -1239,3 +1239,43 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   4.8 km/h). The
   line narrows its gaps and then drops to 52 px digits to fit: the widest
   case ("Inne 28°", "Ute -25,5°", "føles som -38°") is 748 px of 768.*
+- [x] **169. A screen for the family's own pictures**, from a microSD card
+  in the display, added from the navigation page or from an address.
+  *Done in 1.37.0: the Bilder screen (main/pictures.c) shows the card's
+  pictures at random, each for 10 s to 15 min; the /bilder page shrinks
+  every picture in the browser to fit 800x480 before sending, so the
+  display holds one 750 KB picture while on show and nothing otherwise. The
+  setup page greys the screen out without a card. The SPI driver's
+  interrupt handler went to flash (CONFIG_SPI_MASTER_ISR_IN_IRAM off): in
+  IRAM it took ~9 KB of internal RAM, leaving +2.3 KB of static DIRAM in
+  all. Tested without a card on the display, and the page's shrinking (a
+  4000x3000 photo to 640x480, filled 800x480, a portrait to 360x480)
+  against a mock in Chromium; still to try with a card. Cards are read as
+  exFAT as well as FAT32/FAT16, so they work as they come (components/fatfs
+  builds ESP-IDF's FatFs with exFAT on, which it has no setting for), with
+  long file names in UTF-8: +11.5 KB code, nothing more of internal RAM.
+  GPT partition tables are read too (FF_LBA64), which the first real
+  card, 64 GB, needed; a card that answers but can't be mounted is reported
+  as unreadable, with what is on it in the log. Tried with that card: an
+  upload saved, read back byte for byte, and deleted. Each picture added
+  is shown as the screen will show it, to choose the whole picture or
+  filling the screen with the part chosen by dragging and zooming (slider,
+  wheel, two fingers); tested in Chromium against a mock (a zoomed-in
+  corner of a test picture came out as that corner, 800x480). On the
+  display only the smallest picture showed: reading a file asked for it
+  plus 384 KB in one PSRAM block, and with the 750 KB screen buffer taken
+  the largest block was ~470 KB; now it leaves 128 KB beside it and 256 KB
+  in all, and all three pictures on the card take their turn. A review of
+  the new code then found and fixed: the list of screens one entry too
+  short with every screen on (STOPS_GLOBAL 8 -> 9); the picture screen
+  impossible to turn off without a card (a box that is on can now be
+  cleared); the card held while a picture went to a slow browser, and
+  while a picture was decoded, with the LVGL lock too (now read, let go,
+  then decoded with no lock); the list's sizes found by a stat() per file,
+  reading the folder n times (now FatFs's f_readdir, one pass); the picture
+  on show able to come straight back after an upload; one bad file
+  blanking a good picture; the decoder's size read uninitialised; the
+  card's mutex made inside a critical section (now sd_card_init() at
+  start); and /bilder/hent passing anything starting "BM" or with "ftyp"
+  (MP4, MOV) - BMP's header and the HEIC/AVIF brands are now checked,
+  host-tested in pic_util.*

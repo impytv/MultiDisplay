@@ -77,6 +77,9 @@ void test_config(void)
     a.clk_show = 1;
     a.iss_show = 1;
     a.iss_loc = 2;
+    a.pic_show = 1;
+    a.pic_rotate = 1;
+    a.pic_secs = 300;
     a.clk_rotate = 1;
     a.clk_out = 2;
     a.clk_in = 0;
@@ -166,6 +169,8 @@ void test_config(void)
     CHECK(c.clk_show && c.clk_rotate);
     CHECK(c.iss_show && !c.iss_rotate);
     CHECK_INT(c.iss_loc, 2);
+    CHECK(c.pic_show && c.pic_rotate);
+    CHECK_INT(c.pic_secs, 300);
     CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.clk_in, 0);
     CHECK(c.sp_show && !c.sp_rotate);
@@ -211,6 +216,14 @@ void test_config(void)
     c.clk_out = 0;                                  /* none */
     app_config_sanitize(&c);
     CHECK_INT(c.clk_out, 0);
+
+    /* A picture time the setup page doesn't offer: the default. */
+    c.pic_secs = 45;
+    app_config_sanitize(&c);
+    CHECK_INT(c.pic_secs, APP_CONFIG_PIC_SECS_DEFAULT);
+    c.pic_secs = 900;
+    app_config_sanitize(&c);
+    CHECK_INT(c.pic_secs, 900);
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");

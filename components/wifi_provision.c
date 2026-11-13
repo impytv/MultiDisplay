@@ -4,6 +4,7 @@
 #include <sys/socket.h>
 
 #include "wifi_provision.h"
+#include "sd_card.h"
 
 #include "driver/gpio.h"
 #include "esp_event.h"
@@ -112,6 +113,8 @@ static char *html_escape_append(char *dst, char *dst_end, const char *src)
 
 /* The page's look and behaviour are files of their own (setup_page.css and
  * setup_page.js, embedded and served as /setup.css and /setup.js). */
+static char *build_pictures(char *p, char *end, const app_config_t *cfg);
+
 static const char PAGE_HEAD[] =
     "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<html lang=no><link rel=stylesheet href=/setup.css>";
@@ -589,6 +592,7 @@ static char *build_page(const app_config_t *cfg)
         p = buf_append(p, end, "</option>");
     }
     p = buf_append(p, end, "</select><small>Stedet vises som en hvit prikk med navnet.</small></details>");
+    p = build_pictures(p, end, cfg);
     p = buf_append(p, end, "<h2>Innstillinger</h2>");
 
     /* Look: theme, night, text sizes. Times as plain 24-hour text - a time
@@ -1061,6 +1065,55 @@ static esp_err_t send_setup_page(httpd_req_t *req)
     return err;
 }
 
+/* The picture screen's section. Without a microSD card a checkbox that is
+ * off is greyed out - it can't be turned on - but one that is on can still
+ * be turned off, so a card taken out doesn't leave the screen stuck in the
+ * rotation. picok says the form had both to set; picnc, only to clear. */
+static char *build_pictures(char *p, char *end, const app_config_t *cfg)
+{
+    bool card = false, unreadable = false;
+    if (!s_portal) {
+        sd_card_lock();
+        card = sd_card_ready() == ESP_OK;
+        unreadable = !card && sd_card_unreadable() != NULL;
+        sd_card_unlock();
+    }
+    p = buf_append(p, end,
+                  "<details class=sec><summary>Bilder</summary>"
+                  "<div class=chk><label%s><input type=checkbox name=picshow value=1%s%s>"
+                  "Vis bildene</label><label%s><input type=checkbox name=picrot value=1%s%s>"
+                  "i automatisk bytte</label></div>",
+                  card || cfg->pic_show ? "" : " style=opacity:.5", cfg->pic_show ? " checked" : "",
+                  card || cfg->pic_show ? "" : " disabled", card || cfg->pic_rotate ? "" : " style=opacity:.5",
+                  cfg->pic_rotate ? " checked" : "", card || cfg->pic_rotate ? "" : " disabled");
+    p = buf_append(p, end, card ? "<input type=hidden name=picok value=1>" : "<input type=hidden name=picnc value=1>");
+    if (unreadable) {
+        p = buf_append(p, end,
+                      "<small class=err>Skjermen fant minnekortet, men kan ikke lese det. Formater kortet som exFAT "
+                      "eller FAT32, og last siden p&aring; nytt. Se <a href=/bilder>Bilder</a> for mer.</small>");
+    } else if (!card) {
+        p = buf_append(p, end,
+                      "<small class=err>Bildeskjermen trenger et microSD-kort i skjermen, og det er ikke funnet "
+                      "noe. Sett inn et kort, og last siden p&aring; nytt.</small>");
+    }
+    p = buf_append(p, end,
+                  "<small>Bildene fra minnekortet i tilfeldig rekkef&oslash;lge, som en egen skjerm etter "
+                  "romstasjonen. Bildene legges til og slettes p&aring; <a href=/bilder>Bilder</a>, fra filer "
+                  "eller en adresse.</small>"
+                  "<label>Bytt bilde</label><select name=picsec>");
+    static const uint16_t secs[] = APP_CONFIG_PIC_SECS;
+    for (size_t k = 0; k < sizeof(secs) / sizeof(secs[0]); k++) {
+        const unsigned v = secs[k];
+        if (v == 60) {
+            p = buf_append(p, end, "<option value=60%s>hvert minutt</option>", cfg->pic_secs == v ? " selected" : "");
+        } else {
+            p = buf_append(p, end, "<option value=%u%s>hvert %u. %s</option>", v, cfg->pic_secs == v ? " selected" : "",
+                          v < 60 ? v : v / 60, v < 60 ? "sekund" : "minutt");
+        }
+    }
+    return buf_append(p, end, "</select></details>");
+}
+
 /* The navigation page: buttons for the screens on the display, filled in
  * by /nav.js from /nav.json (main.c). */
 static esp_err_t send_nav_page(httpd_req_t *req)
@@ -1081,7 +1134,8 @@ static esp_err_t send_nav_page(httpd_req_t *req)
         p = buf_append(p, end, "\"");
     }
     p = buf_append(p, end, "></div>"
-                           "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Bursdager og hendelser</a>");
+                           "<p class=navf><a href=/oppsett>Oppsett</a><a href=/hendelser>Bursdager og hendelser</a>"
+                           "<a href=/bilder>Bilder</a>");
     if (s_guide_url[0]) {
         p = buf_append(p, end, "<a href=\"");
         p = html_escape_append(p, end, s_guide_url);
@@ -1452,6 +1506,21 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         cfg->so_dark = form_field(body, "sodark", val, sizeof(val)) ? 1 : 0;
         cfg->iss_show = form_field(body, "issshow", val, sizeof(val)) ? 1 : 0;
         cfg->iss_rotate = form_field(body, "issrot", val, sizeof(val)) ? 1 : 0;
+        if (form_field(body, "picok", val, sizeof(val))) {
+            cfg->pic_show = form_field(body, "picshow", val, sizeof(val)) ? 1 : 0;
+            cfg->pic_rotate = form_field(body, "picrot", val, sizeof(val)) ? 1 : 0;
+        } else if (form_field(body, "picnc", val, sizeof(val))) { /* no card: only turned off */
+            cfg->pic_show = cfg->pic_show && form_field(body, "picshow", val, sizeof(val));
+            cfg->pic_rotate = cfg->pic_rotate && form_field(body, "picrot", val, sizeof(val));
+        }
+        if (form_field(body, "picsec", val, sizeof(val))) {
+            static const uint16_t secs[] = APP_CONFIG_PIC_SECS;
+            for (size_t k = 0; k < sizeof(secs) / sizeof(secs[0]); k++) {
+                if (atoi(val) == secs[k]) {
+                    cfg->pic_secs = secs[k];
+                }
+            }
+        }
         if (form_field(body, "soroom", cfg->so_room, sizeof(cfg->so_room))) {
             /* Without the spaces around it, as the rooms are named. */
             char *r = cfg->so_room;

@@ -223,6 +223,48 @@ show made room without a smaller font.
 width. Check a new layout on the device with the longest text it can get
 (here 40 characters) and with the most lines, not only a typical one.
 
+### A driver's IRAM option costs nothing until it is used
+
+The picture screen (1.37.0) was the first to use the SPI master, and the
+build's static internal RAM went up 10.7 KB - not for the card's code
+(which is in flash) but for `CONFIG_SPI_MASTER_ISR_IN_IRAM`, on since the
+start and free while nothing linked the driver: its interrupt handler and
+HAL went into IRAM. Found by comparing `esp_idf_size --archives` of the
+old and new builds (`esp_driver_spi`, `hal`, `esp_hw_support`). Off, the
+growth is 2.3 KB. The same build also took ~90 KB more PSRAM heap, as the
+app's code and data are run from PSRAM and the card's FAT and SD code add
+to them.
+*Lesson:* when a feature brings in a driver nothing used before, check
+that driver's `*_IN_IRAM` options in `sdkconfig`, and compare the
+per-archive sizes, not only the total.
+
+### Switching on an ESP-IDF option it has no setting for
+
+exFAT for the memory card (1.37.0): ESP-IDF's FatFs has it off with a plain
+`#define FF_FS_EXFAT 0`, and since `ff.h` includes `ffconf.h` by a quoted
+name, the copy beside it always wins - no include path or `-D` can change
+it. `components/fatfs` replaces ESP-IDF's component by name and copies
+FatFs's `src/` files from the ESP-IDF in use into the build directory with
+that line changed, failing the build if the line isn't found. Two things
+turned up on the way: the never-built combination had a bug (with exFAT,
+`ff.c` uses `FF_USE_LABEL` in a C expression, where ESP-IDF leaves
+`CONFIG_FATFS_USE_LABEL` undefined), and a CMake variable called `off`
+reads as the constant OFF in `if(NOT off)`, so the check failed while the
+match was right. The first real card (64 GB, with a GPT partition table) still
+didn't mount: FatFs reads GPT partition tables only with `FF_LBA64` on,
+which ESP-IDF also leaves off, and all the log said was "failed to mount
+card (13)" - FR_NO_FILESYSTEM - while the pages said there was no card at
+all. With `FF_LBA64` patched the same way it mounted; a card that answers
+but won't mount now has its first sectors looked at (sd_card.c,
+what_is_on) and is reported as unreadable rather than missing.
+*Lesson:* patch a copy made at build time from the toolchain's own files,
+with a check that the patch applied, rather than keeping a copy in the
+repository; expect an option nobody builds with to need a fix; test with media
+prepared the way users prepare them (Macs and some tools format GPT); tell "not there"
+from "there but unreadable"; don't name
+CMake variables after its boolean constants (`on`, `off`, `yes`, `no`, `y`,
+`n`, `true`, `false`, `ignore`, `notfound`).
+
 ## What worked
 
 - **Diagnostics over WiFi** (`/log`, `/status`, `/coredump`): the stack

@@ -235,3 +235,17 @@ CONFIG_HTTPD_MAX_URI_LEN=1536
 # app_main builds the first screen (build_ui) on the main task, which needs
 # more than the default 3584 bytes; the stack is freed once app_main returns.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# The SPI master is used only for the microSD card (components/sd_card.c),
+# never while the flash cache is off: its interrupt handler and HAL in
+# flash rather than ~9 KB of internal RAM.
+# CONFIG_SPI_MASTER_ISR_IN_IRAM is not set
+
+# The microSD card's file system (components/sd_card.c): exFAT as well as
+# FAT (components/fatfs builds ESP-IDF's FatFs with it), which needs long
+# file names - their working buffer from the heap (PSRAM, by
+# CONFIG_FATFS_ALLOC_PREFER_EXTRAM) only while a file call runs - and names
+# in UTF-8, so a picture called "Sommer på hytta.jpg" reads as that.
+# CONFIG_FATFS_LFN_NONE is not set
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y

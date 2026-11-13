@@ -91,6 +91,10 @@
  * seconds, until the next touch. */
 #define APP_CONFIG_AUTO_IDLE_MIN_MAX   240
 #define APP_CONFIG_AUTO_DWELL_S_DEFAULT 30
+/* How long each picture stays on the picture screen: the setup page's
+ * choices, in seconds. */
+#define APP_CONFIG_PIC_SECS { 10, 30, 60, 120, 300, 900 }
+#define APP_CONFIG_PIC_SECS_DEFAULT 30
 #define APP_CONFIG_AUTO_DWELL_S_MIN    5
 #define APP_CONFIG_AUTO_DWELL_S_MAX    3600
 
@@ -293,6 +297,11 @@ typedef struct {
     uint8_t iss_show;
     uint8_t iss_rotate;
     uint8_t iss_loc;
+    /* The picture screen (main/pictures.c): shown, in the rotation, and the
+     * seconds each picture stays (one of APP_CONFIG_PIC_SECS). */
+    uint8_t pic_show;
+    uint8_t pic_rotate;
+    uint16_t pic_secs;
 } app_config_t;
 
 /**
