@@ -2,18 +2,20 @@
  * one at a time in random order (pic_util.c's bag: each once before any
  * comes again), each for g_cfg->pic_secs, centred on black.
  *
- * Pictures come from the /bilder page (pictures_page.js), which shrinks
- * them in the browser to fit 800x480 before sending, so they are 100-250
- * KB each; a picture from an address is fetched by the display for the
- * page (GET /bilder/hent - other sites' pictures can't be read by a page
- * of the display's) and shrunk the same way. JPEGs copied onto the card's
+ * Pictures come from the /bilder page (pictures_page.js), which makes
+ * them in the browser to fit 800x480 - whole, or filling it with the part
+ * chosen there - before sending, so they are 100-250 KB each; a picture
+ * from an address is fetched by the display for the page (GET
+ * /bilder/hent - other sites' pictures can't be read by a page of the
+ * display's) and made the same way. JPEGs copied onto the card's
  * BILDER folder from a PC are shown too, decoded at up to 1/8 of their
  * size if bigger than the screen, if the file is at most PIC_FILE_MAX.
  *
  * Memory: one 800x480 RGB565 buffer (750 KB of PSRAM) while the screen is
  * on show, given back on any other (pictures_release), and the file being
- * decoded for a moment. A picture is decoded straight into that buffer
- * with the adapter lock held, so a half-decoded picture is never drawn. */
+ * decoded for a moment. A picture is decoded straight into that buffer,
+ * with LVGL told to stop drawing from it first (decode_into_screen), so a
+ * half-decoded picture is never drawn and no lock is held meanwhile. */
 
 #include "pictures.h"
 

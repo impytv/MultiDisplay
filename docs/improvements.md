@@ -1250,7 +1250,7 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   IRAM it took ~9 KB of internal RAM, leaving +2.3 KB of static DIRAM in
   all. Tested without a card on the display, and the page's shrinking (a
   4000x3000 photo to 640x480, filled 800x480, a portrait to 360x480)
-  against a mock in Chromium; still to try with a card. Cards are read as
+  against a mock in Chromium, then with a 64 GB card. Cards are read as
   exFAT as well as FAT32/FAT16, so they work as they come (components/fatfs
   builds ESP-IDF's FatFs with exFAT on, which it has no setting for), with
   long file names in UTF-8: +11.5 KB code, nothing more of internal RAM.

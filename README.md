@@ -913,8 +913,10 @@ order (each once before any comes again), under **Andre skjermer → Bilder**
 on the setup page (**Vis bildene**, **i automatisk bytte**, and **Bytt
 bilde**: every 10 or 30 seconds, every minute, or every 2, 5 or 15
 minutes); one screen, after the ISS. Each is shown whole, centred on black.
-Without a card the setup page greys out **Vis bildene** and says the
-screen needs one, and leaves the two choices as they were saved.
+Without a card the setup page says the screen needs one and greys out
+whichever of the two choices is off, so it can't be turned on; one that is
+on can still be turned off, so a card taken out doesn't leave the screen
+stuck in the rotation.
 
 Pictures are added and deleted on the **Bilder** page (`/bilder`, linked
 from the navigation page and the setup page): from files (several at once)
@@ -935,7 +937,7 @@ the same way. What the browser can't read (HEIC outside Safari, for one) is refu
 with a message.
 
 The card can be exFAT (as cards over 32 GB come), FAT32 or FAT16, with an
-MBR or a GPT partition table (a Mac's), so it works as it comes out of the
+MBR or a GPT partition table (as some computers and tools write), so it works as it comes out of the
 pack; NTFS isn't read. ESP-IDF's FatFs has no setting for exFAT and is
 built without GPT, so `components/fatfs` builds it with both on (see its
 README.md). A card in the slot that can't be read is told apart from no
@@ -954,9 +956,10 @@ one, it is looked for at most every 10 seconds.
 
 The slot is wired on the board as SPI on GPIO 11, 12 and 13, with the
 card's chip select on the CH422G expander's EXIO4, which is held low for
-good (`components/sd_card.c`). **Not yet tried with a card** (1.37.0): the
-display without a card, the page and the shrinking are tested; reading and
-writing a card isn't.
+good (`components/sd_card.c`), confirmed with a 64 GB card. A picture is
+read from the card, the card let go, and then decoded with no lock held, so
+taps and the web pages go on meanwhile; the page's pictures are likewise
+read whole before they are sent.
 In backups: `pictures.show`, `pictures.rotate`, `pictures.seconds`.
 
 ### Night
