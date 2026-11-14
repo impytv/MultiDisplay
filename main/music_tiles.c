@@ -7,12 +7,14 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "app.h"
 #include "draw.h"
 #include "http_util.h"
 #include "music_tiles.h"
 #include "watchdog.h"
+#include "sd_cache.h"
 #include "sonos_client.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "yr_client.h"
@@ -22,6 +24,7 @@ static const char *TAG = "music_tiles";
 #define MT_X         12
 #define MT_IMAGE_MAX (256 * 1024) /* a speaker's 640 px cover is ~90 KB */
 #define MT_TIMEOUT_MS 5000
+#define MT_SHEET_REFRESH_US (24 * 3600 * 1000000LL) /* a sheet lacking a channel fetched again after */
 #define MT_RING      4 /* px around the tile playing */
 #define MT_TAB_PAD   16
 #define MT_TAB_GAP   8
@@ -191,6 +194,7 @@ void mgrid_set(mgrid_t *g, const mgrid_tile_t *items, int n)
         t->px_art = 0;
         t->ok = false;
         t->on = false;
+        t->card_miss = 0;
     }
     for (int i = 0; i < n; i++) {
         const uint32_t want = mgrid_art_hash(g->t[i].art);
@@ -236,12 +240,14 @@ static void free_tile(uint16_t *px)
 
 /* A sheet of logos (sonos_logo_find's format), fetched once for all the
  * tiles taken from it, and kept till mgrid_sheet_release so the radio page
- * opens again without fetching it (74 KB over HTTPS). One that failed is
- * fetched again on the next mgrid_fetch. Only the weather task's. */
+ * opens again without fetching it (74 KB over HTTPS); and on the memory
+ * card, if there is one, for the next visit (MT_SHEET_AGE_S). One that
+ * failed is fetched again on the next mgrid_fetch. Only the weather task's. */
 typedef struct {
     http_buf_t buf;
     char url[MT_URL_MAX]; /* "" = none yet; set even if it failed */
     bool ok;
+    bool from_card;       /* the card's copy, not yet fetched this visit */
     int held;             /* bytes counted in wd_psram_held */
 } sheet_t;
 
@@ -254,6 +260,49 @@ static void sheet_free(sheet_t *sheet)
     sheet->held = 0;
     sheet->url[0] = '\0';
     sheet->ok = false;
+    sheet->from_card = false;
+}
+
+/* The sheet `url` (its first n bytes) into `sheet`: the card's copy if
+ * any. */
+static void sheet_get(sheet_t *sheet, const char *url, int n)
+{
+    sheet_free(sheet);
+    sheet->buf = (http_buf_t){ .max = MT_IMAGE_MAX };
+    snprintf(sheet->url, sizeof(sheet->url), "%.*s", n, url);
+    sheet->ok = sd_cache_http_get(SD_CACHE_COVER, sheet->url, SD_CACHE_LOGO_AGE_S, yr_client_user_agent(),
+                                  MT_TIMEOUT_MS, strncmp(url, "https://", 8) == 0, &sheet->buf, TAG,
+                                  &sheet->from_card) == ESP_OK &&
+                sheet->buf.len > 0;
+    sheet->held = (int)sheet->buf.cap;
+    wd_psram_held(sheet->held);
+}
+
+/* The card's sheet lacks a channel: the update site's instead (and on the
+ * card), at most once a day - a channel the site's lacks too would else
+ * fetch it on every visit. The card's is kept if that fails. */
+static void sheet_refresh(sheet_t *sheet)
+{
+    static int64_t s_refreshed_us;
+    const int64_t now = esp_timer_get_time();
+    sheet->from_card = false; /* not again this visit */
+    if (s_refreshed_us != 0 && now - s_refreshed_us < MT_SHEET_REFRESH_US) {
+        return;
+    }
+    s_refreshed_us = now;
+    http_buf_t b = { .max = MT_IMAGE_MAX };
+    if (sd_cache_http_fetch(SD_CACHE_COVER, sheet->url, yr_client_user_agent(), MT_TIMEOUT_MS,
+                            strncmp(sheet->url, "https://", 8) == 0, &b, TAG) == ESP_OK &&
+        b.len > 8 && memcmp(b.buf, "RLG1", 4) == 0) {
+        http_buf_free(&sheet->buf);
+        wd_psram_held(-sheet->held);
+        sheet->buf = b;
+        sheet->held = (int)b.cap;
+        wd_psram_held(sheet->held);
+        sheet->ok = true;
+    } else {
+        http_buf_free(&b);
+    }
 }
 
 void mgrid_sheet_release(void)
@@ -276,27 +325,25 @@ static bool tile_alloc(uint16_t **px)
 }
 
 /* A cover into px (allocated if NULL, only once there is a picture to
- * decode); whether it came. "SHEET#KEY" is logo KEY in the sheet at SHEET. */
-static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
+ * decode); whether it came. "SHEET#KEY" is logo KEY in the sheet at SHEET.
+ * A cover is kept on the memory card if it doesn't change
+ * (sonos_art_stable); with `card_missed` it was looked for there already. */
+static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet, bool card_missed)
 {
     const char *hash = strchr(url, '#');
     if (hash) {
         const size_t n = (size_t)(hash - url);
         if (strncmp(sheet->url, url, n) != 0 || sheet->url[n] != '\0') {
-            sheet_free(sheet);
-            sheet->buf = (http_buf_t){ .max = MT_IMAGE_MAX };
-            snprintf(sheet->url, sizeof(sheet->url), "%.*s", (int)n, url);
-            sheet->ok = http_get_buf(sheet->url, yr_client_user_agent(), MT_TIMEOUT_MS,
-                                     strncmp(url, "https://", 8) == 0, &sheet->buf, TAG) == ESP_OK &&
-                        sheet->buf.len > 0;
-            sheet->held = (int)sheet->buf.cap;
-            wd_psram_held(sheet->held);
+            sheet_get(sheet, url, (int)n);
         }
         const uint8_t *pic;
         size_t len;
-        const bool ok = sheet->ok &&
-                        sonos_logo_find((const uint8_t *)sheet->buf.buf, sheet->buf.len, hash + 1, &pic, &len) &&
-                        tile_alloc(px) && draw_picture_square(pic, len, *px, MT_TILE);
+        bool found = sheet->ok && sonos_logo_find((const uint8_t *)sheet->buf.buf, sheet->buf.len, hash + 1, &pic, &len);
+        if (!found && sheet->from_card) {
+            sheet_refresh(sheet); /* a channel the card's older sheet hasn't */
+            found = sheet->ok && sonos_logo_find((const uint8_t *)sheet->buf.buf, sheet->buf.len, hash + 1, &pic, &len);
+        }
+        const bool ok = found && tile_alloc(px) && draw_picture_square(pic, len, *px, MT_TILE);
         if (!ok) {
             ESP_LOGW(TAG, "Logo not shown: %.160s", url); /* not asked for again */
         }
@@ -304,8 +351,13 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
     }
     http_buf_t b = { .max = MT_IMAGE_MAX };
     const bool https = strncmp(url, "https://", 8) == 0;
-    bool ok = http_get_buf(url, yr_client_user_agent(), MT_TIMEOUT_MS, https, &b, TAG) == ESP_OK &&
-              b.buf != NULL && tile_alloc(px) && draw_picture_square((const uint8_t *)b.buf, b.len, *px, MT_TILE);
+    const char *ua = yr_client_user_agent();
+    const esp_err_t err =
+        !sonos_art_stable(url) ? http_get_buf(url, ua, MT_TIMEOUT_MS, https, &b, TAG)
+        : card_missed          ? sd_cache_http_fetch(SD_CACHE_COVER, url, ua, MT_TIMEOUT_MS, https, &b, TAG)
+                               : sd_cache_http_get(SD_CACHE_COVER, url, SD_CACHE_COVER_AGE_S, ua, MT_TIMEOUT_MS, https,
+                                                   &b, TAG, NULL);
+    bool ok = err == ESP_OK && b.buf != NULL && tile_alloc(px) && draw_picture_square((const uint8_t *)b.buf, b.len, *px, MT_TILE);
     http_buf_free(&b);
     if (!ok) {
         ESP_LOGW(TAG, "Cover not shown: %.160s", url); /* not asked for again */
@@ -313,7 +365,13 @@ static bool fetch_picture(const char *url, uint16_t **px, sheet_t *sheet)
     return ok;
 }
 
-bool mgrid_fetch(mgrid_t *g, int max)
+/* One pass over the tiles still without their picture: up to `max` of
+ * them fetched (any number with `card_only`, which only takes what the
+ * memory card has, leaving the rest as they were for the next pass). Sets
+ * *redraw for those to be drawn together at the end, and redraws a cover
+ * fetched over the network at once, its tile only. False if the lock
+ * failed. */
+static bool fetch_pass(mgrid_t *g, int max, bool card_only, bool *redraw)
 {
     sheet_t *const sheet = &s_sheet;
     for (int i = 0; i < MT_MAX && max > 0; i++) {
@@ -325,8 +383,11 @@ bool mgrid_fetch(mgrid_t *g, int max)
             return false;
         }
         mgrid_tile_t *t = &g->t[i];
-        if (i < g->count && t->art[0] && (art_hash = mgrid_art_hash(t->art)) != t->px_art) {
+        bool card_missed = false;
+        if (i < g->count && t->art[0] && (art_hash = mgrid_art_hash(t->art)) != t->px_art &&
+            !(card_only && (strchr(t->art, '#') || t->card_miss == art_hash || !sonos_art_stable(t->art)))) {
             want = true;
+            card_missed = t->card_miss == art_hash;
             snprintf(art, sizeof(art), "%s", t->art);
             px = t->px;
             t->px = NULL; /* the weather task's while it decodes */
@@ -337,9 +398,23 @@ bool mgrid_fetch(mgrid_t *g, int max)
         if (!want) {
             continue;
         }
-        max--;
-        const bool ok = fetch_picture(art, &px, sheet);
-        if (!ok) {
+        bool ok;
+        bool tried = true;
+        if (card_only) {
+            uint8_t *data = NULL;
+            size_t len = 0;
+            tried = sd_cache_get(SD_CACHE_COVER, art, SD_CACHE_COVER_AGE_S, MT_IMAGE_MAX, &data, &len);
+            ok = tried && tile_alloc(&px); /* no memory: failed, as over the network */
+            if (ok && !draw_picture_square(data, len, px, MT_TILE)) {
+                sd_cache_drop(SD_CACHE_COVER, art); /* fetched again in the next pass */
+                ok = tried = false;
+            }
+            free(data);
+        } else {
+            max--;
+            ok = fetch_picture(art, &px, sheet, card_missed);
+        }
+        if (!ok && tried) {
             free_tile(px); /* its name shown instead: no memory held for it */
             px = NULL;
         }
@@ -352,17 +427,57 @@ bool mgrid_fetch(mgrid_t *g, int max)
             t->img.data = (const uint8_t *)px;
             /* Not tried again if it failed (till the list or the screen
              * changes); the tile may hold another item by now, which is
-             * then fetched next. */
-            t->px_art = art_hash;
-            t->ok = ok && strcmp(t->art, art) == 0;
+             * then fetched next. Not on the card: left for the network. */
+            if (tried) {
+                t->px_art = art_hash;
+                t->ok = ok && strcmp(t->art, art) == 0;
+            } else {
+                t->card_miss = art_hash; /* not looked for on the card again */
+            }
         } else {
             free_tile(px); /* given one meanwhile (mgrid_set) */
         }
+        if (!tried) {
+            /* nothing to draw */
+        } else if (card_only || strchr(art, '#')) {
+            *redraw = true; /* from the card, or the sheet: quick, drawn together */
+        } else {
+            lv_area_t a;
+            mgrid_box(g, i, &a);
+            lv_area_t c;
+            lv_obj_get_coords(g->canvas, &c);
+            lv_area_move(&a, c.x1, c.y1);
+            lv_obj_invalidate_area(g->canvas, &a);
+        }
+        esp_lv_adapter_unlock();
+    }
+    return true;
+}
+
+bool mgrid_fetch(mgrid_t *g, int max)
+{
+    /* What the memory card has, and logos from a sheet held already, take
+     * a few ms each: all decoded, then drawn with one redraw. Each redraw
+     * of the screen is ~100 ms of software rendering, which the next tile
+     * waited for, so a redraw per tile showed them one by one, torn. Then
+     * up to `max` covers over the network, each on screen as it comes. */
+    bool redraw = false;
+    bool ok = fetch_pass(g, MT_MAX, true, &redraw);
+    if (redraw && esp_lv_adapter_lock(-1) == ESP_OK) {
         lv_obj_invalidate(g->canvas);
         esp_lv_adapter_unlock();
     }
-    if (!sheet->ok) {
-        sheet_free(sheet); /* tried again next time */
+    redraw = false;
+    ok = ok && fetch_pass(g, max, false, &redraw);
+    if (redraw && esp_lv_adapter_lock(-1) == ESP_OK) {
+        lv_obj_invalidate(g->canvas);
+        esp_lv_adapter_unlock();
+    }
+    if (!ok) {
+        return false;
+    }
+    if (!s_sheet.ok) {
+        sheet_free(&s_sheet); /* tried again next time */
     }
     bool more = false;
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
@@ -379,7 +494,7 @@ void mgrid_release(mgrid_t *g)
     /* The pointers are only set by the weather task and under the lock. */
     bool any = false;
     for (int i = 0; i < MT_MAX; i++) {
-        any |= g->t[i].px != NULL || g->t[i].px_art != 0; /* a failed one is tried again */
+        any |= g->t[i].px != NULL || g->t[i].px_art != 0 || g->t[i].card_miss != 0; /* a failed one is tried again */
     }
     if (!any || esp_lv_adapter_lock(-1) != ESP_OK) {
         return;
@@ -390,6 +505,7 @@ void mgrid_release(mgrid_t *g)
         g->t[i].img.data = NULL;
         g->t[i].ok = false;
         g->t[i].px_art = 0;
+        g->t[i].card_miss = 0; /* the card may have it by the next visit */
     }
     esp_lv_adapter_unlock();
 }

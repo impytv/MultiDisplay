@@ -737,7 +737,9 @@ the radio page opens again without fetching it), and `KEY.jpg` at 240 px
 for the cover.
 `scripts/build_radio_logos.py` makes them from each station's myTuner page.
 They aren't built into the firmware: it runs from PSRAM, so its every byte
-costs as much of that. Without the update site, the tiles have the
+costs as much of that. With a memory card in the display they are kept on
+it (see *Downloads kept on the memory card*), so the radio page has them at
+once on the next visit. Without the update site, the tiles have the
 channel's name instead, as has any other radio without a cover of its own
 in the cover square.
 
@@ -961,6 +963,48 @@ read from the card, the card let go, and then decoded with no lock held, so
 taps and the web pages go on meanwhile; the page's pictures are likewise
 read whole before they are sent.
 In backups: `pictures.show`, `pictures.rotate`, `pictures.seconds`.
+
+### Downloads kept on the memory card
+
+With a card in the display, some downloads are kept on it so they needn't
+be fetched again (`components/sd_cache.c`). The card is optional: without
+one, or with one that can't be read or has under 64 MB free, nothing is
+kept and everything is fetched as before. They are in the card's `CACHE`
+folder, apart from the pictures, and may be deleted at any time.
+
+- **The rain radar's frames** (`CACHE/RAIN`), as the rain levels of the
+  part of the image shown (12-80 KB each), named for the image's time and
+  the crop. MET's image of a given time never changes, so the hour before
+  the latest image is read from the card rather than fetched again: after a
+  restart, or when the radar comes back after the 15 minutes it keeps its
+  frames in PSRAM. Tried on the display: the hour's 12 older frames came
+  in 3 s from the card against 11 s (2 MB) over the network. The latest
+  image is always fetched. Up to 48 files, 16 MB.
+- **Covers and logos** (`CACHE/COVER`), as fetched, for 30 days: Spotify's
+  covers (its image addresses name one picture for good), the Sonos
+  screen's covers of tracks from the queue, the radio proxy's covers
+  (`art/<hash>.jpg`) and the music pickers' tiles; our radio channels'
+  logos and the radio page's sheet of them (`tiles.bin`) for 7 days, as
+  they can be made again at the same address. A sheet that lacks a
+  channel asked for is fetched again at once (at most once a day), the
+  card's kept if that fails. Not a speaker's cover of a stream, line-in,
+  TV or AirPlay (`/getaa?...&u=x-sonosapi-stream:...`, `sonos_art_stable`),
+  whose address stays while the picture changes. A picker's tiles that
+  are on the card are all drawn with one redraw; the rest come over the
+  network, each drawn as it comes, and aren't looked for on the card again
+  that visit. Only what starts like a picture (or the logo sheet) is kept, so
+  an error page isn't. Up to 1000 files, 64 MB.
+
+Each file holds the key it was kept for, when, and the data's length and
+CRC-32 (`components/cache_util.c`, host-tested), and is written under a
+`.TMP` name and renamed, so a file cut short by a power cut is never used.
+Each kind is counted once after each mount (`sd_card_mount_count`, so a
+card swapped while the picture screen had it is counted afresh), and when
+it passes its cap the oldest are removed down to 80 %. A cover read is
+dated anew (at most daily), so the ones used most go last. Without a card,
+a try to mount one takes a moment and holds the weather task, so the cache
+leaves the card alone for 5 minutes after a failed try, then twice as long
+each time up to an hour (unless the picture screen mounts one meanwhile).
 
 ### Night
 

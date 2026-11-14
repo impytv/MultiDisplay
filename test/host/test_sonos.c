@@ -511,4 +511,16 @@ void test_sonos(void)
     CHECK(!sonos_art_allowed("http://192.168.0.118/x", "192.168.0.61"));
     sonos_art_trust("");
     CHECK(!sonos_art_allowed("http://192.168.0.119:8070/radio/p1.jpg", "192.168.0.61"));
+
+    /* Covers kept on the memory card: not a speaker's of a stream. */
+    CHECK(sonos_art_stable("https://i.scdn.co/image/ab67616d00001e02d1886d236549fdbf0309b5ab"));
+    CHECK(sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack%253a6rq"));
+    CHECK(sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=x-file-cifs%3a%2f%2fnas%2fmusic%2fa.flac"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=x-sonosapi-stream%3as24861%3fsid%3d254"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=x-sonosapi-hls%3aabc"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=X-RINCON-MP3RADIO%3ahttp%3a%2f%2fx"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=x-sonos-vli%3aRINCON_1%3a1%2cairplay"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=aac:http://x"));
+    CHECK(!sonos_art_stable("http://192.168.0.45:1400/getaa?s=1"));
+    CHECK(sonos_art_stable("http://192.168.0.45:1400/getaa?s=1&u=aacfile%3ax")); /* not "aac:" */
 }

@@ -203,6 +203,11 @@ const sonos_radio_t *sonos_radios(int *count);
  * could otherwise have the display fetch from. */
 bool sonos_art_allowed(const char *url, const char *ip);
 
+/* Whether the picture at cover address `url` stays the same, so it may be
+ * kept on the memory card: not a speaker's cover (/getaa?...&u=URI) of a
+ * stream, line-in, TV or AirPlay, which follows what plays. */
+bool sonos_art_stable(const char *url);
+
 /* Trust covers from `url`'s host as well (the update site, whose radio
  * service gives the radio covers and may be on the home network). */
 void sonos_art_trust(const char *url);
@@ -277,8 +282,10 @@ esp_err_t sonos_play_radio(const sonos_room_t *room, const sonos_radio_t *radio,
 esp_err_t sonos_play_spotify(const sonos_room_t *room, const char *spotify_uri);
 
 /* The picture at `url` (a cover, from a speaker or the web), in PSRAM for
- * the caller to free(). */
-esp_err_t sonos_get_image(const char *url, unsigned char **data, size_t *len);
+ * the caller to free(). With `keep_s`, through the memory card's cache
+ * (sd_cache.h), kept that long: only for an address whose picture doesn't
+ * change - not a speaker's cover of a stream, which follows what plays. */
+esp_err_t sonos_get_image(const char *url, uint32_t keep_s, unsigned char **data, size_t *len);
 
 /* Give back the replies' buffer, on another screen. */
 void sonos_client_release(void);

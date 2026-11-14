@@ -31,6 +31,7 @@ typedef struct {
     uint32_t px_art;         /* mgrid_art_hash of the picture in px (or tried
                               * for it), 0 = none */
     bool ok;
+    uint32_t card_miss;      /* mgrid_art_hash of a picture the memory card hadn't, 0 = none */
     lv_image_dsc_t img;
     bool on;                 /* the screen's: what plays now, ringed; false after mgrid_set */
 } mgrid_tile_t;

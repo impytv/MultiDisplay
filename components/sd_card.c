@@ -45,6 +45,7 @@ static int64_t s_tried_us;  /* the last failed try */
 static bool s_tried;
 static const char *s_unreadable; /* what a card that answered holds instead */
 static char s_drive[8];          /* FatFs's drive for it, "0:", while mounted */
+static uint32_t s_mounts;        /* times mounted */
 
 /* What is on a card that answered but has no file system FatFs can mount,
  * from its first sectors: logged, and told the page, so "no card" isn't
@@ -188,12 +189,23 @@ esp_err_t sd_card_ready(void)
         return ESP_ERR_NOT_FOUND;
     }
     s_card = card;
+    s_mounts++;
     s_tried = false;
     s_unreadable = NULL;
     snprintf(s_drive, sizeof(s_drive), "%u:", (unsigned)ff_diskio_get_pdrv_card(card));
     ESP_LOGI(TAG, "Card mounted: %s, %llu MB", card->cid.name,
              (unsigned long long)card->csd.capacity * card->csd.sector_size / (1024 * 1024));
     return ESP_OK;
+}
+
+bool sd_card_mounted(void)
+{
+    return s_card != NULL;
+}
+
+uint32_t sd_card_mount_count(void)
+{
+    return s_mounts;
 }
 
 void sd_card_failed(void)

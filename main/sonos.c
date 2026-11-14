@@ -37,6 +37,7 @@
 #include "draw.h"
 #include "music_tiles.h"
 #include "sonos.h"
+#include "sd_cache.h"
 #include "sonos_client.h"
 #include "sonos_events.h"
 #include "spotify_client.h"
@@ -816,7 +817,12 @@ static void set_picker(bool on)
 static void set_page(page_t p)
 {
     if (p != cur_page() && p != PG_RADIO && p != PG_QUEUE) {
-        s_music.count = 0; /* the other page's tiles not shown meanwhile: the poll fills them */
+        /* The other page's tiles not shown meanwhile: the poll fills them.
+         * Built again even if the lists haven't changed: coming back from
+         * Radio or Kø to the page last built left it empty, as the poll
+         * only builds a page that changed or isn't the one built. */
+        s_music.count = 0;
+        s_built = -1;
     }
     s_page = p;
     note("");
@@ -1039,8 +1045,9 @@ static const char *err_text(esp_err_t err)
     }
 }
 
-/* A cover into px (allocated if NULL), SIDE square; whether it came. */
-static bool fetch_picture(const char *url, uint16_t **px, int side)
+/* A cover into px (allocated if NULL), SIDE square; whether it came. With
+ * `keep_s`, through the memory card's cache (see sonos_get_image). */
+static bool fetch_picture(const char *url, uint32_t keep_s, uint16_t **px, int side)
 {
     if (*px == NULL) {
         *px = heap_caps_aligned_alloc(16, (size_t)side * side * 2, MALLOC_CAP_SPIRAM);
@@ -1052,7 +1059,7 @@ static bool fetch_picture(const char *url, uint16_t **px, int side)
     unsigned char *pic = NULL;
     size_t len = 0;
     bool ok = false;
-    if (sonos_get_image(url, &pic, &len) == ESP_OK) {
+    if (sonos_get_image(url, keep_s, &pic, &len) == ESP_OK) {
         ok = draw_picture_square(pic, len, *px, side);
         free(pic);
     }
@@ -1078,8 +1085,10 @@ static void drop_cover(void)
 }
 
 /* The player's cover for `url`, if it isn't the one shown. Decoded
- * straight into the shown pixels: drawn as a plain square meanwhile. */
-static void fetch_cover(const char *url)
+ * straight into the shown pixels: drawn as a plain square meanwhile.
+ * `keep_s`: how long the picture at `url` may be kept on the memory card,
+ * 0 = not (see sonos_get_image). */
+static void fetch_cover(const char *url, uint32_t keep_s)
 {
     /* A cover that failed (memory short for a moment, say) is asked for
      * again after a while, not left out for the rest of the track. */
@@ -1095,7 +1104,7 @@ static void fetch_cover(const char *url)
         s_cover_px = NULL; /* the weather task's while it decodes */
         esp_lv_adapter_unlock();
     }
-    const bool ok = url[0] && fetch_picture(url, &px, SO_COVER);
+    const bool ok = url[0] && fetch_picture(url, keep_s, &px, SO_COVER);
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         s_cover_px = px;
         s_cover_img.data = (const uint8_t *)px;
@@ -1459,6 +1468,17 @@ uint32_t sonos_poll(int for_view)
     page = cur_page();
     esp_lv_adapter_unlock();
 
+    /* The radio page's logos before asking the speakers anything (several
+     * requests, a second or more with a few rooms): they need nothing from
+     * them. The fetch further down then finds them done. */
+    bool radio_done = false, more = false;
+    if (picker && page == PG_RADIO) {
+        drop_cover();
+        mgrid_release(&s_music);
+        more = mgrid_fetch(&s_radio, MT_MAX); /* one sheet for all */
+        radio_done = true;
+    }
+
     sonos_events_keep(&room);
     esp_err_t err = sonos_get_now(&room, &s_now_scratch);
     if (err != ESP_OK) {
@@ -1540,13 +1560,14 @@ uint32_t sonos_poll(int for_view)
         page = cur_page();
         esp_lv_adapter_unlock();
     }
-    bool more = false;
     if (picker) {
         drop_cover();
         /* One page's pictures at a time: both don't fit beside the rest. */
         if (page == PG_RADIO) {
-            mgrid_release(&s_music);
-            more = mgrid_fetch(&s_radio, MT_MAX); /* one sheet for all */
+            if (!radio_done) { /* opened since (an empty room opens it) */
+                mgrid_release(&s_music);
+                more = mgrid_fetch(&s_radio, MT_MAX);
+            }
         } else if (page == PG_QUEUE) {
             mgrid_release(&s_music);
             mgrid_release(&s_radio);
@@ -1572,7 +1593,16 @@ uint32_t sonos_poll(int for_view)
             snprintf(file, sizeof(file), "%s.jpg", radios[s_now_scratch.radio].key);
             app_config_radio_url(g_cfg->ota_url, file, logo, sizeof(logo));
         }
-        fetch_cover(logo[0] ? logo : s_now_scratch.art_url);
+        /* Kept on the memory card: a track's cover from the queue, our
+         * radios' logos, and the radio proxy's covers (art/<hash>.jpg,
+         * named for the picture). Not a speaker's cover of a stream or
+         * AirPlay, whose address stays while the picture changes. */
+        const char *url = logo[0] ? logo : s_now_scratch.art_url;
+        const char *art = strstr(url, "/art/");
+        const bool hashed = art && strlen(art) == 5 + 16 + 4 && strcmp(art + 21, ".jpg") == 0;
+        fetch_cover(url, logo[0]                         ? SD_CACHE_LOGO_AGE_S /* made again at times */
+                         : hashed || s_now_scratch.queue ? SD_CACHE_COVER_AGE_S
+                                                         : 0);
     }
 
     bool changed = opened;

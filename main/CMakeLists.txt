@@ -68,6 +68,8 @@ idf_component_register(
         "../components/report_util.c"
         "../components/pic_util.c"
         "../components/sd_card.c"
+        "../components/sd_cache.c"
+        "../components/cache_util.c"
     INCLUDE_DIRS
         "."
         "../components"

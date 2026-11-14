@@ -201,7 +201,9 @@ esp_err_t spotify_get_recent(spotify_recent_t *out, int max, int *count);
  * one: ESP_ERR_NOT_FOUND. */
 esp_err_t spotify_get_playlist(const char *uri, char *name, size_t name_len, char *image_url, size_t image_len);
 
-/* The image at `url` (a cover), in PSRAM for the caller to free(). */
+/* The image at `url` (a cover), in PSRAM for the caller to free(). Kept on
+ * the memory card, if there is one (sd_cache.h): Spotify's image addresses
+ * name one picture for good. */
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len);
 
 /* After SPOTIFY_ERR_RATE: the seconds left of the wait Spotify asked for

@@ -299,6 +299,27 @@ void sonos_art_trust(const char *url)
     host_of(url, s_trusted, sizeof(s_trusted));
 }
 
+bool sonos_art_stable(const char *url)
+{
+    if (strstr(url, ":1400/getaa?") == NULL) {
+        return true; /* a service's or a site's picture, named for itself */
+    }
+    const char *u = strstr(url, "u=");
+    if (u == NULL) {
+        return false;
+    }
+    /* The URI as it comes, URL-encoded ("x-sonosapi-stream%3a...") or not. */
+    static const char *const STREAMS[] = { "x-sonosapi-stream", "x-sonosapi-hls", "x-rincon-mp3radio", "aac",
+                                           "hls-radio", "x-sonos-vli", "x-rincon-stream", "x-sonos-htastream" };
+    for (size_t i = 0; i < sizeof(STREAMS) / sizeof(STREAMS[0]); i++) {
+        const size_t n = strlen(STREAMS[i]);
+        if (strncasecmp(u + 2, STREAMS[i], n) == 0 && (u[2 + n] == ':' || u[2 + n] == '%')) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool sonos_art_allowed(const char *url, const char *ip)
 {
     if (starts(url, "https://")) {

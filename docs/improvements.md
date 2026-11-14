@@ -1279,3 +1279,44 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   start); and /bilder/hent passing anything starting "BM" or with "ftyp"
   (MP4, MOV) - BMP's header and the HEIC/AVIF brands are now checked,
   host-tested in pic_util.*
+- [x] **170. Downloads kept on the memory card**, when there is one, so
+  they needn't be fetched again; the card stays optional.
+  *Done in 1.38.0: components/sd_cache.c keeps the rain radar's
+  frames (as the crop's rain levels, keyed by area, image time and crop)
+  and covers and logos (Spotify's, the Sonos screen's from the queue and
+  our radios', the pickers' tiles, the radio logo sheet) in CACHE/<kind>
+  on the card, each file with its key, date, length and CRC-32, written as
+  .TMP and renamed; oldest removed past a cap (48 files/16 MB of frames,
+  1000 files/64 MB of covers). Without a card nothing changes; a failed
+  mount isn't tried again by the cache for 5 minutes. On the display, after
+  a restart the radar's hour came from the card in 3 s instead of 11 s and
+  2 MB. Building the logo sheet into the firmware instead was considered
+  and dropped: the firmware is run from PSRAM, so it would cost 74 KB of it
+  all the time (see lessons-learned, "The firmware's size is PSRAM").
+  Covers and the logo sheet then seen coming from the card on the display;
+  not yet tried: taking the card out with the cache in use. A review then
+  found and fixed: the card's logo sheet deleted before a fresh one was
+  fetched (so with the site down, no logos at all), and fetched on every
+  visit if a channel was in neither (now kept on failure, once a day at
+  most); a tile not on the card looked for there on every poll, and again
+  by the network fetch (now remembered for the visit); oldest-written
+  removed first however much used (a read now dates the file anew); a card
+  swapped while the picture screen held it kept the old card's counts and
+  "full" (now by a mount count); counts that only grew (replaced and stale
+  files now subtracted); without a card, a mount tried every 5 minutes
+  for good (now doubling to an hour); the update site's radio logos kept
+  30 days against the sheet's 7 (now 7); Sonos favourites' covers of
+  streams from the speaker kept, which follow what plays
+  (sonos_art_stable, host-tested); and the radio page's logos fetched
+  twice per poll.*
+- [x] **171. The radio logos shown one by one, and an empty page after
+  Radio.** *Fixed in 1.38.0: the picker redrew the whole screen
+  after each logo (~100 ms of software rendering, which the next waited
+  for); logos from the sheet, and every cover the memory card has, are now
+  all decoded first and drawn with one redraw (the lists' covers came
+  three per poll, torn), and a cover fetched over the network redraws
+  only its tile. The radio page's
+  logos are fetched before the poll asks the speakers anything. Going from
+  Radio (or Kø) back to the music page last shown left it empty until its
+  lists changed (set_page emptied it, and the poll only builds a page that
+  changed or isn't the one built); it is now built again.*

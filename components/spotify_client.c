@@ -20,6 +20,7 @@
 #include "nvs.h"
 
 #include "http_util.h"
+#include "sd_cache.h"
 #include "spotify_client.h"
 #include "yr_client.h"
 
@@ -784,8 +785,8 @@ int spotify_retry_after_s(void)
 esp_err_t spotify_get_image(const char *url, uint8_t **data, size_t *len)
 {
     http_buf_t b = { .max = SP_IMAGE_MAX };
-    const esp_err_t err =
-        http_get_buf(url, yr_client_user_agent(), SP_TIMEOUT_MS, true, &b, TAG);
+    const esp_err_t err = sd_cache_http_get(SD_CACHE_COVER, url, SD_CACHE_COVER_AGE_S, yr_client_user_agent(),
+                                            SP_TIMEOUT_MS, true, &b, TAG, NULL);
     if (err != ESP_OK || b.buf == NULL) {
         http_buf_free(&b);
         return err != ESP_OK ? err : ESP_FAIL;

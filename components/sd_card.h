@@ -23,6 +23,15 @@ void sd_card_unlock(void);
  * again at most every few seconds. */
 esp_err_t sd_card_ready(void);
 
+/* With the lock held: whether the card is mounted now, without trying to
+ * mount it (as sd_card_ready does, which takes a moment with no card). */
+bool sd_card_mounted(void);
+
+/* How many times a card has been mounted since start: a change says the
+ * card may be another one (taken out and put back, by whichever user of
+ * the card noticed). */
+uint32_t sd_card_mount_count(void);
+
 /* With the lock held: a read or write on the card failed - perhaps it was
  * taken out. Unmounted, to be mounted again next time. */
 void sd_card_failed(void);

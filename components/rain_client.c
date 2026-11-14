@@ -6,6 +6,7 @@
 #include <strings.h>
 
 #include "rain_client.h"
+#include "sd_cache.h"
 #include "civil_time.h"
 #include "yr_client.h"
 
@@ -246,6 +247,14 @@ static esp_err_t decode_levels(const rain_area_t *a, const rain_crop_t *c, const
     return ESP_OK;
 }
 
+/* What a frame on the card was made from: the area, the image's time and
+ * the crop (cells of the same image differ with it). */
+static void rain_cache_key(const rain_area_t *a, time_t t, const rain_crop_t *c, char *out, size_t out_len)
+{
+    snprintf(out, out_len, "rain1 %s %lld %d %d %u %u %u", a->name, (long long)t, c->x0, c->y0, (unsigned)c->w,
+             (unsigned)c->h, (unsigned)c->step);
+}
+
 static esp_http_client_handle_t s_client;
 static rain_resp_t s_resp;
 
@@ -260,6 +269,19 @@ void rain_client_close(void)
 esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
                             uint8_t *level, time_t *taken)
 {
+    /* An image of a given time never changes: one kept on the memory card
+     * (if any) for this crop is used as it is. */
+    const size_t cells = (size_t)crop->w * crop->h;
+    char key[96];
+    if (when > 0) {
+        rain_cache_key(area, when, crop, key, sizeof(key));
+        if (sd_cache_get_into(SD_CACHE_RAIN, key, 0, level, cells)) {
+            *taken = when;
+            ESP_LOGI(TAG, "%s: image time %lld from the card", area->name, (long long)when);
+            return ESP_OK;
+        }
+    }
+
     char url[192];
     int n = snprintf(url, sizeof(url),
                      "https://api.met.no/weatherapi/radar/2.0/?area=%s&type=5level_reflectivity", area->name);
@@ -309,5 +331,16 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
     }
     *taken = resp.time ? resp.time : when;
     ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)len, (long long)*taken);
+    /* Kept for coming back to the hour (after a restart, or past what the
+     * radar screen holds), once per image: the latest is asked for on
+     * every poll. */
+    static char s_kept[96];
+    if (*taken > 0) {
+        rain_cache_key(area, *taken, crop, key, sizeof(key));
+        if (strcmp(key, s_kept) != 0) {
+            sd_cache_put(SD_CACHE_RAIN, key, level, cells);
+            snprintf(s_kept, sizeof(s_kept), "%s", key);
+        }
+    }
     return ESP_OK;
 }
