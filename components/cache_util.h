@@ -35,7 +35,9 @@ bool cache_head_check(const uint8_t *head, size_t n, size_t file_len, const char
 
 /* Whether data saved at `saved` is still to be used at `now` (epoch
  * seconds; either 0 or before `plausible` when the clock wasn't set) when
- * it is kept `max_age_s` (0 = for good). With no clock to tell, it is. */
+ * it is kept `max_age_s` (0 = for good). With no clock now, it is; saved
+ * with no clock but read with one, it isn't (its age can't be told, and
+ * it would otherwise never grow old). */
 bool cache_fresh(uint32_t saved, int64_t now, uint32_t max_age_s, int64_t plausible);
 
 /* A file in a cache folder, as FatFs lists it: its date and time as one

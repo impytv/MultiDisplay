@@ -266,9 +266,19 @@ void rain_client_close(void)
     }
 }
 
-esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
-                            uint8_t *level, time_t *taken)
+void rain_client_keep(const rain_area_t *area, time_t taken, const rain_crop_t *crop, const uint8_t *level)
 {
+    char key[96];
+    rain_cache_key(area, taken, crop, key, sizeof(key));
+    sd_cache_put(SD_CACHE_RAIN, key, level, (size_t)crop->w * crop->h);
+}
+
+esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
+                            uint8_t *level, time_t *taken, bool *from_card)
+{
+    if (from_card) {
+        *from_card = false;
+    }
     /* An image of a given time never changes: one kept on the memory card
      * (if any) for this crop is used as it is. */
     const size_t cells = (size_t)crop->w * crop->h;
@@ -277,6 +287,9 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
         rain_cache_key(area, when, crop, key, sizeof(key));
         if (sd_cache_get_into(SD_CACHE_RAIN, key, 0, level, cells)) {
             *taken = when;
+            if (from_card) {
+                *from_card = true;
+            }
             ESP_LOGI(TAG, "%s: image time %lld from the card", area->name, (long long)when);
             return ESP_OK;
         }
@@ -331,16 +344,5 @@ esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_cro
     }
     *taken = resp.time ? resp.time : when;
     ESP_LOGI(TAG, "%s: %u bytes, image time %lld", area->name, (unsigned)len, (long long)*taken);
-    /* Kept for coming back to the hour (after a restart, or past what the
-     * radar screen holds), once per image: the latest is asked for on
-     * every poll. */
-    static char s_kept[96];
-    if (*taken > 0) {
-        rain_cache_key(area, *taken, crop, key, sizeof(key));
-        if (strcmp(key, s_kept) != 0) {
-            sd_cache_put(SD_CACHE_RAIN, key, level, cells);
-            snprintf(s_kept, sizeof(s_kept), "%s", key);
-        }
-    }
-    return ESP_OK;
+    return ESP_OK; /* kept on the card only when the radar lets it go (radar.c, rain_keep_on_card) */
 }

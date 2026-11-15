@@ -339,15 +339,18 @@ uint32_t pictures_poll(int for_view)
             set_note(for_view, "Ikke nok minne til bildet.");
             return PIC_CARD_RETRY_MS;
         }
+        if (esp_lv_adapter_lock(-1) != ESP_OK) {
+            heap_caps_free(px); /* not kept: taken again on the next poll */
+            heap_caps_free(list);
+            return PIC_CARD_RETRY_MS;
+        }
+        s_px = px;
+        s_shown = false;
+        esp_lv_adapter_unlock();
         s_list = list;
         s_bag.order = list->order;
         s_list_gen = 0;
         wd_psram_held((int)(PIC_BYTES + sizeof(pic_list_t)));
-        if (esp_lv_adapter_lock(-1) == ESP_OK) {
-            s_px = px;
-            s_shown = false;
-            esp_lv_adapter_unlock();
-        }
     }
 
     sd_card_lock();
@@ -569,7 +572,7 @@ static esp_err_t h_list(httpd_req_t *req)
     for (int i = 0; i < n; i++) {
         cJSON *o = cJSON_CreateObject();
         cJSON_AddStringToObject(o, "n", ents[i].n);
-        cJSON_AddNumberToObject(o, "kb", (ents[i].size + 1023) / 1024);
+        cJSON_AddNumberToObject(o, "kb", (double)(((uint64_t)ents[i].size + 1023) / 1024));
         cJSON_AddBoolToObject(o, "for_stor", ents[i].size > PIC_FILE_MAX);
         cJSON_AddItemToArray(list, o);
     }

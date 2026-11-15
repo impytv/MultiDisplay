@@ -1206,11 +1206,19 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   `raw_ac_t`'s unused `lat`/`lon` values.
   *Done in 1.36.2: `show_login_status` sets its message in every case (a
   `default` with the connected one's), and the unused fields are gone.*
-- [ ] **165. Run the static analysis again** before the next release with
+- [x] **165. Run the static analysis again** before the next release with
   many changes, or by May 2027 at the latest: the same four tools as in
   docs/reviews/static-analysis.md ("Running them again"), and compare with
   what that found. Newer versions find more, and new code hasn't been
   through them.
+  *Done on 1.38.0 (15 November 2026): clang-tidy 23.1.4 with the analyzer
+  over all 70 C files, cppcheck 2.17.1 and flawfinder, so the picture
+  screen, the card and its cache have been through them. Nothing new that
+  holds: the analyzer's 13 are the false alarms from before plus `buf[l]`
+  in sd_cache_get (allocated l + 1); cppcheck no warnings; flawfinder's new
+  hits are snprintf with a literal macro joined to the format. semgrep
+  wasn't run: it found nothing in the C code, and the Python it looks at
+  hasn't changed since. See 175.*
 
 ## From error reports
 
@@ -1320,3 +1328,45 @@ semgrep over the display's code (docs/reviews/static-analysis.md).
   Radio (or Kø) back to the music page last shown left it empty until its
   lists changed (set_page emptied it, and the poll only builds a page that
   changed or isn't the one built); it is now built again.*
+
+## Review of 15 November 2026 (1.38.0)
+
+The code since 1.36.2 read through (the picture screen, the card, the
+cache, "føles som", the pickers' tiles) and the static analysis run again
+(165). Host tests pass (5816 checks). No fault found that shows in use;
+what is left:
+
+- [ ] **172. Try taking the card out while the cache is in use** (left
+  untried in 170): on the radar and the music screens, out and back in, and
+  another card in. Expect a miss and a fetch, no hang of the weather task,
+  and the counts starting afresh.
+- [x] **173. A file kept before the clock was set never grows old.** Saved
+  with time 0, `cache_fresh` takes it as fresh for good, so a radio logo or
+  the logo sheet fetched in the first seconds after a start stays past its 7
+  days (until removed for room, or a channel is missing from the sheet).
+  With the clock set now and a max age given, count time 0 as old.
+  *Done in 1.38.1: once the clock is set, a file saved without it counts
+  as old (unless kept for good, as the rain frames are) and is fetched
+  again; host tested.*
+- [x] **174. The cache writes to the file system the pictures are on.** A
+  radar frame every 5 minutes while that screen shows, and covers, each a
+  moment where pulling the plug can leave FAT/exFAT damaged (FatFs has no
+  journal) - and the card then "can't be read", pictures and all. The
+  pictures are copies, so little is lost, but consider keeping the frames
+  in PSRAM only, or writing the hour's frames once when the screen is left.
+  *Done in 1.38.1: the rain frames go to the card only as the radar lets
+  them go - 15 minutes away, memory short, or on leaving with more than one
+  rain location (another's frames take their place) - and only those not
+  on it yet and not out of the hour by then (rain_keep_on_card). Nothing
+  is written while the screen shows, or while it comes round within 15
+  minutes with one rain location; the frames aren't on the card after a
+  restart any more. Covers are written once each, and stay as they were.*
+- [x] **175. Tidying:** `s_queue_total` in sonos.c is set and never read;
+  `(size + 1023) / 1024` in /bilder.json wraps for a file of 4 GB (shown as
+  0 kB, still marked too big); pictures_poll leaks its buffers if the LVGL
+  lock ever failed right after they were allocated.
+  *Done in 1.38.1: `s_queue_total` removed, the size counted in 64 bits,
+  and the buffers freed if the lock fails (taken again on the next poll).*
+- [ ] **176. Run the static analysis again** before the next release with
+  many changes, or by May 2027 at the latest (as 165), semgrep included if
+  the services or scripts have changed.

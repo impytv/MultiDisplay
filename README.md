@@ -975,11 +975,17 @@ folder, apart from the pictures, and may be deleted at any time.
 - **The rain radar's frames** (`CACHE/RAIN`), as the rain levels of the
   part of the image shown (12-80 KB each), named for the image's time and
   the crop. MET's image of a given time never changes, so the hour before
-  the latest image is read from the card rather than fetched again: after a
-  restart, or when the radar comes back after the 15 minutes it keeps its
-  frames in PSRAM. Tried on the display: the hour's 12 older frames came
-  in 3 s from the card against 11 s (2 MB) over the network. The latest
-  image is always fetched. Up to 48 files, 16 MB.
+  the latest image is read from the card rather than fetched again when the
+  radar comes back after the 15 minutes it keeps its frames in PSRAM, or
+  to a location whose frames another rain location's took the place of.
+  Tried on the display: the hour's 12 older frames came in 3 s from the
+  card against 11 s (2 MB) over the network. The latest image is always
+  fetched. Frames are written only as the radar lets them go (from 1.38.1;
+  1.38.0 wrote each as it came): every write is a moment where a power cut
+  can damage the card's file system, pictures and all, so nothing is
+  written while the screen shows or while it comes round again within the
+  15 minutes - and so they aren't there after a restart. Up to 48 files,
+  16 MB.
 - **Covers and logos** (`CACHE/COVER`), as fetched, for 30 days: Spotify's
   covers (its image addresses name one picture for good), the Sonos
   screen's covers of tracks from the queue, the radio proxy's covers
@@ -998,6 +1004,8 @@ folder, apart from the pictures, and may be deleted at any time.
 Each file holds the key it was kept for, when, and the data's length and
 CRC-32 (`components/cache_util.c`, host-tested), and is written under a
 `.TMP` name and renamed, so a file cut short by a power cut is never used.
+A file kept before the clock was set has no age to go by, and is fetched
+again once the clock is set.
 Each kind is counted once after each mount (`sd_card_mount_count`, so a
 card swapped while the picture screen had it is counted afresh), and when
 it passes its cap the oldest are removed down to 80 %. A cover read is

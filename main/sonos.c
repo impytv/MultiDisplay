@@ -120,7 +120,7 @@ static EXT_RAM_BSS_ATTR mgrid_t s_music, s_radio;
 /* "Kø": the queue from the track playing (or from the first, if the queue
  * doesn't play). */
 static EXT_RAM_BSS_ATTR sonos_track_t s_queue[MT_LIST_MAX];
-static int s_queue_count, s_queue_first, s_queue_total;
+static int s_queue_count, s_queue_first;
 static bool s_queue_live;        /* the queue plays, s_queue[0] being the track */
 
 /* What was last started from the picker, ringed while its group plays from
@@ -1245,7 +1245,6 @@ static void fetch_queue(const sonos_room_t *room, const sonos_now_t *now)
             memcpy(s_queue, q, sizeof(q[0]) * (size_t)n);
             s_queue_count = n;
             s_queue_first = track;
-            s_queue_total = total;
             s_queue_live = now->queue && now->track > 0;
         }
         snprintf(s_page_note[PG_QUEUE], sizeof(s_page_note[PG_QUEUE]), "%s",

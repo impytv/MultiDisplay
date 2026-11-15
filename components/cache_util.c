@@ -72,8 +72,11 @@ bool cache_head_check(const uint8_t *head, size_t n, size_t file_len, const char
 
 bool cache_fresh(uint32_t saved, int64_t now, uint32_t max_age_s, int64_t plausible)
 {
-    if (max_age_s == 0 || saved < plausible || now < plausible) {
+    if (max_age_s == 0 || now < plausible) {
         return true;
+    }
+    if (saved < plausible) {
+        return false; /* saved before the clock was set: how old is unknown, so fetched again */
     }
     /* Saved "in the future" (a clock set wrong then): not to be trusted. */
     return (int64_t)saved <= now + 86400 && now - (int64_t)saved <= (int64_t)max_age_s;

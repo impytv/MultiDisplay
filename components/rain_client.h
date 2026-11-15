@@ -1,6 +1,7 @@
 #ifndef _RAIN_CLIENT_H_
 #define _RAIN_CLIENT_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
 #include "esp_err.h"
@@ -54,9 +55,17 @@ void rain_client_project(const rain_area_t *area, double lat, double lon, float 
  * is undefined on failure. `*taken` is when the image was taken (0 if
  * unknown). ESP_ERR_NOT_FOUND if there is no image for that time. The HTTPS
  * connection is kept open between calls; call rain_client_close() when done.
+ * An image of a given time kept on the memory card (rain_client_keep) is
+ * taken from there; *from_card (may be NULL) says so.
  */
 esp_err_t rain_client_fetch(const rain_area_t *area, time_t when, const rain_crop_t *crop,
-                            uint8_t *level, time_t *taken);
+                            uint8_t *level, time_t *taken, bool *from_card);
+
+/**
+ * Keep the levels of the image of `area` taken at `taken`, for `crop`, on
+ * the memory card (if there is one), for rain_client_fetch to find.
+ */
+void rain_client_keep(const rain_area_t *area, time_t taken, const rain_crop_t *crop, const uint8_t *level);
 
 /** Drop the kept-alive connection (frees its TLS buffers). Safe to call any time. */
 void rain_client_close(void);

@@ -64,9 +64,13 @@ static void test_fresh(void)
     CHECK(cache_fresh((uint32_t)(now - month), now, month, PLAUSIBLE));
     CHECK(!cache_fresh((uint32_t)(now - month - 1), now, month, PLAUSIBLE));
     CHECK(cache_fresh(1000, now, 0, PLAUSIBLE)); /* kept for good */
-    /* No clock then, or now: used. */
-    CHECK(cache_fresh(0, now, month, PLAUSIBLE));
+    /* No clock now: used. No clock then, but now: its age unknown, so old
+     * (else it would never be fetched again) - unless kept for good. */
     CHECK(cache_fresh((uint32_t)now, 5000, month, PLAUSIBLE));
+    CHECK(cache_fresh(0, 5000, month, PLAUSIBLE));
+    CHECK(!cache_fresh(0, now, month, PLAUSIBLE));
+    CHECK(!cache_fresh(1000, now, month, PLAUSIBLE));
+    CHECK(cache_fresh(0, now, 0, PLAUSIBLE));
     /* Saved over a day "after" now: a clock set wrong then. */
     CHECK(cache_fresh((uint32_t)now + 3600, now, month, PLAUSIBLE));
     CHECK(!cache_fresh((uint32_t)now + 2 * 86400, now, month, PLAUSIBLE));

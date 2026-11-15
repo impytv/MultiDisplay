@@ -156,6 +156,9 @@ static bool s_coast_retry;           /* the one drawn is incomplete: draw it aga
 #define RAIN_GRID_N (COAST_D / RAIN_GRID + 2)
 static uint8_t *s_rain_frame[RAIN_FRAMES]; /* PSRAM, s_rain_cells each */
 static time_t s_rain_ftime[RAIN_FRAMES];
+/* The slot's frame is on the memory card already (read from it, or written
+ * by rain_keep_on_card). */
+static bool s_rain_on_card[RAIN_FRAMES];
 static uint8_t *s_rain_spare;       /* PSRAM; rain_poll fetches here, then swaps it in */
 static size_t s_rain_cells;         /* what the frame buffers were allocated for */
 static const rain_area_t *s_rain_area;
@@ -1910,8 +1913,9 @@ static void rain_info_set(int range)
 }
 
 /* Keep the frame just fetched into s_rain_spare, taken at `t`, with
- * `latest` the newest image there is. Adapter lock held. */
-static void rain_store(time_t t, time_t latest, int range)
+ * `latest` the newest image there is; `on_card` if it came from the memory
+ * card. Adapter lock held. */
+static void rain_store(time_t t, time_t latest, int range, bool on_card)
 {
     s_rain_latest = latest;
     int slot = rain_slot_for(t);
@@ -1930,6 +1934,7 @@ static void rain_store(time_t t, time_t latest, int range)
     s_rain_frame[slot] = s_rain_spare;
     s_rain_spare = old;
     s_rain_ftime[slot] = t;
+    s_rain_on_card[slot] = on_card;
 
     const int p = RAIN_FRAMES - 1 - (int)((latest - t) / RAIN_STEP_S);
     if (!s_rain_valid) {
@@ -2105,7 +2110,8 @@ static bool rain_poll(int loc, int for_view)
             }
         }
         time_t taken;
-        esp_err_t err = rain_client_fetch(area, want, &s_rain_crop, s_rain_spare, &taken);
+        bool from_card = false;
+        esp_err_t err = rain_client_fetch(area, want, &s_rain_crop, s_rain_spare, &taken, &from_card);
         if (k == 0) {
             if (err == ESP_OK) {
                 diag_ok(DIAG_RAIN);
@@ -2127,7 +2133,7 @@ static bool rain_poll(int loc, int for_view)
         }
         if (lock_for_view(for_view)) {
             if (s_radar_loc == loc && s_radar_range_km == range) {
-                rain_store(taken, latest, range);
+                rain_store(taken, latest, range, from_card);
             }
             esp_lv_adapter_unlock();
         }
@@ -2243,6 +2249,36 @@ static void radar_take(bool rain)
     }
 }
 
+/* The frames of the hour held that aren't on the memory card yet, onto it,
+ * for coming back to them once they have been let go here. Only then, not
+ * as each is fetched: every write is a moment where the power going can
+ * damage the card's file system, the family's pictures and all (FatFs has
+ * no journal), and frames still held are never read from the card. So
+ * nothing is written while the screen shows, or while the display goes
+ * round with one rain location and comes back within RAIN_KEEP_S. Weather
+ * task, which alone changes the frames: no lock needed to read them. */
+static void rain_keep_on_card(time_t now)
+{
+    const rain_area_t *area = s_rain_area;
+    if (area == NULL || now <= PLAUSIBLE_EPOCH_S) {
+        return;
+    }
+    int n = 0;
+    for (int i = 0; i < RAIN_FRAMES; i++) {
+        const time_t ft = s_rain_ftime[i];
+        /* Not those that would be out of the hour by the time it's next shown. */
+        if (ft != RAIN_EMPTY && !s_rain_on_card[i] && ft > now - (time_t)RAIN_FRAMES * RAIN_STEP_S &&
+            s_rain_frame[i] != NULL) {
+            rain_client_keep(area, ft, &s_rain_crop, s_rain_frame[i]);
+            s_rain_on_card[i] = true; /* tried: not again, whether or not there was a card */
+            n++;
+        }
+    }
+    if (n > 0) {
+        ESP_LOGI(TAG, "Rain: %d frames offered to the memory card", n);
+    }
+}
+
 void radar_release(bool short_of_memory)
 {
     /* The hour of rain frames is kept while it can still be shown on coming
@@ -2251,6 +2287,15 @@ void radar_release(bool short_of_memory)
     const time_t now = time(NULL);
     const bool frames = s_rain_cells > 0 && (short_of_memory || now <= PLAUSIBLE_EPOCH_S ||
                                              now - s_rain_latest >= RAIN_KEEP_S);
+    /* Onto the card when they are let go now - or with more than one rain
+     * location, as showing another drops these (rain_set_location). */
+    int rain_locs = 0;
+    for (int i = 0; i < g_cfg->location_count; i++) {
+        rain_locs += (g_cfg->show[i] & APP_SHOW_RAIN) != 0;
+    }
+    if (s_rain_cells > 0 && (frames || rain_locs > 1)) {
+        rain_keep_on_card(now);
+    }
     if (s_held == 0 && !frames) {
         return;
     }
