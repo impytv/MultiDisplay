@@ -30,3 +30,4 @@ server/.env
 # Error reports from the displays (server/feil/feil.py), kept on the Pi
 server/feilmeldinger/
 server/delte-bilder/
+__pycache__/
