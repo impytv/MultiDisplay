@@ -122,6 +122,9 @@ char *app_config_to_json(const app_config_t *c, bool secrets, const own_event_t 
     cJSON_AddBoolToObject(pic, "show", c->pic_show);
     cJSON_AddBoolToObject(pic, "rotate", c->pic_rotate);
     cJSON_AddNumberToObject(pic, "seconds", c->pic_secs);
+    cJSON_AddBoolToObject(pic, "share_download", c->share_dl);
+    cJSON_AddStringToObject(pic, "share_groups", c->share_groups);
+    cJSON_AddStringToObject(pic, "share_nickname", c->share_nick);
 
     cJSON *locs = cJSON_AddArrayToObject(root, "locations");
     for (int i = 0; i < c->location_count && i < APP_CONFIG_MAX_LOCATIONS; i++) {
@@ -325,6 +328,9 @@ bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *even
     get_bool(pic, "show", &c->pic_show);
     get_bool(pic, "rotate", &c->pic_rotate);
     get_u16(pic, "seconds", &c->pic_secs);
+    get_bool(pic, "share_download", &c->share_dl);
+    ok &= get_str(pic, "share_groups", c->share_groups, sizeof(c->share_groups));
+    ok &= get_str(pic, "share_nickname", c->share_nick, sizeof(c->share_nick));
     if (!ok) {
         snprintf(err, err_len, "En tekst i sikkerhetskopien er for lang.");
     }

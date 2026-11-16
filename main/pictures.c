@@ -4,12 +4,11 @@
  *
  * Pictures come from the /bilder page (pictures_page.js), which makes
  * them in the browser to fit 800x480 - whole, or filling it with the part
- * chosen there - before sending, so they are 100-250 KB each; a picture
- * from an address is fetched by the display for the page (GET
- * /bilder/hent - other sites' pictures can't be read by a page of the
- * display's) and made the same way. JPEGs copied onto the card's
- * BILDER folder from a PC are shown too, decoded at up to 1/8 of their
- * size if bigger than the screen, if the file is at most PIC_FILE_MAX.
+ * chosen there - before sending, so they are 100-250 KB each. Pictures
+ * shared by other displays are downloaded by share.c, as D<id>.JPG. JPEGs
+ * copied onto the card's BILDER folder from a PC are shown too, decoded at
+ * up to 1/8 of their size if bigger than the screen, if the file is at
+ * most PIC_FILE_MAX.
  *
  * Memory: one 800x480 RGB565 buffer (750 KB of PSRAM) while the screen is
  * on show, given back on any other (pictures_release), and the file being
@@ -28,7 +27,6 @@
 
 #include "cJSON.h"
 #include "misc/cache/instance/lv_image_cache.h"
-#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_jpeg_dec.h"
 #include "esp_log.h"
@@ -39,9 +37,10 @@
 
 #include "app.h"
 #include "form_util.h"
-#include "http_util.h"
 #include "pic_util.h"
 #include "sd_card.h"
+#include "share.h"
+#include "share_util.h"
 #include "watchdog.h"
 #include "wifi_provision.h"
 
@@ -50,11 +49,11 @@ static const char *TAG = "pictures";
 #define PIC_W 800
 #define PIC_H 480
 #define PIC_BYTES (PIC_W * PIC_H * 2)
-#define PIC_DIR SD_CARD_ROOT "/BILDER"
+#define PIC_DIR PICTURES_DIR
 #define PIC_PATH_MAX (sizeof(PIC_DIR) + PIC_NAME_MAX + 8) /* "/sd/BILDER/" and a name */
-#define PIC_MAX 1000                    /* pictures listed */
-#define PIC_FILE_MAX (1536 * 1024)      /* a JPEG copied on from a PC, at most */
-#define PIC_UPLOAD_MAX (1024 * 1024)    /* one from the page (they are ~200 KB) */
+#define PIC_MAX PICTURES_MAX               /* pictures listed */
+#define PIC_FILE_MAX PICTURES_FILE_MAX     /* a JPEG copied on from a PC, at most */
+#define PIC_UPLOAD_MAX PICTURES_UPLOAD_MAX /* one from the page (they are ~200 KB) */
 /* Left beside a file being read or received (for the moment until it is
  * decoded or saved): this much PSRAM in all, and a block this big, for
  * what the other tasks fetch meanwhile (TLS, replies of some tens of KB).
@@ -64,13 +63,15 @@ static const char *TAG = "pictures";
 #define PIC_PSRAM_LEFT (256 * 1024)
 #define PIC_PSRAM_BLOCK_LEFT (128 * 1024)
 #define PIC_CARD_RETRY_MS 10000         /* no card, or nothing on it: look again */
-#define PIC_FETCH_MAX (20 * 1024 * 1024) /* a picture fetched for the page */
-#define PIC_FETCH_TIMEOUT_MS 20000
-#define PIC_FETCH_STACK 12288
 
 /* Bumped when the page adds or deletes a picture, so the screen lists the
  * card again. */
 static volatile uint32_t s_gen = 1;
+
+void pictures_changed(void)
+{
+    s_gen++;
+}
 
 /* ---- The screen (weather task, and the LVGL task under the lock) ---- */
 
@@ -186,7 +187,7 @@ static bool list_card(void)
 /* Whether `len` bytes can be taken from PSRAM for a moment and leave
  * PIC_PSRAM_LEFT, and a block of PIC_PSRAM_BLOCK_LEFT in what it is
  * taken from, for the rest. */
-static bool psram_room(size_t len)
+bool pictures_psram_room(size_t len)
 {
     const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
     const size_t free_b = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -194,7 +195,7 @@ static bool psram_room(size_t len)
 }
 
 /* File `name` from the card into a new PSRAM buffer (SD lock held). */
-static uint8_t *read_picture(const char *name, size_t *len)
+uint8_t *pictures_read(const char *name, size_t *len)
 {
     char path[PIC_PATH_MAX];
     snprintf(path, sizeof(path), PIC_DIR "/%s", name);
@@ -206,7 +207,7 @@ static uint8_t *read_picture(const char *name, size_t *len)
     struct stat st;
     if (fstat(fileno(f), &st) != 0 || st.st_size <= 0 || st.st_size > PIC_FILE_MAX) {
         ESP_LOGW(TAG, "%s skipped: %ld bytes", name, (long)st.st_size);
-    } else if (!psram_room((size_t)st.st_size) ||
+    } else if (!pictures_psram_room((size_t)st.st_size) ||
                (buf = heap_caps_malloc((size_t)st.st_size, MALLOC_CAP_SPIRAM)) == NULL) {
         ESP_LOGW(TAG, "No room to read %s (%ld bytes)", name, (long)st.st_size);
     } else if (fread(buf, 1, (size_t)st.st_size, f) != (size_t)st.st_size) {
@@ -415,7 +416,7 @@ uint32_t pictures_poll(int for_view)
         size_t len = 0;
         bool gone = false;
         sd_card_lock();
-        uint8_t *jpg = sd_card_ready() == ESP_OK ? read_picture(s_names[i], &len) : NULL;
+        uint8_t *jpg = sd_card_ready() == ESP_OK ? pictures_read(s_names[i], &len) : NULL;
         if (jpg == NULL) {
             struct stat st;
             gone = stat(PIC_DIR, &st) != 0;
@@ -450,7 +451,7 @@ uint32_t pictures_poll(int for_view)
 /* Whether `n` is a name on the card the page may ask for: a picture's
  * name as the card lists it (UTF-8, long names too), and nothing that
  * leaves the folder. */
-static bool name_ok(const char *n)
+bool pictures_name_ok(const char *n)
 {
     const size_t len = strlen(n);
     if (len == 0 || len >= PIC_NAME_MAX || !pic_is_picture(n)) {
@@ -565,6 +566,28 @@ static esp_err_t h_list(httpd_req_t *req)
             qsort(ents, (size_t)n, sizeof(entry_t), name_cmp);
         }
     }
+    /* Who shared the downloaded ones, if any are. */
+    typedef struct {
+        char id[SHARE_ID_LEN + 1];
+        char nick[SHARE_NICK_MAX];
+    } who_t;
+    who_t *who = NULL;
+    int n_who = 0;
+    for (int i = 0; i < n && who == NULL; i++) {
+        char id[SHARE_ID_LEN + 1];
+        if (share_file_id(ents[i].n, id)) {
+            FILE *f = fopen(SHARE_WHO_FILE, "r");
+            who = f ? heap_caps_malloc((size_t)PIC_MAX * sizeof(who_t), MALLOC_CAP_SPIRAM) : NULL;
+            char line[SHARE_ID_LEN + 2 * SHARE_NICK_MAX];
+            while (who && n_who < PIC_MAX && fgets(line, sizeof(line), f) != NULL) {
+                n_who += share_nick_line(line, who[n_who].id, who[n_who].nick);
+            }
+            if (f) {
+                fclose(f);
+            }
+            break;
+        }
+    }
     sd_card_unlock();
     heap_caps_free(dir);
     heap_caps_free(fi);
@@ -574,9 +597,20 @@ static esp_err_t h_list(httpd_req_t *req)
         cJSON_AddStringToObject(o, "n", ents[i].n);
         cJSON_AddNumberToObject(o, "kb", (double)(((uint64_t)ents[i].size + 1023) / 1024));
         cJSON_AddBoolToObject(o, "for_stor", ents[i].size > PIC_FILE_MAX);
+        char id[SHARE_ID_LEN + 1];
+        if (share_file_id(ents[i].n, id)) {
+            cJSON_AddStringToObject(o, "delt", id); /* from another display */
+            for (int k = 0; k < n_who; k++) {
+                if (strcmp(who[k].id, id) == 0) {
+                    cJSON_AddStringToObject(o, "fra", who[k].nick);
+                    break;
+                }
+            }
+        }
         cJSON_AddItemToArray(list, o);
     }
     heap_caps_free(ents);
+    heap_caps_free(who);
     char *json = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (json == NULL) {
@@ -593,7 +627,7 @@ static esp_err_t h_file(httpd_req_t *req)
     /* A long name's every byte may come %-escaped. */
     char q[3 * PIC_NAME_MAX + 8], n[PIC_NAME_MAX + 4];
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) != ESP_OK || !form_field(q, "n", n, sizeof(n)) ||
-        !name_ok(n)) {
+        !pictures_name_ok(n)) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "Ukjent bilde.");
     }
@@ -602,7 +636,7 @@ static esp_err_t h_file(httpd_req_t *req)
      * picture screen with it - for as long as each takes to arrive. */
     size_t len = 0;
     sd_card_lock();
-    uint8_t *jpg = sd_card_ready() == ESP_OK ? read_picture(n, &len) : NULL;
+    uint8_t *jpg = sd_card_ready() == ESP_OK ? pictures_read(n, &len) : NULL;
     sd_card_unlock();
     if (jpg == NULL) {
         httpd_resp_set_status(req, "404 Not Found");
@@ -638,6 +672,27 @@ static long next_number(void)
     return most + 1;
 }
 
+bool pictures_save(const char *name, const uint8_t *data, size_t len)
+{
+    /* Under another name until it is all there, so the screen never picks
+     * up half a picture. */
+    char path[PIC_PATH_MAX], tmp_path[PIC_PATH_MAX + 4];
+    snprintf(path, sizeof(path), PIC_DIR "/%s", name);
+    snprintf(tmp_path, sizeof(tmp_path), "%.*s.TMP", (int)(strlen(path) - 4), path);
+    FILE *f = fopen(tmp_path, "wb");
+    bool ok = f != NULL && fwrite(data, 1, len, f) == len;
+    if (f != NULL) {
+        ok &= fflush(f) == 0 && fsync(fileno(f)) == 0;
+        ok &= fclose(f) == 0;
+    }
+    ok = ok && rename(tmp_path, path) == 0;
+    if (!ok) {
+        ESP_LOGE(TAG, "Couldn't save %s: errno %d", name, errno);
+        unlink(tmp_path);
+    }
+    return ok;
+}
+
 /* POST /bilder/last-opp: one JPEG as the body, from the page. */
 static esp_err_t h_upload(httpd_req_t *req)
 {
@@ -645,7 +700,7 @@ static esp_err_t h_upload(httpd_req_t *req)
         return send_json(req, "413 Payload Too Large", "{\"feil\":\"for stor\"}");
     }
     const size_t len = req->content_len;
-    uint8_t *body = psram_room(len)
+    uint8_t *body = pictures_psram_room(len)
                         ? heap_caps_malloc(len, MALLOC_CAP_SPIRAM)
                         : NULL;
     if (body == NULL) {
@@ -688,23 +743,9 @@ static esp_err_t h_upload(httpd_req_t *req)
             sd_card_failed();
         }
     } else {
-        /* Under another name until it is all there, so the screen never
-         * picks up half a picture. */
-        char tmp[PIC_NAME_MAX], path[sizeof(PIC_DIR) + PIC_NAME_MAX + 1], tmp_path[sizeof(path)];
-        pic_name(tmp, num, "TMP");
         pic_name(name, num, "JPG");
-        snprintf(tmp_path, sizeof(tmp_path), PIC_DIR "/%s", tmp);
-        snprintf(path, sizeof(path), PIC_DIR "/%s", name);
-        FILE *f = fopen(tmp_path, "wb");
-        bool ok = f != NULL && fwrite(body, 1, len, f) == len;
-        if (f != NULL) {
-            ok &= fflush(f) == 0 && fsync(fileno(f)) == 0;
-            ok &= fclose(f) == 0;
-        }
-        ok = ok && rename(tmp_path, path) == 0;
+        const bool ok = pictures_save(name, body, len);
         if (!ok) {
-            unlink(tmp_path);
-            ESP_LOGE(TAG, "Couldn't save %s: errno %d", name, errno);
             sd_card_failed();
             status = "500 Internal Server Error";
             json = "{\"feil\":\"lagring\"}";
@@ -732,7 +773,7 @@ static esp_err_t h_delete(httpd_req_t *req)
         return send_json(req, "400 Bad Request", "{\"feil\":\"skjema\"}");
     }
     body[got] = '\0';
-    if (!form_field(body, "n", n, sizeof(n)) || !name_ok(n)) {
+    if (!form_field(body, "n", n, sizeof(n)) || !pictures_name_ok(n)) {
         return send_json(req, "400 Bad Request", "{\"feil\":\"navn\"}");
     }
     char path[PIC_PATH_MAX];
@@ -742,6 +783,10 @@ static esp_err_t h_delete(httpd_req_t *req)
     const bool ok = card && unlink(path) == 0;
     if (ok) {
         s_gen++;
+        char id[SHARE_ID_LEN + 1];
+        if (share_file_id(n, id)) {
+            share_hide(id); /* not downloaded again */
+        }
     }
     sd_card_unlock();
     if (!ok) {
@@ -753,133 +798,12 @@ static esp_err_t h_delete(httpd_req_t *req)
     return send_json(req, NULL, "{}");
 }
 
-/* GET /bilder/hent?url=...: a picture from another site, passed on to the
- * page to shrink. In a task of its own (TLS needs more stack than the web
- * server's, and the web server goes on meanwhile), one at a time. Only
- * what starts like a picture is passed on, so it isn't a way to read
- * anything else through the display. */
-typedef struct {
-    httpd_req_t *req;
-    char url[1024];
-    uint8_t head[32]; /* the first bytes, to tell it is a picture */
-    size_t head_len;
-    bool started;     /* the answer's headers are sent */
-    bool refused;     /* not a picture */
-    bool send_failed;
-} fetch_job_t;
-
-static volatile bool s_fetching;
-
-
-static bool fetch_chunk(const char *data, size_t len, void *ctx)
-{
-    fetch_job_t *j = ctx;
-    if (!j->started) {
-        /* Hold the first bytes until there are enough to tell. */
-        const size_t take = len < sizeof(j->head) - j->head_len ? len : sizeof(j->head) - j->head_len;
-        memcpy(j->head + j->head_len, data, take);
-        j->head_len += take;
-        data += take;
-        len -= take;
-        if (j->head_len < sizeof(j->head) && len == 0) {
-            return true;
-        }
-        if (!pic_looks_like_picture(j->head, j->head_len)) {
-            j->refused = true;
-            return false;
-        }
-        httpd_resp_set_type(j->req, "application/octet-stream");
-        httpd_resp_set_hdr(j->req, "Cache-Control", "no-store");
-        j->started = true;
-        if (httpd_resp_send_chunk(j->req, (const char *)j->head, (ssize_t)j->head_len) != ESP_OK) {
-            j->send_failed = true;
-            return false;
-        }
-    }
-    if (len > 0 && httpd_resp_send_chunk(j->req, data, (ssize_t)len) != ESP_OK) {
-        j->send_failed = true;
-        return false;
-    }
-    return true;
-}
-
-static void fetch_task(void *arg)
-{
-    fetch_job_t *j = arg;
-    char ua[48];
-    snprintf(ua, sizeof(ua), "MultiDisplay/%s", esp_app_get_description()->version);
-    const esp_err_t err = http_get_stream(j->url, ua, PIC_FETCH_TIMEOUT_MS, PIC_FETCH_MAX, true, fetch_chunk, j, TAG);
-    if (!j->started && err == ESP_OK && j->head_len > 0) {
-        /* A picture smaller than the bytes held back. */
-        if (pic_looks_like_picture(j->head, j->head_len)) {
-            httpd_resp_set_type(j->req, "application/octet-stream");
-            httpd_resp_send(j->req, (const char *)j->head, (ssize_t)j->head_len);
-        } else {
-            send_json(j->req, "415 Unsupported Media Type", "{\"feil\":\"ikke bilde\"}");
-        }
-    } else if (!j->started) {
-        send_json(j->req, j->refused ? "415 Unsupported Media Type" : "502 Bad Gateway",
-                  j->refused ? "{\"feil\":\"ikke bilde\"}" : "{\"feil\":\"henting\"}");
-    } else if (err == ESP_OK && !j->send_failed) {
-        httpd_resp_send_chunk(j->req, NULL, 0);
-    } else {
-        /* Partly sent: cut the connection, so the page sees it failed
-         * rather than taking half a picture. */
-        httpd_sess_trigger_close(j->req->handle, httpd_req_to_sockfd(j->req));
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Fetching a picture for the page failed");
-    }
-    httpd_req_async_handler_complete(j->req);
-    heap_caps_free(j);
-    s_fetching = false;
-    vTaskDeleteWithCaps(NULL);
-}
-
-static esp_err_t h_fetch(httpd_req_t *req)
-{
-    fetch_job_t *j = heap_caps_calloc(1, sizeof(*j), MALLOC_CAP_SPIRAM);
-    if (j == NULL) {
-        return send_json(req, "507 Insufficient Storage", "{\"feil\":\"minne\"}");
-    }
-    const size_t qlen = httpd_req_get_url_query_len(req);
-    char *q = qlen > 0 && qlen < 3 * sizeof(j->url) ? heap_caps_malloc(qlen + 1, MALLOC_CAP_SPIRAM) : NULL;
-    esp_err_t ret;
-    if (q == NULL || httpd_req_get_url_query_str(req, q, qlen + 1) != ESP_OK ||
-        !form_field(q, "url", j->url, sizeof(j->url)) || strlen(j->url) >= sizeof(j->url) - 1 || /* never cut */
-        (strncmp(j->url, "http://", 7) != 0 && strncmp(j->url, "https://", 8) != 0)) {
-        ret = send_json(req, "400 Bad Request", "{\"feil\":\"adresse\"}");
-    } else if (s_fetching) {
-        ret = send_json(req, "429 Too Many Requests", "{\"feil\":\"opptatt\"}");
-    } else if (httpd_req_async_handler_begin(req, &j->req) != ESP_OK) {
-        ret = send_json(req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
-    } else {
-        heap_caps_free(q);
-        s_fetching = true;
-        /* The stack in PSRAM: this task only fetches and sends, nothing
-         * that maps flash. */
-        if (xTaskCreatePinnedToCoreWithCaps(fetch_task, "picfetch", PIC_FETCH_STACK, j, 4, NULL, tskNO_AFFINITY,
-                                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS) {
-            return ESP_OK; /* the task answers, completes the request and frees the job */
-        }
-        s_fetching = false;
-        ret = send_json(j->req, "500 Internal Server Error", "{\"feil\":\"minne\"}");
-        httpd_req_async_handler_complete(j->req);
-        heap_caps_free(j);
-        return ret;
-    }
-    heap_caps_free(q);
-    heap_caps_free(j);
-    return ret;
-}
-
 void pictures_add_handlers(void)
 {
     wifi_provision_add_page_handler("/bilder", h_page);
     wifi_provision_add_get_handler("/bilder.js", h_js);
     wifi_provision_add_get_handler("/bilder.json", h_list);
     wifi_provision_add_get_handler("/bilder/fil", h_file);
-    wifi_provision_add_get_handler("/bilder/hent", h_fetch);
     wifi_provision_add_post_handler("/bilder/last-opp", h_upload);
     wifi_provision_add_post_handler("/bilder/slett", h_delete);
 }

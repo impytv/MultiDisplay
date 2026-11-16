@@ -80,6 +80,7 @@ void test_config(void)
     a.pic_show = 1;
     a.pic_rotate = 1;
     a.pic_secs = 300;
+    snprintf(a.share_nick, sizeof(a.share_nick), "Mormor p\xc3\xa5 Hytta");
     a.clk_rotate = 1;
     a.clk_out = 2;
     a.clk_in = 0;
@@ -171,6 +172,7 @@ void test_config(void)
     CHECK_INT(c.iss_loc, 2);
     CHECK(c.pic_show && c.pic_rotate);
     CHECK_INT(c.pic_secs, 300);
+    CHECK_STR(c.share_nick, "Mormor p\xc3\xa5 Hytta");
     CHECK_INT(c.clk_out, 2);
     CHECK_INT(c.clk_in, 0);
     CHECK(c.sp_show && !c.sp_rotate);
@@ -224,6 +226,11 @@ void test_config(void)
     c.pic_secs = 900;
     app_config_sanitize(&c);
     CHECK_INT(c.pic_secs, 900);
+
+    /* A nickname from an old backup or NVS kept as the setup page keeps it. */
+    snprintf(c.share_nick, sizeof(c.share_nick), " Mormor\n\tog  Morfar ");
+    app_config_sanitize(&c);
+    CHECK_STR(c.share_nick, "Mormor og Morfar");
 
     /* A different client id drops the secret, which belonged to the old one. */
     snprintf(c.ais_client_id, sizeof(c.ais_client_id), "someone-else");
@@ -305,6 +312,11 @@ void test_config(void)
     longest[sizeof(longest) - 1] = '\0';
     app_config_report_url(longest, guide, sizeof(guide));
     CHECK(strlen(guide) == sizeof(longest) - 1 + strlen("/feil/"));
+    /* Shared pictures, likewise. */
+    app_config_share_url("http://192.168.0.119:8070/manifest.json", guide, sizeof(guide));
+    CHECK_STR(guide, "http://192.168.0.119:8070/deling/");
+    app_config_share_url("", guide, sizeof(guide));
+    CHECK_STR(guide, "");
     /* The radio logos, beside the guide. */
     char logo[96];
     app_config_radio_url("https://example.no/md/manifest.json", "p4.jpg", logo, sizeof(logo));

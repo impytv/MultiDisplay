@@ -5,8 +5,8 @@
  * can't be the browser's), signs the whole and sends it to feil/ on the
  * update site (server/feil/feil.py), answering with what the site said.
  *
- * The signature is ECDSA P-256 with a key the display made itself the
- * first time and keeps in NVS, over report_signed_text: the time and the
+ * The signature is ECDSA P-256 with the display's own key (display_key.c),
+ * over report_signed_text: the time and the
  * body's SHA-256. The site takes only signed reports, recent and not seen
  * before, and no longer lets other web pages send them; it doesn't know
  * the keys beforehand, so this stops random abuse, not a determined one
@@ -22,14 +22,9 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
-#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "mbedtls/base64.h"
-#include "mbedtls/ecp.h"
-#include "mbedtls/pk.h"
 #include "mbedtls/sha256.h"
-#include "nvs.h"
 
 #include "cJSON.h"
 
@@ -37,6 +32,7 @@
 #include "app_config.h"
 #include "clock.h"
 #include "diag.h"
+#include "display_key.h"
 #include "report.h"
 #include "report_util.h"
 #include "watchdog.h"
@@ -69,46 +65,6 @@ typedef struct {
 
 static volatile bool s_busy;
 
-static int rng(void *ctx, unsigned char *buf, size_t len)
-{
-    (void)ctx;
-    esp_fill_random(buf, len);
-    return 0;
-}
-
-/* The display's key from NVS, made and kept the first time. */
-static bool key_load(mbedtls_pk_context *pk)
-{
-    nvs_handle_t h;
-    if (nvs_open("feil", NVS_READWRITE, &h) != ESP_OK) {
-        return false;
-    }
-    uint8_t der[160];
-    size_t len = sizeof(der);
-    bool ok = nvs_get_blob(h, "key", der, &len) == ESP_OK &&
-              mbedtls_pk_parse_key(pk, der, len, NULL, 0, rng, NULL) == 0;
-    if (!ok) {
-        mbedtls_pk_free(pk);
-        mbedtls_pk_init(pk);
-        int n = -1;
-        if (mbedtls_pk_setup(pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) == 0 &&
-            mbedtls_ecp_gen_key(MBEDTLS_ECP_DP_SECP256R1, mbedtls_pk_ec(*pk), rng, NULL) == 0) {
-            n = mbedtls_pk_write_key_der(pk, der, sizeof(der)); /* at the end of der */
-        }
-        ok = n > 0 && nvs_set_blob(h, "key", der + sizeof(der) - n, (size_t)n) == ESP_OK && nvs_commit(h) == ESP_OK;
-        ESP_LOGI(TAG, "New key for reports: %s", ok ? "kept" : "failed");
-    }
-    nvs_close(h);
-    return ok;
-}
-
-/* base64 of `len` bytes into out ('\0'-ended); false if it doesn't fit. */
-static bool b64(const uint8_t *in, size_t len, char *out, size_t out_len)
-{
-    size_t n;
-    return mbedtls_base64_encode((unsigned char *)out, out_len, &n, in, len) == 0;
-}
-
 static esp_err_t on_answer(esp_http_client_event_t *evt)
 {
     job_t *j = evt->user_data;
@@ -125,25 +81,14 @@ static esp_err_t on_answer(esp_http_client_event_t *evt)
 /* Sign the job's body and send it; the result in the job. */
 static void send_report(job_t *j)
 {
-    mbedtls_pk_context pk;
-    mbedtls_pk_init(&pk);
     char key_b64[180], sig_b64[112], when[24];
-    uint8_t sha[32], msg_sha[32], spki[128], sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
+    uint8_t sha[32], msg_sha[32];
     char msg[REPORT_SIGNED_MAX];
-    size_t sig_len = 0;
     const int64_t now = (int64_t)time(NULL);
-    bool ok = key_load(&pk);
-    if (ok) {
-        const int n = mbedtls_pk_write_pubkey_der(&pk, spki, sizeof(spki)); /* at the end of spki */
-        mbedtls_sha256((const unsigned char *)j->body, j->len, sha, 0);
-        report_signed_text(now, sha, msg);
-        mbedtls_sha256((const unsigned char *)msg, strlen(msg), msg_sha, 0);
-        ok = n > 0 && b64(spki + sizeof(spki) - n, (size_t)n, key_b64, sizeof(key_b64)) &&
-             mbedtls_pk_sign(&pk, MBEDTLS_MD_SHA256, msg_sha, sizeof(msg_sha), sig, sizeof(sig), &sig_len, rng,
-                             NULL) == 0 &&
-             b64(sig, sig_len, sig_b64, sizeof(sig_b64));
-    }
-    mbedtls_pk_free(&pk);
+    mbedtls_sha256((const unsigned char *)j->body, j->len, sha, 0);
+    report_signed_text(now, sha, msg);
+    mbedtls_sha256((const unsigned char *)msg, strlen(msg), msg_sha, 0);
+    const bool ok = display_key_sign(msg_sha, key_b64, sizeof(key_b64), sig_b64, sizeof(sig_b64));
     if (!ok) {
         ESP_LOGE(TAG, "Couldn't sign the report");
         j->status = 500;

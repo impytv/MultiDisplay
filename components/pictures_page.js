@@ -1,25 +1,31 @@
 // The picture page (served as /bilder.js; main/pictures.c): the pictures on
 // the display's microSD card, with a button to delete each, and adding
-// more - from files, or from an address. Each picture to add is shown as
-// the screen will show it, to choose how: the whole picture (black where
-// its shape doesn't fit), or filling the screen with the part chosen by
-// dragging it and zooming in. It is then made to that, here in the browser
-// (800x480 at most), and sent as a JPEG of ~100-250 KB, so the display
-// never has a big photo to decode. A picture from an address is fetched by
-// the display (/bilder/hent), as a page can't read other sites' pictures.
+// more from files. Each picture to add is shown as the screen will show it,
+// to choose how: the whole picture (black where its shape doesn't fit), or
+// filling the screen with the part chosen by dragging it and zooming in. It
+// is then made to that, here in the browser (800x480 at most), and sent as
+// a JPEG of ~100-250 KB, so the display never has a big photo to decode.
+// Sharing (main/share.c): once the update site has approved the display, a
+// picture can be shared with a group it is in, and pictures shared by
+// others are downloaded by the display by itself (Oppsett, Bilder).
 const W=800,H=480,ZMAX=4,box=document.getElementById('pics');
 function vis(e,on){e.style.display=on?'':'none'}
 function el(t,p,f){const e=document.createElement(t);if(f)f(e);p.appendChild(e);return e}
 function got(r){if(r.status===401){location.reload();throw 0}return r}
 const ERR={kort:'Fant ikke noe minnekort i skjermen.',fullt:'Minnekortet er fullt.',mange:'Det er ikke plass til flere bilder. Slett noen først.',
 minne:'Skjermen har ikke minne nok akkurat nå. Prøv igjen om litt.','for stor':'Bildet er for stort.',lagring:'Kunne ikke lagre bildet på minnekortet.',
-'ikke jpeg':'Skjermen tok ikke imot bildet.','ikke bilde':'Adressen gir ikke et bilde.',henting:'Skjermen fikk ikke hentet bildet fra adressen.',
-adresse:'Adressen må begynne med http:// eller https://.',opptatt:'Skjermen henter et annet bilde. Prøv igjen om litt.'};
+'ikke jpeg':'Skjermen tok ikke imot bildet.',opptatt:'Skjermen er opptatt. Prøv igjen om litt.',
+'ingen kontakt':'Skjermen fikk ikke kontakt med oppdateringssiden.','ingen adresse':'Deling går gjennom oppdateringssiden, og skjermen har ingen adresse til den (Oppsett, Oppdateringer).',
+klokken:'Skjermen vet ikke hva klokken er ennå. Prøv igjen om litt.','ikke godkjent':'Skjermen er ikke godkjent for deling i den gruppen.',
+'for mange':'Det er delt mange bilder fra skjermen i dag. Prøv igjen i morgen.',siden:'Oppdateringssiden tok ikke imot det.',
+'finnes ikke':'Fant ikke bildet på minnekortet.'};
 // A card in the slot that the display can't read (sd_card.c, what_is_on).
 const FMT=' Formater det som exFAT eller FAT32 (på en Mac: «ExFAT» eller «MS-DOS (FAT)»), og last siden på nytt. Formatering sletter alt på kortet.';
 const BAD={ntfs:'Minnekortet er formatert som NTFS, som skjermen ikke kan lese.'+FMT,uformatert:'Minnekortet er ikke formatert.'+FMT,
 ukjent:'Skjermen fant minnekortet, men kan ikke lese filsystemet på det.'+FMT};
 function why(r){return r.json().then(j=>ERR[j.feil]||('Feil '+r.status),()=>'Feil '+r.status)}
+function post(u,f){return fetch(u,{method:'POST',body:new URLSearchParams(f)}).catch(()=>{throw 'Får ikke kontakt med skjermen.'})
+.then(got).then(r=>r.ok?r.json():why(r).then(t=>{throw t}))}
 // The picture's pixels, through an <img>: browsers turn a photo upright by
 // its EXIF there (and createImageBitmap stalled in a headless test). A big
 // photo is brought down to what zooming in ZMAX times needs, so dragging
@@ -44,21 +50,22 @@ else{const w=e.img.width,h=e.img.height,k=Math.min(W/w,H/h,1);c.width=Math.max(8
 g.imageSmoothingQuality='high';g.drawImage(e.img,0,0,c.width,c.height)}
 const enc=q=>new Promise(ok=>c.toBlob(ok,'image/jpeg',q));
 return enc(.88).then(b=>b&&b.size>max*1024?enc(.7):b).then(b=>{if(!b)throw 'les';return b})}
-let max=1024,note=['',''],fillOn=false;
-try{fillOn=localStorage.getItem('bilder.fyll')==='1'}catch(x){}
+let max=1024,note=['',''],fillOn=false,shareTo='',sh=null,last=null;
+try{fillOn=localStorage.getItem('bilder.fyll')==='1';shareTo=localStorage.getItem('bilder.del')||''}catch(x){}
 function send(blob){return fetch('/bilder/last-opp',{method:'POST',headers:{'Content-Type':'image/jpeg'},body:blob})
 .catch(()=>{throw 'Får ikke kontakt med skjermen.'}).then(got).then(r=>r.ok?r.json():why(r).then(t=>{throw t}))}
 function msg(e){return e==='les'?'Nettleseren kunne ikke lese bildet (filtypen støttes kanskje ikke).':String(e)}
-function draw(d){box.textContent='';max=d.maks_kb||max;
+// The groups the display may share with, once approved.
+function groups(){return sh&&sh.status==='godkjent'&&sh.grupper?sh.grupper:[]}
+function shareOne(n,g){return post('/bilder/del',{n,gruppe:g})}
+let lst,shBox,shSel,shLab;
+function draw(d){last=d;box.textContent='';max=d.maks_kb||max;
 if(!d.kort){el('p',box,p=>{p.className='err';p.textContent=d.kortfeil?BAD[d.kortfeil]||BAD.ukjent:'Fant ikke noe minnekort i skjermen. Bildeskjermen trenger et microSD-kort: sett inn et kort, og last siden på nytt.'});return}
 el('small',box,s=>s.textContent=d.bilder.length+(d.bilder.length===1?' bilde':' bilder')+
 (d.mb_ledig!==undefined?' · '+d.mb_ledig.toLocaleString('nb-NO')+' MB ledig av '+d.mb_totalt.toLocaleString('nb-NO')+' MB':''));
 el('h2',box,h=>h.textContent='Legg til bilder');
 el('label',box,l=>{l.htmlFor='pf';l.textContent='Velg bilder'});
 const f=el('input',box,i=>{i.type='file';i.accept='image/*';i.multiple=true;i.id='pf'});
-el('label',box,l=>{l.htmlFor='pu';l.textContent='Eller fra en adresse'});
-const u=el('input',box,i=>{i.type='url';i.id='pu';i.placeholder='https://...';i.inputMode='url'});
-const get=el('button',box,b=>{b.type='button';b.className='lt2';b.textContent='Hent bildet'});
 const st=el('small',box);
 function say(c,t){note=[c,t];st.className=c;st.textContent=t}say(note[0],note[1]);
 // The editor: one picture at a time, as the screen will show it.
@@ -71,6 +78,8 @@ const cv=el('canvas',ed,c=>{c.width=W;c.height=H;c.style.cssText='display:block;
 const zl=el('label',ed,l=>{l.htmlFor='pz';l.textContent='Forstørr'});
 const zr=el('input',ed,i=>{i.type='range';i.id='pz';i.min=1;i.max=ZMAX;i.step=.01;i.value=1});
 const hint=el('small',ed);
+shLab=el('label',ed,l=>{l.htmlFor='pd';l.textContent='Del med'});
+shSel=el('select',ed,s=>{s.id='pd';s.onchange=()=>{shareTo=s.value;try{localStorage.setItem('bilder.del',shareTo)}catch(x){}}});
 const bUp=el('button',ed,b=>{b.type='button';b.textContent='Last opp'});
 const bRest=el('button',ed,b=>{b.type='button';b.className='lt2'});
 const bSkip=el('button',ed,b=>{b.type='button';b.className='lt2';b.textContent='Hopp over'});
@@ -97,10 +106,9 @@ if(pts.size===2){const[a,b]=[...pts.values()],dist=Math.hypot(a[0]-b[0],a[1]-b[1
 show()};
 cv.onpointerup=cv.onpointercancel=v=>{pts.delete(v.pointerId);pinch=0;if(cur&&cur.fill)cv.style.cursor='grab'};
 cv.onwheel=v=>{if(!cur||!cur.fill)return;v.preventDefault();zoom(cur.z*Math.exp(-v.deltaY/400))};
-function lockIn(on){f.disabled=get.disabled=u.disabled=on}
 function busy(on){bUp.disabled=bRest.disabled=bSkip.disabled=on}
-function start(items){queue=items;total=items.length;n=0;okN=0;bad=[];lockIn(true);next()}
-function finish(){cur=null;vis(ed,false);busy(false);lockIn(false);f.value='';
+function start(items){queue=items;total=items.length;n=0;okN=0;bad=[];f.disabled=true;next()}
+function finish(){cur=null;vis(ed,false);busy(false);f.disabled=false;f.value='';
 say(bad.length?'err':'',(okN?(okN===1?'Bildet er lagt til.':okN+' bilder er lagt til.'):'')+(bad.length?' '+bad.join(' '):''));
 if(okN)load()}
 function fresh(img,name){return{img,name,fill:fillOn,z:1,cx:img.width/2,cy:img.height/2}}
@@ -108,7 +116,11 @@ function next(){if(!queue.length){finish();return}
 const it=queue.shift();n++;
 bitmap(it.blob).then(img=>{cur=fresh(img,it.name);vis(ed,true);busy(false);say('','');show();ed.scrollIntoView({block:'nearest'})})
 .catch(()=>{bad.push(it.name+': '+msg('les'));next()})}
-function upload(e){return render(e).then(send).then(()=>{okN++},x=>{bad.push(e.name+': '+msg(x))})}
+// Onto the card, and shared if a group is chosen: a picture that couldn't
+// be shared is still on the card, and says so.
+function upload(e){const g=groups().includes(shSel.value)?shSel.value:'';
+return render(e).then(send).then(r=>{okN++;if(g&&r.n)return shareOne(r.n,g).catch(x=>{bad.push(e.name+' ble lagt til, men ikke delt: '+msg(x))})},
+x=>{bad.push(e.name+': '+msg(x))})}
 bUp.onclick=()=>{busy(true);say('','Laster opp...');upload(cur).then(next)};
 bSkip.onclick=()=>{busy(true);next()};
 // This one as adjusted, the rest as they are: in the mode chosen, filled
@@ -118,22 +130,56 @@ const one=()=>{if(i>=rest.length){finish();return}const e=rest[i++];say('','Last
 (e.img?Promise.resolve(e):bitmap(e.blob).then(img=>fresh(img,e.name)))
 .then(upload,()=>{bad.push(e.name+': '+msg('les'))}).then(one)};one()};
 f.onchange=()=>{const files=[...f.files];if(files.length)start(files.map(x=>({name:x.name,blob:x})))};
-get.onclick=()=>{const a=u.value.trim();if(!/^https?:\/\//i.test(a)){say('err',ERR.adresse);return}
-lockIn(true);say('','Henter bildet...');
-fetch('/bilder/hent?url='+encodeURIComponent(a),{cache:'no-store'}).catch(()=>{throw 'Får ikke kontakt med skjermen.'}).then(got)
-.then(r=>r.ok?r.blob():why(r).then(t=>{throw t}))
-.then(b=>{u.value='';let nm='';try{nm=decodeURIComponent(a.split(/[?#]/)[0].split('/').pop())}catch(x){}
-start([{name:nm||'Bildet fra adressen',blob:b}])})
-.catch(e=>{if(e===0)return;lockIn(false);say('err',msg(e))})};
+el('h2',box,h=>h.textContent='Deling');
+shBox=el('div',box);
 el('h2',box,h=>h.textContent='Bildene på kortet');
-if(!d.bilder.length){el('small',box,s=>s.textContent='Ingen bilder ennå.');return}
-const g=el('div',box,x=>{x.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem'});
+lst=el('div',box);
+drawShare();drawList()}
+// The sharing section and the editor's choice of group, from sh.
+function drawShare(){if(!shBox)return;shBox.textContent='';
+const gs=groups();shSel.textContent='';
+el('option',shSel,o=>{o.value='';o.textContent='Ikke del'});
+gs.forEach(g=>el('option',shSel,o=>{o.value=g;o.textContent='Gruppen '+g}));
+shSel.value=gs.includes(shareTo)?shareTo:'';vis(shLab,gs.length>0);vis(shSel,gs.length>0);
+const p=t=>el('small',shBox,s=>{s.style.display='block';s.textContent=t});
+if(!sh){p('Spør oppdateringssiden om deling...');return}
+if(sh.feil){el('small',shBox,s=>{s.className='err';s.textContent=ERR[sh.feil]||sh.feil});return}
+if(sh.status==='venter'){p('Bilder kan deles med andre skjermer gjennom oppdateringssiden. Skjermen har bedt om å få være med, '+
+'og venter på at den som driver oppdateringssiden godkjenner den og velger hvilke grupper den skal være med i. '+
+'Skjermens nøkkel er '+(sh.nokkel||'?')+'.');return}
+if(sh.status!=='godkjent'){p('Skjermen er ikke godkjent for deling av bilder.');return}
+if(sh.opptatt)el('small',shBox,s=>{s.className='err';s.style.display='block';s.textContent='Kallenavnet brukes allerede av en annen skjerm. Velg et annet under Bilder i oppsettet.'});
+if(!gs.length){p('Skjermen er godkjent for deling, men er ikke med i noen grupper ennå.');return}
+p('Skjermen er med i '+(gs.length===1?'gruppen ':'gruppene ')+gs.join(', ')+'. Del et bilde med knappen under det, eller velg en gruppe når du legger til bilder.');
+p(sh.auto?'Bilder andre deler med '+(sh.fra?'gruppene '+sh.fra.split(',').join(', '):'gruppene')+' lastes ned av seg selv.'
+:'Bilder andre deler lastes ikke ned. Det slås på under Bilder i oppsettet.');
+// Shared from here, but no longer on the card.
+const onCard=new Set((last&&last.bilder||[]).map(b=>b.n));
+(sh.mine||[]).filter(m=>!onCard.has(m.navn)).forEach(m=>el('div',shBox,x=>{
+el('small',x,s=>s.textContent=(m.navn||m.id)+' er delt med '+m.gruppe+', men er ikke på kortet lenger. ');
+el('button',x,b=>{b.type='button';b.className='lt2';b.textContent='Slutt å dele';b.onclick=()=>unshare(m,b)})}))}
+function unshare(m,b){if(!confirm('Slutte å dele '+(m.navn||'bildet')+' med '+m.gruppe+'? Det slettes fra de andre skjermene.'))return;
+b.disabled=true;post('/bilder/slutt-a-dele',{id:m.id}).then(loadShare,t=>{b.disabled=false;alert(t)})}
+function drawList(){if(!lst)return;lst.textContent='';const d=last;
+if(!d.bilder.length){el('small',lst,s=>s.textContent='Ingen bilder ennå.');return}
+const g=el('div',lst,x=>{x.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:.6rem'});
+const gs=groups(),mine=(sh&&sh.mine)||[];
 d.bilder.forEach(p=>{const c=el('div',g);
 el('img',c,i=>{i.src='/bilder/fil?n='+encodeURIComponent(p.n);i.loading='lazy';i.alt=p.n;i.style.cssText='width:100%;aspect-ratio:5/3;object-fit:contain;background:#000;display:block'});
-el('small',c,s=>{s.style.overflowWrap='anywhere';s.textContent=p.n+' · '+p.kb+' kB'+(p.for_stor?' · for stort til å vises':'')});
-el('button',c,b=>{b.type='button';b.className='lt2';b.textContent='Slett';b.onclick=()=>{if(!confirm('Slette '+p.n+'?'))return;b.disabled=true;
+const shared=mine.filter(m=>m.navn===p.n);
+el('small',c,s=>{s.style.cssText='display:block;overflow-wrap:anywhere';s.textContent=(p.delt?'Delt av '+(p.fra||'en annen skjerm'):p.n)+' · '+p.kb+' kB'+(p.for_stor?' · for stort til å vises':'')+
+(shared.length?' · delt med '+shared.map(m=>m.gruppe).join(', '):'')});
+if(!p.delt){gs.filter(x=>!shared.some(m=>m.gruppe===x)).forEach(x=>el('button',c,b=>{b.type='button';b.className='lt2';
+b.textContent=gs.length===1?'Del':'Del med '+x;b.onclick=()=>{b.disabled=true;shareOne(p.n,x).then(loadShare,t=>{b.disabled=false;alert(t)})}}));
+shared.forEach(m=>el('button',c,b=>{b.type='button';b.className='lt2';b.textContent=shared.length===1?'Slutt å dele':'Slutt å dele med '+m.gruppe;b.onclick=()=>unshare(m,b)}))}
+el('button',c,b=>{b.type='button';b.className='lt2';b.textContent=p.delt?'Fjern':'Slett';b.onclick=()=>{
+if(!confirm(p.delt?'Fjerne bildet fra denne skjermen? Det lastes ikke ned igjen.':'Slette '+p.n+'?'+(shared.length?' Det er fortsatt delt med de andre.':'')))return;b.disabled=true;
 fetch('/bilder/slett',{method:'POST',body:new URLSearchParams({n:p.n})}).then(got)
 .then(r=>r.ok?(note=['',''],load()):why(r).then(t=>{b.disabled=false;alert(t)})).catch(()=>{b.disabled=false;alert('Får ikke kontakt med skjermen.')})}})})}
-function load(){fetch('/bilder.json',{cache:'no-store'}).then(got).then(r=>{if(!r.ok)throw r.status;return r.json()}).then(draw)
+function loadShare(){fetch('/bilder/deling.json',{cache:'no-store'}).then(got)
+.then(r=>r.ok?r.json():r.json().then(j=>({feil:j.feil||'Feil '+r.status}),()=>({feil:'Feil '+r.status})))
+.catch(e=>{if(e===0)throw e;return{feil:'Får ikke kontakt med skjermen.'}})
+.then(j=>{sh=j;drawShare();if(last&&last.kort)drawList()},()=>{})}
+function load(){fetch('/bilder.json',{cache:'no-store'}).then(got).then(r=>{if(!r.ok)throw r.status;return r.json()}).then(d=>{draw(d);if(d.kort)loadShare()})
 .catch(e=>{if(e===0)return;box.textContent='';el('p',box,p=>{p.className='err';p.textContent='Får ikke kontakt med skjermen.'})})}
 load();

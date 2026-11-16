@@ -177,6 +177,21 @@ static void sanitize_view_settings(app_config_t *c)
             c->pic_secs = APP_CONFIG_PIC_SECS_DEFAULT;
         }
     }
+    c->share_dl = c->share_dl ? 1 : 0;
+    c->share_groups[SHARE_GROUPS_MAX - 1] = '\0';
+    {
+        char g[SHARE_GROUPS_MAX];
+        if (!share_groups_clean(c->share_groups, g, sizeof(g))) {
+            g[0] = '\0';
+        }
+        snprintf(c->share_groups, sizeof(c->share_groups), "%s", g);
+    }
+    {
+        char nick[SHARE_NICK_MAX];
+        c->share_nick[SHARE_NICK_MAX - 1] = '\0';
+        share_nick_clean(c->share_nick, nick, sizeof(nick));
+        snprintf(c->share_nick, sizeof(c->share_nick), "%s", nick);
+    }
     c->so_room[APP_CONFIG_SONOS_ROOM_MAX - 1] = '\0';
     c->so_radios[APP_CONFIG_SONOS_RADIOS_MAX - 1] = '\0';
     c->sp_client_id[APP_CONFIG_SPOTIFY_ID_MAX - 1] = '\0';
@@ -387,6 +402,9 @@ esp_err_t app_config_load(app_config_t *out)
     nvs_get_u8(h, "picshow", &out->pic_show); /* no picture screen if never saved */
     nvs_get_u8(h, "picrot", &out->pic_rotate);
     nvs_get_u16(h, "picsec", &out->pic_secs); /* the default if never saved */
+    nvs_get_u8(h, "shdl", &out->share_dl); /* nothing downloaded if never saved */
+    load_str(h, "shgrp", out->share_groups, sizeof(out->share_groups));
+    load_str(h, "shnick", out->share_nick, sizeof(out->share_nick));
     nvs_get_u8(h, "clkout", &out->clk_out); /* the first location if never saved */
     nvs_get_u16(h, "tempoff", (uint16_t *)&out->temp_offset_dc); /* uncalibrated if never saved */
     if (!clkin_saved) {
@@ -545,6 +563,9 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "picshow", cfg->pic_show ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "picrot", cfg->pic_rotate ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u16(h, "picsec", cfg->pic_secs);
+    if (err == ESP_OK) err = nvs_set_u8(h, "shdl", cfg->share_dl ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_str(h, "shgrp", cfg->share_groups);
+    if (err == ESP_OK) err = nvs_set_str(h, "shnick", cfg->share_nick);
     if (err == ESP_OK) err = nvs_set_u8(h, "clkout", cfg->clk_out);
     if (err == ESP_OK) err = nvs_set_u16(h, "tempoff", (uint16_t)cfg->temp_offset_dc);
     for (int i = 0; err == ESP_OK && i < APP_CONFIG_CAL_FEEDS; i++) {
@@ -662,6 +683,11 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len)
 void app_config_report_url(const char *ota_url, char *out, size_t out_len)
 {
     site_url(ota_url, false, "feil/", out, out_len);
+}
+
+void app_config_share_url(const char *ota_url, char *out, size_t out_len)
+{
+    site_url(ota_url, false, "deling/", out, out_len);
 }
 
 void app_config_radio_url(const char *ota_url, const char *file, char *out, size_t out_len)

@@ -34,9 +34,11 @@ services:
     depends_on:
       - radio
       - feil
+      - deling
     networks:
       - default
       - feil
+      - deling
     read_only: true
     tmpfs:
       - /tmp
@@ -91,6 +93,34 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  # Pictures shared between displays (deling/deling.py), at /deling/ of the
+  # update site through nginx, kept in the folder below. Only displays
+  # approved with the admin commands in deling.py may share or download.
+  # The folder is made by the user who runs the service (uid 1000), before
+  # the first start.
+  deling:
+    build: ./deling
+    image: multidisplay-deling
+    container_name: multidisplay-deling
+    restart: unless-stopped
+    command: python -I -u /app/deling.py
+    user: "1000:1000"
+    volumes:
+      - ./deling:/app:ro
+      - ${MULTIDISPLAY_SHARED:-./delte-bilder}:/data
+    environment:
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
+      # Norwegian time on the admin page, without zone files in the image.
+      TZ: CET-1CEST,M3.5.0,M10.5.0/3
+    networks:
+      - deling
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   tunnel:
     image: cloudflare/cloudflared:2026.10.7
     container_name: multidisplay-tunnel
@@ -112,3 +142,4 @@ services:
 
 networks:
   feil:
+  deling:

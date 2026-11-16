@@ -1370,3 +1370,85 @@ what is left:
 - [ ] **176. Run the static analysis again** before the next release with
   many changes, or by May 2027 at the latest (as 165), semgrep included if
   the services or scripts have changed.
+
+## Sharing pictures (November 2026, 1.39.0)
+
+Pictures shared between displays through the update site (`main/share.c`,
+`server/deling/deling.py`), in groups, only by displays approved on the Pi;
+each request signed with the display's own key (`main/display_key.c`, the
+error reports' key moved out of report.c). Adding a picture from an
+address (`/bilder/hent`) taken out. The service tested on its own with a
+signing client (joining, approval, groups, a picture made anew without
+EXIF, replays, old and altered requests refused); the display's side built
+and host tested, not yet run against the service.
+
+- [ ] **177. Try sharing between two displays** once the service runs on
+  the Pi: joining and the push, approving, sharing from the editor and from
+  the list, the download onto the other's card and onto the screen, Fjern
+  (not downloaded again), Slutt å dele (deleted from the other), and a
+  display away from home through the tunnel. Check the share task's stack
+  left (logged at debug level after each round) and DRAM while it runs.
+- [ ] **178. A display can't leave a group's pictures on its own.** With
+  "Last ned bilder som andre skjermer deler" turned off, what was downloaded
+  stays on the card until deleted by hand, and is no longer deleted when
+  the sharer stops sharing it. Consider deleting the D*.JPG files when the
+  setting is turned off, or saying so on the setup page.
+- [ ] **179. Taking a display's approval away leaves its downloads.** After
+  `avvis`, the site answers 403 and the display stops, keeping what it had.
+  If that should remove them, the display needs to tell "not approved" from
+  "the site is down" and clear D*.JPG on the first.
+- [x] **180. Approving displays without Docker commands.** *Done in
+  1.39.0: the admin page /deling/admin/ (deling.py), with a user and
+  password chosen the first time from the home network only; tested
+  locally (setup refused through the tunnel, escaping, form tokens, wrong
+  logins limited, picture paths checked) and on the Pi.*
+- [x] **181. Who shared a picture.** *Done in 1.39.0: a nickname
+  (Kallenavn, setup page, `share_nick`) sent with meg, stored on the site
+  and returned as `fra` in the list; the receiving display keeps it in
+  BILDER/DELT.TXT and the /bilder page shows "Delt av <kallenavn>". Host
+  tested (share_nick_clean, share_nick_line, config); to be tried with 177.*
+
+Review of the nickname change and the service, for security and speed
+(reading only, no static analysis):
+
+- [x] **182. The site's list outgrows the display's limit with nicknames.**
+  With `fra` in every entry, 3,000 pictures and a 16-letter nickname make
+  264 KB, over SHARE_LIST_MAX (256 KB; 183 KB before); with a 40-letter
+  nickname and a long group name it happens near 2,000. The download round
+  then fails every time (retry in 5 minutes, forever) on every display in
+  the group. Send the nicknames once (a table, `fra` an index) and without
+  JSON's spaces, or raise the limit; either way the parsed list is about
+  1 MB of PSRAM at the cap, which a line-by-line format would avoid.
+  *Done in 1.39.0: the nicknames once in `navn`, `fra` a place in it, `mitt` and `fra` only where they apply, no spaces; 3,000 pictures are 139 KB, 225 KB at worst (tested in the service's image).*
+- [x] **183. The share task's stack not measured after it grew.** ask()'s
+  buffers grew by 320 bytes for the longer meg path and sync_pictures has
+  300 more; the 12,288-byte stack also carries the TLS handshake and the
+  ECDSA signing. Read the high-water mark (logged at debug level) - part
+  of 177.
+  *Measured on the display through the tunnel (TLS): 5,092 bytes left of 12,288 after the status request, 5,068 after sharing a picture; now logged at info level when the task ends. The download onto the card not measured (needs a second display, 177).*
+- [x] **184. Wrong logins from outside can lock the admin out.** The cap of
+  30 wrong logins in 15 minutes counts all senders together, so anyone
+  reaching the page through the tunnel can keep it closed for the admin
+  too. Don't count the home network against the shared cap, or let it in
+  regardless.
+  *Done: the shared cap counts and closes only logins through the tunnel; the cap per sender stays for all (tested).*
+- [x] **185. A nickname isn't checked against the others.** An approved
+  display can call itself what another does ("Mormor"); the admin page
+  shows both with their keys, the /bilder page only the nickname. Only
+  between approved displays, so left unless it happens.
+  *Done: a nickname an approved display has (compared without case, spaces and look-alike forms) isn't taken from another - the site keeps the old one and answers `opptatt`, which the /bilder page says; approving a display clears one that collides (tested).*
+- [ ] **186. A key not approved can make the site write.** Every meg with
+  another name or nickname rewrites skjermer.json, also for keys waiting or
+  rejected (nginx's 60 a minute is the only limit). Keep the name of a key
+  that isn't approved as first sent, or limit the changes.
+- [ ] **187. Comparing lists is quadratic.** sync_pictures compares the
+  site's ids with the card's one by one (3,000 x 1,000 at the caps, twice
+  with the hidden ones) and /bilder.json the card's with DELT.TXT's
+  (1,000 x 1,000); nothing with a family's few hundred, around a second at
+  the caps. Sort and search if it shows.
+- [ ] **188. Replays after a restart, and plain HTTP at home.** The nonces
+  seen are kept in memory, so a request caught on the home network (the
+  displays there use http://<pi>:8070) can be sent again within 10 minutes
+  of the service restarting - at most fetching a picture again or
+  repeating a share. The day's count per key is forgotten the same way.
+

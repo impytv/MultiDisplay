@@ -1,6 +1,7 @@
 #ifndef _APP_CONFIG_H_
 #define _APP_CONFIG_H_
 
+#include "share_util.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -302,6 +303,14 @@ typedef struct {
     uint8_t pic_show;
     uint8_t pic_rotate;
     uint16_t pic_secs;
+    /* Pictures shared by other displays (main/share.c): downloaded onto the
+     * card by itself, from the groups in share_groups ("familien,venner";
+     * "" = all the display is a member of on the update site). share_nick
+     * is shown with the pictures this display shares, on the others'
+     * /bilder pages ("" = none, share_nick_clean's). */
+    uint8_t share_dl;
+    char share_groups[SHARE_GROUPS_MAX];
+    char share_nick[SHARE_NICK_MAX];
 } app_config_t;
 
 /**
@@ -339,6 +348,10 @@ void app_config_guide_url(const char *ota_url, char *out, size_t out_len);
 /* Where the display's error reports go (server/feil/feil.py): the folder
  * "feil/" on the update site, as app_config_guide_url. */
 void app_config_report_url(const char *ota_url, char *out, size_t out_len);
+
+/* Where pictures are shared between displays (server/deling/deling.py):
+ * the folder "deling/" on the update site, as app_config_guide_url. */
+void app_config_share_url(const char *ota_url, char *out, size_t out_len);
 
 /* A radio logo's address: `file` in the folder "bruk/radio/" next to the
  * manifest (scripts/build_radio_logos.py), as for the guide. "" if

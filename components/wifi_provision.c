@@ -1098,8 +1098,7 @@ static char *build_pictures(char *p, char *end, const app_config_t *cfg)
     }
     p = buf_append(p, end,
                   "<small>Bildene fra minnekortet i tilfeldig rekkef&oslash;lge, som en egen skjerm etter "
-                  "romstasjonen. Bildene legges til og slettes p&aring; <a href=/bilder>Bilder</a>, fra filer "
-                  "eller en adresse.</small>"
+                  "romstasjonen. Bildene legges til, deles og slettes p&aring; <a href=/bilder>Bilder</a>.</small>"
                   "<label>Bytt bilde</label><select name=picsec>");
     static const uint16_t secs[] = APP_CONFIG_PIC_SECS;
     for (size_t k = 0; k < sizeof(secs) / sizeof(secs[0]); k++) {
@@ -1111,7 +1110,24 @@ static char *build_pictures(char *p, char *end, const app_config_t *cfg)
                           v < 60 ? v : v / 60, v < 60 ? "sekund" : "minutt");
         }
     }
-    return buf_append(p, end, "</select></details>");
+    p = buf_append(p, end,
+                  "</select><div class=chk><label><input type=checkbox name=shdl value=1%s>"
+                  "Last ned bilder som andre skjermer deler</label></div>"
+                  "<label>Fra gruppene</label><input name=shgrp maxlength=%d placeholder=\"alle skjermen er med i\" value=\"",
+                  cfg->share_dl ? " checked" : "", SHARE_GROUPS_MAX - 1);
+    p = html_escape_append(p, end, cfg->share_groups);
+    p = buf_append(p, end,
+                  "\"><small>Bilder som deles med en gruppe skjermen er med i, lastes ned p&aring; minnekortet "
+                  "av seg selv, og slettes igjen n&aring;r de ikke deles lenger. Skriv gruppene med komma "
+                  "mellom, for eksempel <i>familien, hytta</i>, eller la feltet st&aring; tomt for alle. "
+                  "Skjermen m&aring; f&oslash;rst godkjennes p&aring; oppdateringssiden; se "
+                  "<a href=/bilder>Bilder</a>.</small>"
+                  "<label>Kallenavn</label><input name=shnick maxlength=%d placeholder=\"for eksempel Mormor\" value=\"",
+                  SHARE_NICK_MAX - 1);
+    p = html_escape_append(p, end, cfg->share_nick);
+    return buf_append(p, end,
+                     "\"><small>Vises med bildene denne skjermen deler, p&aring; Bilder-siden til skjermene "
+                     "som laster dem ned. Tomt: ingen navn.</small></details>");
 }
 
 /* The navigation page: buttons for the screens on the display, filled in
@@ -1512,6 +1528,22 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
         } else if (form_field(body, "picnc", val, sizeof(val))) { /* no card: only turned off */
             cfg->pic_show = cfg->pic_show && form_field(body, "picshow", val, sizeof(val));
             cfg->pic_rotate = cfg->pic_rotate && form_field(body, "picrot", val, sizeof(val));
+        }
+        if (form_field(body, "picok", val, sizeof(val)) || form_field(body, "picnc", val, sizeof(val))) {
+            cfg->share_dl = form_field(body, "shdl", val, sizeof(val)) ? 1 : 0;
+            char typed[2 * SHARE_GROUPS_MAX];
+            form_field(body, "shgrp", typed, sizeof(typed));
+            char nick[2 * SHARE_NICK_MAX];
+            nick[0] = '\0';
+            form_field(body, "shnick", nick, sizeof(nick));
+            share_nick_clean(nick, cfg->share_nick, sizeof(cfg->share_nick));
+            if (!share_groups_clean(typed, cfg->share_groups, sizeof(cfg->share_groups))) {
+                httpd_resp_set_type(req, "text/html");
+                httpd_resp_set_status(req, "400 Bad Request");
+                return httpd_resp_sendstr(req, "<meta charset=utf-8><p>Ugyldige grupper for delte bilder: et "
+                                               "gruppenavn kan bare ha a-z, tall, - og _, og gruppene skilles "
+                                               "med komma.<p><a href=/oppsett>Tilbake</a>");
+            }
         }
         if (form_field(body, "picsec", val, sizeof(val))) {
             static const uint16_t secs[] = APP_CONFIG_PIC_SECS;

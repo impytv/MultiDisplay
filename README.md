@@ -111,6 +111,7 @@ sudo apt install docker.io docker-compose
 sudo usermod -aG docker $USER        # then log in again
 sudo mkdir -p /srv/multidisplay && sudo chown $USER: /srv/multidisplay
 mkdir -p server/feilmeldinger         # where error reports are kept
+mkdir -p server/delte-bilder          # where shared pictures are kept
 cd server && docker compose up -d
 ```
 
@@ -118,7 +119,9 @@ The container mounts `/srv/multidisplay` read-only and starts again by
 itself after a restart. A second container, `radio`, serves radio that
 Sonos can pause at `/radio/` (see Sonos below). A third, `feil`, takes the
 error reports sent from the displays' navigation page at `/feil/` (see
-[The navigation page](#the-navigation-page)).
+[The navigation page](#the-navigation-page)). A fourth, `deling`, keeps
+the pictures displays share with each other at `/deling/` (see
+[Sharing pictures](#sharing-pictures)).
 
 To reach the site from outside the LAN as well, over HTTPS through a
 Cloudflare Tunnel (no port opened on the router):
@@ -921,8 +924,8 @@ on can still be turned off, so a card taken out doesn't leave the screen
 stuck in the rotation.
 
 Pictures are added and deleted on the **Bilder** page (`/bilder`, linked
-from the navigation page and the setup page): from files (several at once)
-or from an address. Each picture is shown first as the screen will show it,
+from the navigation page and the setup page), from files (several at
+once). Each picture is shown first as the screen will show it,
 one at a time, to choose how: **Vis hele bildet** (shrunk to fit, both
 sides a multiple of 8, black around it where the shape differs) or **Fyll
 skjermen** - drag the picture to choose which part shows, and zoom in up
@@ -931,12 +934,10 @@ sends it as adjusted, **Hopp over** leaves it out, and **Last opp resten
 uten å justere** sends it and the rest in the same mode, filled from the
 middle. The mode last chosen is kept for next time (in the browser). The
 browser makes each picture to that and sends it as a JPEG of some
-100-250 KB, so the display never has a large photo to decode. A picture from an address is
-fetched by the display for the page (`/bilder/hent`, as a page can't read
-other sites' pictures), at most 20 MB, and only if it starts like a picture
-(JPEG, PNG, GIF, WebP, BMP, HEIC/AVIF); the page then shows it to adjust
-the same way. What the browser can't read (HEIC outside Safari, for one) is refused
-with a message.
+100-250 KB, so the display never has a large photo to decode. What the
+browser can't read (HEIC outside Safari, for one) is refused with a
+message. (Adding a picture from an address, fetched by the display, was
+taken out in 1.39.0.)
 
 The card can be exFAT (as cards over 32 GB come), FAT32 or FAT16, with an
 MBR or a GPT partition table (as some computers and tools write), so it works as it comes out of the
@@ -949,6 +950,102 @@ card: the log names what is on it, and the screen, the setup page and
 their own names (long ones, in UTF-8, up to 63 bytes), if at most 1.5 MB and no more
 than 8 times the screen's size (a 12 MP photo of 4000 × 3000 is, as 640 ×
 480; one on its side, 3000 × 4000, isn't). Up to 1000 pictures.
+
+#### Sharing pictures
+
+Displays can share pictures with each other through the update site, in
+groups (`familien`, `hytta`) set up there. Only displays approved on the
+Pi may share or download, and a display sees only the groups it is in.
+
+On the **Bilder** page, the **Deling** section says where the display
+stands. The first time it is opened, the display asks the site to join
+(`GET deling/meg`), and is then *waiting* until someone approves it on the
+Pi; with `NTFY_TOPIC` set, that is pushed. Once
+approved, each picture of the display's own has **Del** (or **Del med
+<gruppe>** with more groups) and, once shared, **Slutt å dele**, and the
+editor has **Del med** to share pictures as they are added (the choice is
+kept in the browser). The site keeps the picture's name on the card, so a
+picture isn't shared twice, and one still shared after it was deleted from
+the card is listed under **Deling** to stop sharing it.
+
+With **Last ned bilder som andre skjermer deler** on (**Andre skjermer →
+Bilder** in the setup page; off unless turned on), the display downloads
+what others share with its groups - or only those in **Fra gruppene**
+(`familien, hytta`; empty for all) - onto the card as `D<id>.JPG`, two
+minutes after a start and every 30 minutes, 40 at a time, and deletes those
+no longer shared. It skips its own and stops when the card has 1,000
+pictures or less than 64 KB free. A shared picture deleted on the **Bilder**
+page (**Fjern**) isn't downloaded again: its id goes in `BILDER/SKJULT.TXT`.
+Turned off, nothing more is downloaded, and what was stays on the card
+until deleted on the **Bilder** page. **Kallenavn** (up to 40 bytes, e.g.
+`Mormor`) is sent to the site with the display's name, and shown with the
+pictures it shares on the **Bilder** page of the displays that download
+them (*Delt av Mormor*; *Delt av en annen skjerm* without one). The
+receiving display keeps who shared what in `BILDER/DELT.TXT`, brought up to
+date at each download round, so a changed nickname shows within half an
+hour. A nickname an approved display already has isn't given to another
+(compared without case and spaces): the **Bilder** page then says
+*Kallenavnet brukes allerede av en annen skjerm*. The admin page and
+`skjermer` show it beside the name. In backups:
+`pictures.share_download`, `pictures.share_groups`,
+`pictures.share_nickname`.
+
+How the site knows it is a display: the firmware is public, so no secret
+can be built into it, and the OTA key's public half can only check
+signatures, not make them. Each display instead makes its own ECDSA P-256
+key the first time (`main/display_key.c`; the same key as for error
+reports, in NVS, never sent) and signs every request over the method, the
+path after `deling/`, the time, a random nonce and the body's SHA-256
+(`components/share_util.c`): headers `X-Deling-Nokkel` (public key, DER,
+base64), `X-Deling-Tid`, `X-Deling-Nonce`, `X-Deling-Signatur`. The site
+(`server/deling/deling.py`) takes a request only if the signature holds,
+it is at most ten minutes old (the display must have set its clock) and the
+nonce is new, and - but for joining - the key is approved and in the
+group. Approving each key is what keeps everyone else out. Over the LAN's
+`http://` address the pictures travel unencrypted; through the tunnel,
+over HTTPS.
+
+Displays are approved on the admin page, **`/deling/admin/`** on the update
+site (`http://192.168.0.119:8070/deling/admin/`, or the tunnel's address):
+waiting displays with their name and key, a field for their groups and
+**Godkjenn**, **Avvis** and **Glem**; approved ones with their groups to
+change and **Slett bildene den har delt**; every shared picture by group,
+with **Slett**; and **Bytt passord**. The first time it is opened, it asks
+for a user name and a password (at least 10 characters) - from the home
+network only, as nginx tells it whether a request came through the tunnel
+(`X-Tunnel`, from Cloudflare's `CF-Connecting-IP`), so nobody outside can
+choose them first. After that, logging in works from anywhere. The password
+is kept as scrypt with a salt in `admin.json` beside the pictures; a login
+gives a session cookie for 12 hours since last use (HttpOnly,
+SameSite=Strict, Secure through the tunnel), each form carries the
+session's own token, and five wrong logins from one sender in 15 minutes
+(30 from all) stop further tries for a while. Changing the password logs
+out other sessions. Forgotten it: `docker compose exec deling python -I
+/app/deling.py nytt-passord`, then choose new ones from the home network.
+
+The same can be done from the command line on the Pi, in `server/`:
+
+```bash
+docker compose exec deling python -I /app/deling.py skjermer      # the displays and their keys
+docker compose exec deling python -I /app/deling.py godkjenn a7323adb familien,hytta
+docker compose exec deling python -I /app/deling.py grupper a7323adb familien   # change its groups
+docker compose exec deling python -I /app/deling.py avvis a7323adb  # no longer share or download
+docker compose exec deling python -I /app/deling.py glem a7323adb   # forget it; it may ask again
+docker compose exec deling python -I /app/deling.py bilder [gruppe] # what is shared
+docker compose exec deling python -I /app/deling.py slett <id>      # one picture
+docker compose exec deling python -I /app/deling.py slett-fra a7323adb  # all a display shared
+```
+
+A key may be given by its first digits; **Deling** on the display's
+**Bilder** page shows its key while it waits. The site decodes each shared
+picture (Pillow, JPEG only, at most 40 MP) and keeps a new one made from
+it: upright, at most 800 × 480, without EXIF (where a photo was taken stays
+with whoever took it). It keeps them in `server/delte-bilder/`
+(`MULTIDISPLAY_SHARED` for another place) - `skjermer.json`, `bilder.json`
+and `bilder/<id>.jpg` - and takes at most 3,000 pictures or 2 GB in all,
+100 a day from one display and ten new displays a day. nginx takes GETs
+and POSTs of at most 2 MB at `/deling/`, 60 a minute (30 at once) from
+one sender.
 
 Memory: one 800 × 480 picture (750 KB of PSRAM) while the screen is on
 show, given back on any other, and the file being decoded (~200 KB) for a

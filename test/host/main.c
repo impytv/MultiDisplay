@@ -39,6 +39,7 @@ void test_iss_pass(void);
 void test_nb_text(void);
 void test_pics(void);
 void test_cache(void);
+void test_share(void);
 
 int main(int argc, char **argv)
 {
@@ -51,6 +52,7 @@ int main(int argc, char **argv)
         { "webauth", test_web_auth }, { "holidays", test_holidays }, { "astro", test_astro }, { "spotify", test_spotify },
         { "sonos", test_sonos }, { "sgp4", test_sgp4 }, { "png", test_png }, { "events", test_own_events }, { "report", test_report }, { "isspass", test_iss_pass },
         { "nbtext", test_nb_text }, { "pics", test_pics }, { "cache", test_cache },
+        { "share", test_share },
     };
     for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
         const int before = g_failures;
