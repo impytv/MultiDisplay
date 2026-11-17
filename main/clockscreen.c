@@ -41,6 +41,7 @@
 #include "waveshare_rgb_lcd_port.h"
 #include "yr_client.h"
 #include "nb_text.h"
+#include "theme.h"
 
 static const char *TAG = "clock";
 
@@ -89,11 +90,6 @@ static float s_out_wind_ms;
 static float s_out_feel_c = NAN; /* MET's "feels like", or NAN without one */
 static fetch_stamp_t s_out_at;
 static backoff_t s_out_fail;
-
-static bool dark(void)
-{
-    return g_cfg->theme == APP_THEME_DARK;
-}
 
 /* A label in `font` and `colour`, sized to its text. */
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t colour)
@@ -289,8 +285,8 @@ lv_obj_t *clockscreen_build(lv_obj_t *screen)
     const lv_font_t *time_font = load_font(CLK_TIME_PX, true);
     const lv_font_t *sec_font = load_font(CLK_SEC_PX, true);
     const lv_font_t *date_font = load_font(CLK_DATE_PX, false);
-    const uint32_t fg = dark() ? 0xEEF2F5 : 0x1B2631;
-    const uint32_t muted = dark() ? 0x9AA7B2 : 0x5A6875;
+    const uint32_t fg = theme_hex(0xEEF2F5, 0x1B2631);
+    const uint32_t muted = theme_hex(0x9AA7B2, 0x5A6875);
 
     s_root = screen_root_create(screen);
     lv_obj_set_flex_flow(s_root, LV_FLEX_FLOW_COLUMN);

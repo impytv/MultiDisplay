@@ -121,6 +121,12 @@
 #define APP_THEME_LIGHT 0
 #define APP_THEME_DARK  1
 
+/* Christmas decorations on the screens (main/theme.c): never, always, or
+ * from 1 December to 6 January. */
+#define APP_XMAS_OFF    0
+#define APP_XMAS_ON     1
+#define APP_XMAS_SEASON 2
+
 /* Night dimming (app_config_t.dim_*): the default window, in minutes after
  * local midnight. */
 #define APP_CONFIG_DIM_START_DEFAULT (22 * 60)
@@ -178,6 +184,7 @@ typedef struct {
     /* The stops and lines of location i's departure board ("" = none). */
     char departures[APP_CONFIG_MAX_LOCATIONS][APP_CONFIG_DEPARTURES_MAX];
     uint8_t theme; /* APP_THEME_LIGHT or APP_THEME_DARK */
+    uint8_t xmas;  /* APP_XMAS_*: the Christmas decorations, in either theme; the season's unless chosen */
     /* Dim the screen from dim_start to dim_end local time (minutes after
      * midnight, each < 24 * 60; the window may wrap past midnight) when
      * dim_enabled. */
@@ -445,5 +452,11 @@ esp_err_t app_config_save_last_view(uint8_t view_index);
  * overview) if none was ever saved.
  */
 uint8_t app_config_load_last_view(void);
+
+/* Whether the screens were last built with the Christmas decorations (main/theme.c):
+ * used at power-on, before the clock is set, so the season shows from the
+ * start. 0 if never saved. */
+esp_err_t app_config_save_xmas_now(uint8_t on);
+uint8_t app_config_load_xmas_now(void);
 
 #endif

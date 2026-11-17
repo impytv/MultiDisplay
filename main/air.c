@@ -28,6 +28,7 @@
 #include "diag.h"
 #include "draw.h"
 #include "waveshare_rgb_lcd_port.h"
+#include "theme.h"
 
 static const char *TAG = "air";
 
@@ -59,12 +60,12 @@ static bool s_failed; /* the last poll failed while older data is shown */
 
 static lv_color_t text_colour(void)
 {
-    return lv_color_hex(g_cfg->theme == APP_THEME_DARK ? 0xDDE6EE : 0x1B2631);
+    return theme_color(0xDDE6EE, 0x1B2631);
 }
 
 static lv_color_t dim_colour(void)
 {
-    return lv_color_hex(g_cfg->theme == APP_THEME_DARK ? 0x8AA0B4 : 0x5D6D7E);
+    return theme_color(0x8AA0B4, 0x5D6D7E);
 }
 
 static const air_quality_t *shown_q(void)

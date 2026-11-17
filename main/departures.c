@@ -21,6 +21,7 @@
 #include "entur_client.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "nb_text.h"
+#include "theme.h"
 
 #define DEP_POLL_MS         30000
 #define DEP_RETRY_MS        15000
@@ -52,12 +53,12 @@ static entur_departures_t *s_dep_scratch; /* PSRAM; each fetch lands here first 
 
 static lv_color_t dep_text_color(void)
 {
-    return lv_color_hex(g_cfg->theme == APP_THEME_DARK ? 0xDDE6EE : 0x1B2631);
+    return theme_color(0xDDE6EE, 0x1B2631);
 }
 
 static lv_color_t dep_dim_color(void)
 {
-    return lv_color_hex(g_cfg->theme == APP_THEME_DARK ? 0x8AA0B4 : 0x5D6D7E);
+    return theme_color(0x8AA0B4, 0x5D6D7E);
 }
 
 /* Badge colour for lines without one of their own (Ruter's mode colours). */

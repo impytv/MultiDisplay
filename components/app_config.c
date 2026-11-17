@@ -91,6 +91,9 @@ static void sanitize_view_settings(app_config_t *c)
     if (c->theme != APP_THEME_DARK) {
         c->theme = APP_THEME_LIGHT;
     }
+    if (c->xmas > APP_XMAS_SEASON) {
+        c->xmas = APP_XMAS_SEASON; /* the default */
+    }
     c->dim_enabled = c->dim_enabled ? 1 : 0;
     c->night_off = c->night_off ? 1 : 0;
     {
@@ -258,6 +261,7 @@ static void seed_defaults(app_config_t *out)
         out->ship_km[i] = APP_CONFIG_SHIP_KM_DEFAULT;
         out->rain_km[i] = APP_CONFIG_RAIN_KM_DEFAULT;
     }
+    out->xmas = APP_XMAS_SEASON; /* decorated through Christmas unless turned off */
 }
 
 esp_err_t app_config_load(app_config_t *out)
@@ -362,6 +366,7 @@ esp_err_t app_config_load(app_config_t *out)
         out->yr_email[0] = '\0';
     }
     nvs_get_u8(h, "theme", &out->theme); /* leaves the light default if never saved */
+    nvs_get_u8(h, "xmas", &out->xmas); /* the season's if never saved: a display updated to this gets it */
     nvs_get_u8(h, "dimon", &out->dim_enabled); /* these three keep the defaults if never saved */
     nvs_get_u8(h, "nightoff", &out->night_off); /* dims if never saved */
     nvs_get_u8(h, "nightwake", &out->night_wake_min);
@@ -523,6 +528,7 @@ esp_err_t app_config_save(const app_config_t *cfg)
     if (err == ESP_OK) err = nvs_set_u8(h, "navpage", cfg->nav_page ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "swipenav", cfg->swipe_nav ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "theme", cfg->theme == APP_THEME_DARK ? APP_THEME_DARK : APP_THEME_LIGHT);
+    if (err == ESP_OK) err = nvs_set_u8(h, "xmas", cfg->xmas <= APP_XMAS_SEASON ? cfg->xmas : APP_XMAS_SEASON);
     if (err == ESP_OK) err = nvs_set_u8(h, "dimon", cfg->dim_enabled ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightoff", cfg->night_off ? 1 : 0);
     if (err == ESP_OK) err = nvs_set_u8(h, "nightwake", cfg->night_wake_min);
@@ -843,4 +849,30 @@ uint8_t app_config_load_last_view(void)
         nvs_close(h);
     }
     return view;
+}
+
+esp_err_t app_config_save_xmas_now(uint8_t on)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_u8(h, "xmasnow", on ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    return err;
+}
+
+uint8_t app_config_load_xmas_now(void)
+{
+    nvs_handle_t h;
+    uint8_t on = 0;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "xmasnow", &on); /* leaves `on` at 0 if never saved */
+        nvs_close(h);
+    }
+    return on ? 1 : 0;
 }

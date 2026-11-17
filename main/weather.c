@@ -26,6 +26,7 @@
 #include "weather.h"
 #include "yr_client.h"
 #include "nb_text.h"
+#include "theme.h"
 
 static const char *TAG = "weather";
 
@@ -347,7 +348,7 @@ static lv_color_t s_temp_marker_warm_color;
 /* Temperatures below 0 C in blue: the line, its markers and the overview. */
 static lv_color_t temp_cold_color(void)
 {
-    return g_cfg->theme == APP_THEME_DARK ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
+    return theme_dark() ? lv_palette_lighten(LV_PALETTE_BLUE, 2)
                                           : lv_palette_darken(LV_PALETTE_BLUE, 2);
 }
 
@@ -1051,7 +1052,7 @@ static lv_obj_t *night_band(int y, int h, bool dark)
 {
     lv_obj_t *b = lv_obj_create(s_detail_root);
     lv_obj_remove_style_all(b);
-    lv_obj_set_style_bg_color(b, dark ? lv_color_hex(0x5070C0) : lv_color_hex(0x203070), 0);
+    lv_obj_set_style_bg_color(b, theme_color(0x5070C0, 0x203070), 0);
     lv_obj_set_style_bg_opa(b, dark ? LV_OPA_20 : LV_OPA_10, 0);
     lv_obj_set_pos(b, CHART_X, y);
     lv_obj_set_size(b, 1, h);
@@ -1752,7 +1753,7 @@ static void clock_timer_cb(lv_timer_t *t)
 
 lv_obj_t *weather_build(lv_obj_t *screen)
 {
-    const bool dark = (g_cfg->theme == APP_THEME_DARK);
+    const bool dark = theme_dark();
     s_detail_root = screen_root_create(screen);
 
     s_location_label = lv_label_create(s_detail_root);
@@ -1767,7 +1768,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
     lv_label_set_text(s_updated_label, "");
 
     s_sun_label = lv_label_create(s_detail_root);
-    s_sun_colour = dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060);
+    s_sun_colour = theme_color(0xB0B0B0, 0x606060);
     lv_obj_set_style_text_color(s_sun_label, s_sun_colour, 0);
     lv_label_set_text(s_sun_label, "");
     lv_obj_add_flag(s_sun_label, LV_OBJ_FLAG_HIDDEN);
@@ -1870,7 +1871,7 @@ lv_obj_t *weather_build(lv_obj_t *screen)
 
     for (int i = 0; i < AURORA_LABELS; i++) {
         s_aurora_label[i] = lv_label_create(s_detail_root);
-        lv_obj_set_style_text_color(s_aurora_label[i], dark ? lv_color_hex(0x7DF0A8) : lv_color_hex(0x168A47), 0);
+        lv_obj_set_style_text_color(s_aurora_label[i], theme_color(0x7DF0A8, 0x168A47), 0);
         lv_label_set_text(s_aurora_label[i], "Nordlys");
         lv_obj_add_flag(s_aurora_label[i], LV_OBJ_FLAG_HIDDEN);
     }

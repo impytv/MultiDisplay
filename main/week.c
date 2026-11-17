@@ -17,6 +17,7 @@
 #include "weather.h"
 #include "week.h"
 #include "nb_text.h"
+#include "theme.h"
 
 #define WEEK_DAYS      7
 #define WEEK_X         12
@@ -35,7 +36,7 @@ static int64_t s_shown_day; /* nb_day_number of the day drawn as today */
 
 static bool dark(void)
 {
-    return g_cfg->theme == APP_THEME_DARK;
+    return theme_dark();
 }
 
 static int card_w(void)
@@ -108,10 +109,10 @@ static void week_draw_cb(lv_event_t *e)
     const int n = left < WEEK_DAYS ? left : WEEK_DAYS;
     const int w = card_w();
     const week_rows_t r = rows();
-    const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
-    const lv_color_t c_dim = lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
-    const lv_color_t c_card = lv_color_hex(dark() ? 0x1E2A36 : 0xECEFF2);
-    const lv_color_t c_today = lv_color_hex(dark() ? 0x2A3A4A : 0xDCE6F0);
+    const lv_color_t c_txt = theme_color(0xDDE6EE, 0x1B2631);
+    const lv_color_t c_dim = theme_color(0x8AA0B4, 0x5D6D7E);
+    const lv_color_t c_card = theme_color(0x1E2A36, 0xECEFF2);
+    const lv_color_t c_today = theme_color(0x2A3A4A, 0xDCE6F0);
     const lv_color_t c_warm = lv_palette_main(LV_PALETTE_ORANGE);
     const lv_color_t c_cold = dark() ? lv_palette_lighten(LV_PALETTE_BLUE, 2) : lv_palette_darken(LV_PALETTE_BLUE, 2);
     const lv_color_t c_rain = lv_palette_main(LV_PALETTE_BLUE);

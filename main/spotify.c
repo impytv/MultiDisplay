@@ -34,6 +34,7 @@
 #include "spotify_client.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "wifi_provision.h"
+#include "theme.h"
 
 static const char *TAG = "spotify_screen";
 
@@ -149,22 +150,22 @@ static char s_queue_item[48];     /* the track "Kø" was asked for */
 
 static bool dark(void)
 {
-    return g_cfg->theme == APP_THEME_DARK || g_cfg->sp_dark;
+    return theme_dark() || g_cfg->sp_dark;
 }
 
 static lv_color_t c_txt(void)
 {
-    return lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
+    return theme_color_if(dark(), 0xDDE6EE, 0x1B2631);
 }
 
 static lv_color_t c_dim(void)
 {
-    return lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
+    return theme_color_if(dark(), 0x8AA0B4, 0x5D6D7E);
 }
 
 static lv_color_t c_card(void)
 {
-    return lv_color_hex(dark() ? 0x1E2A36 : 0xE3E8EE);
+    return theme_color_if(dark(), 0x1E2A36, 0xE3E8EE);
 }
 
 static lv_color_t c_green(void)
@@ -1122,7 +1123,7 @@ static lv_obj_t *text_label(const lv_font_t *font, lv_color_t colour, int y)
 lv_obj_t *spotify_build(lv_obj_t *screen)
 {
     s_root = screen_root_create(screen);
-    if (g_cfg->sp_dark && g_cfg->theme != APP_THEME_DARK) {
+    if (g_cfg->sp_dark && !theme_dark()) {
         /* Dark on its own: the dark theme's background and text. */
         lv_obj_set_style_bg_color(s_root, lv_color_hex(0x15171A), 0);
         lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);

@@ -34,6 +34,7 @@ char *app_config_to_json(const app_config_t *c, bool secrets, const own_event_t 
     cJSON_AddStringToObject(root, "format", BACKUP_FORMAT);
     cJSON_AddNumberToObject(root, "version", BACKUP_VERSION);
     cJSON_AddNumberToObject(root, "theme", c->theme);
+    cJSON_AddNumberToObject(root, "christmas", c->xmas);
 
     cJSON *night = cJSON_AddObjectToObject(root, "night");
     cJSON_AddBoolToObject(night, "enabled", c->dim_enabled);
@@ -239,6 +240,7 @@ bool app_config_from_json(const char *json, app_config_t *cfg, own_event_t *even
     bool ok = true;
 
     get_u8(root, "theme", &c->theme);
+    get_u8(root, "christmas", &c->xmas);
     const cJSON *night = cJSON_GetObjectItemCaseSensitive(root, "night");
     get_bool(night, "enabled", &c->dim_enabled);
     get_hhmm(night, "from", &c->dim_start);

@@ -8,6 +8,12 @@ void test_config(void)
 {
     test_nvs_clear();
     static app_config_t a, b;
+    /* The season the screens were last built in, for a boot without the
+     * clock (main/theme.c). */
+    CHECK_INT(app_config_load_xmas_now(), 0);
+    CHECK(app_config_save_xmas_now(1) == ESP_OK);
+    CHECK_INT(app_config_load_xmas_now(), 1);
+    CHECK(app_config_save_xmas_now(0) == ESP_OK);
     app_config_load(&a);                            /* the Kconfig defaults */
     CHECK_INT(a.location_count, 1);
     CHECK_STR(a.locations[0].name, "Oslo");
@@ -35,6 +41,17 @@ void test_config(void)
     CHECK_STR(a.so_radios, APP_CONFIG_SONOS_RADIOS_DEFAULT);
     CHECK_INT(a.clk_out, 1);    /* outdoors at the first location */
     CHECK_INT(a.mon_cal, 0);    /* off unless ticked */
+    CHECK_INT(a.theme, APP_THEME_LIGHT);
+    CHECK_INT(a.xmas, APP_XMAS_SEASON); /* decorated through Christmas unless chosen otherwise */
+    CHECK_INT(app_config_load_xmas_now(), 0);
+    a.theme = 7;                /* not a theme: the light one */
+    a.xmas = 5;
+    app_config_sanitize(&a);
+    CHECK_INT(a.theme, APP_THEME_LIGHT);
+    CHECK_INT(a.xmas, APP_XMAS_SEASON); /* not a choice: the default */
+    a.xmas = APP_XMAS_OFF;
+    app_config_sanitize(&a);
+    CHECK_INT(a.xmas, APP_XMAS_OFF); /* turned off stays off */
     CHECK(app_config_ship_centre(&a, 0) == &a.locations[0]); /* ships around the location itself */
 
     /* Save and load again: everything comes back. */
@@ -93,6 +110,8 @@ void test_config(void)
     snprintf(a.so_radios, sizeof(a.so_radios), "p4,nrk_p3");
     snprintf(a.sp_client_id, sizeof(a.sp_client_id), "0123456789abcdef0123456789abcdef");
     a.temp_offset_dc = -183;
+    a.theme = APP_THEME_DARK;
+    a.xmas = APP_XMAS_ON;
     snprintf(a.cal_url[0], sizeof(a.cal_url[0]), "https://calendar.google.com/calendar/ical/x/private-secret4/basic.ics");
     snprintf(a.cal_url[2], sizeof(a.cal_url[2]), "webcal://p01-caldav.icloud.com/published/2/secret5");
     CHECK(app_config_save(&a) == ESP_OK);
@@ -161,6 +180,8 @@ void test_config(void)
     CHECK_INT(c.show[0], APP_SHOW_WEATHER | APP_SHOW_TIDE);
     CHECK(c.cal_show && c.cal_rotate && c.cal_url[0][0] == '\0'); /* the calendar addresses aren't in it */
     CHECK_INT(c.ov_show, 0);
+    CHECK_INT(c.theme, APP_THEME_DARK);
+    CHECK_INT(c.xmas, APP_XMAS_ON);
     CHECK_INT(c.show[1], APP_SHOW_WEATHER | APP_SHOW_SHIPS | APP_SHOW_SAT);
     CHECK_INT(c.auto_show[1], APP_SHOW_SAT);
     CHECK(c.sat_show && !c.sat_rotate);

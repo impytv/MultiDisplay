@@ -1452,3 +1452,26 @@ Review of the nickname change and the service, for security and speed
   of the service restarting - at most fetching a picture again or
   repeating a share. The day's count per key is forgotten the same way.
 
+## The Christmas theme (1.40.0, not published)
+
+- [x] **189. Christmas decorations.** For a display that stands in the
+  living room through December.
+  *Made for 1.40.0, not published yet: "Julepynt" under Visning (Av, Alltid,
+  Fra 1. desember til 6. januar), beside the theme, which stays light or
+  dark: small tree ornaments on gold threads (six red baubles, a gold one
+  and a gold star, between two sprigs of pine) hanging from the top edge of
+  every screen, drawn by one
+  object that is each screen root's first child (theme_decorate from
+  screen_root_create), so the screen's own text is drawn over them - and
+  under each label that reaches into them the background's colour at 80 %
+  (draw_plates), as text straight on the baubles was hard to read on the
+  panel - and red buttons. The season's choice comes in with the nightly restart on 1
+  December and goes on 7 January (main/theme.c). Tried and taken out at the
+  user's wish: a "Jul" theme with a pine green background and cream text,
+  snow (falling it tore the panel; still dots after that), and a row of
+  tiny ornaments on LVGL's top layer (over the text). Checked on
+  screenshots in the dark theme (weather, Sonos, ISS, aircraft, satellite,
+  pictures, departures, month) and in the light one (clock, weather).
+  The season's choice is the default (seed_defaults), so a display that
+  updates to this, with no "xmas" key saved, is decorated from 1 December
+  without anyone opening the setup; "Av" is saved like any other choice.*

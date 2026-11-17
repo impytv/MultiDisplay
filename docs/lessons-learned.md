@@ -731,3 +731,28 @@ was still saying wait. Found only by following a static analyser's warning
 about the header's `atoi`.
 *Lesson:* a screen's poll must never return more than a few minutes; keep
 a longer wait as a deadline in the client, and let the loop come round.
+
+### Falling snow tore the panel (1.37.0)
+
+The Christmas theme's first snow moved 24 small dots ten times a second.
+Each move is only a few small redraws, but the panel was seen tearing and
+jumping: every LVGL refresh copies into the frame buffers in PSRAM, which
+the RGB panel's bounce buffers are refilled from. The snow was made to
+stand still, scattered afresh once a minute, and then taken out for
+ornaments that never move.
+
+*Lesson:* nothing on this board animates continuously. A once-a-second
+redraw (the clock) is the most the screen should be asked for; check any
+moving element on the real panel, by eye, not by screenshots (they read the
+frame buffer and never show tearing).
+
+### OTA state read from the LVGL task (1.37.0)
+
+The season check called `firmware_on_trial()` from `night_timer_cb`. It
+reads otadata, which memory-maps flash, and the LVGL task's stack is in
+PSRAM: `s_task_stack_is_sane_when_cache_frozen` asserted at the first check
+after boot and the update rolled back.
+
+*Lesson:* anything in LVGL context (timers, event callbacks) must not call
+`esp_ota_*` or map flash; use a flag the weather task keeps
+(`s_firmware_kept`).

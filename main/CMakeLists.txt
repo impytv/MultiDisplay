@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
+        "theme.c"
         "weather.c"
         "radar.c"
         "departures.c"

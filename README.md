@@ -278,8 +278,20 @@ Navigasjonsside**. The screens, in order:
 8. **Bilder**, if shown (see [Pictures](#pictures)).
 9. For each location in order, whichever of its screens are enabled.
 
-The setup page also has a **Tema** choice (light or dark) that applies to
-every screen.
+The setup page also has a **Tema** choice that applies to every screen,
+**Lyst** or **Mørkt**, and **Julepynt**: **Av**, **Alltid** or **Fra 1.
+desember til 6. januar** - the last is the default, also for a display
+updated from a version without the choice. With it, small tree ornaments - six red baubles, a
+gold one and a gold star, between two sprigs of pine - hang from the top
+edge of every screen, in either theme, drawn behind the screen's
+own text and pictures so they never hide anything, and faded under a text
+that reaches into them (the background's colour laid over them there, 80 %) (the picture screen's
+picture and the maps cover them), and the buttons are red. The season's
+choice goes by the date at start: the nightly restart at 02:00 brings them
+in on 1 December and takes them away on 7 January. After a power cut the
+display starts as it last was and restarts once when the clock is set, if
+the season began or ended in the meantime (`main/theme.c`). In backups:
+`christmas` (0, 1 or 2).
 
 **Kontakt-e-post for yr** goes into the User-Agent header of every api.met.no
 request (`MultiDisplay/1.0 (<email>)`), as MET Norway's

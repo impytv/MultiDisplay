@@ -601,6 +601,9 @@ static char *build_page(const app_config_t *cfg)
                   "<details class=sec><summary>Visning</summary>"
                   "<label>Tema</label><select name=theme>"
                   "<option value=0%s>Lyst</option><option value=1%s>M&oslash;rkt</option></select>"
+                  "<label>Julepynt</label><select name=xmas>"
+                  "<option value=0%s>Av</option><option value=1%s>Alltid</option>"
+                  "<option value=2%s>Fra 1. desember til 6. januar</option></select>"
                   "<label>Natt</label><div class=chk>"
                   "<label><input type=checkbox name=dimon value=1%s>Nattmodus</label></div>"
                   "<div class=row><div><label>Fra</label>"
@@ -611,6 +614,8 @@ static char *build_page(const app_config_t *cfg)
                   "<option value=0%s>Demp skjermen</option><option value=1%s>Sl&aring; av skjermen</option></select>"
                   "<label>Lyser etter trykk (avsl&aring;tt skjerm)</label><select name=nightwake>",
                   cfg->theme == APP_THEME_DARK ? "" : " selected", cfg->theme == APP_THEME_DARK ? " selected" : "",
+                  cfg->xmas == APP_XMAS_OFF ? " selected" : "", cfg->xmas == APP_XMAS_ON ? " selected" : "",
+                  cfg->xmas == APP_XMAS_SEASON ? " selected" : "",
                   cfg->dim_enabled ? " checked" : "",
                   cfg->dim_start / 60, cfg->dim_start % 60, cfg->dim_end / 60, cfg->dim_end % 60,
                   cfg->night_off ? "" : " selected", cfg->night_off ? " selected" : "");
@@ -1446,6 +1451,9 @@ static esp_err_t save_form_into(httpd_req_t *req, const char *body, app_config_t
     char theme[4];
     if (form_field(body, "theme", theme, sizeof(theme))) {
         cfg->theme = (strcmp(theme, "1") == 0) ? APP_THEME_DARK : APP_THEME_LIGHT;
+    }
+    if (form_field(body, "xmas", val, sizeof(val))) {
+        cfg->xmas = strcmp(val, "1") == 0 ? APP_XMAS_ON : strcmp(val, "2") == 0 ? APP_XMAS_SEASON : APP_XMAS_OFF;
     }
     /* The checkbox is only sent when ticked, so go by the time fields, which
      * the page always sends. */

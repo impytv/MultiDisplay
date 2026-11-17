@@ -58,6 +58,7 @@
 #include "wifi_provision.h"
 #include "yr_client.h"
 #include "restart.h"
+#include "theme.h"
 #include "cJSON.h"
 #include "nb_text.h"
 
@@ -167,6 +168,7 @@ static bool s_off_by_hand;        /* switched off from the screen menu: stays of
 static lv_obj_t *s_offline_label; /* "Ingen WiFi" / "Ingen internett" in a corner */
 static void night_timer_cb(lv_timer_t *t);
 static void nightly_housekeeping(void);
+static bool s_firmware_kept; /* see keep_firmware */
 
 /* Light the screen (or not), and on lighting have the weather task poll at
  * once rather than at the end of its slow wait (DARK_POLL_MS). LVGL
@@ -208,6 +210,7 @@ lv_obj_t *screen_root_create(lv_obj_t *screen)
     lv_obj_set_size(root, LV_PCT(100), LV_PCT(100));
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+    theme_decorate(root);
     return root;
 }
 
@@ -616,7 +619,7 @@ static void nav_off_cb(lv_event_t *e)
 
 static void nav_open(lv_obj_t *screen)
 {
-    const bool dark = (g_cfg->theme == APP_THEME_DARK);
+    const bool dark = theme_dark();
     s_nav = lv_obj_create(screen); /* the last child, so above everything */
     lv_obj_remove_style_all(s_nav);
     lv_obj_set_size(s_nav, LV_PCT(100), LV_PCT(100));
@@ -639,14 +642,14 @@ static void nav_open(lv_obj_t *screen)
     lv_obj_set_style_text_font(title, g_font_large, 0);
     lv_label_set_text(title, "Velg skjerm");
 
-    const lv_color_t dim = dark ? lv_color_hex(0xB0B0B0) : lv_color_hex(0x606060);
+    const lv_color_t dim = theme_color(0xB0B0B0, 0x606060);
     lv_obj_t *off = lv_button_create(top);
     lv_obj_add_event_cb(off, nav_event_cb, LV_EVENT_PRESSED, NULL); /* holds the menu open, like the others */
     lv_obj_add_event_cb(off, nav_off_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_pad_hor(off, 20, 0);
     lv_obj_set_style_pad_ver(off, 10, 0);
     lv_obj_set_style_shadow_width(off, 0, 0);
-    lv_obj_set_style_bg_color(off, dark ? lv_color_hex(0x3A3A3A) : lv_color_hex(0xE2E2E2), 0);
+    lv_obj_set_style_bg_color(off, theme_color(0x3A3A3A, 0xE2E2E2), 0);
     lv_obj_set_style_text_color(off, dark ? lv_color_white() : lv_color_hex(0x202020), 0);
     lv_obj_t *ol = lv_label_create(off);
     lv_label_set_text(ol, "Sl\xC3\xA5 av skjermen");
@@ -685,7 +688,7 @@ static void nav_open(lv_obj_t *screen)
         lv_obj_set_style_pad_ver(b, 10, 0);
         lv_obj_set_style_shadow_width(b, 0, 0);
         if (i != g_view_index) { /* the one on show keeps the theme's blue */
-            lv_obj_set_style_bg_color(b, dark ? lv_color_hex(0x3A3A3A) : lv_color_hex(0xE2E2E2), 0);
+            lv_obj_set_style_bg_color(b, theme_color(0x3A3A3A, 0xE2E2E2), 0);
             lv_obj_set_style_text_color(b, dark ? lv_color_white() : lv_color_hex(0x202020), 0);
         }
         lv_obj_t *l = lv_label_create(b);
@@ -1003,11 +1006,7 @@ static esp_err_t nav_go_handler(httpd_req_t *req)
 
 static void build_ui(lv_obj_t *screen)
 {
-    const bool dark = (g_cfg->theme == APP_THEME_DARK);
-    lv_display_t *disp = lv_obj_get_display(screen);
-    lv_display_set_theme(disp, lv_theme_default_init(disp, lv_palette_main(LV_PALETTE_BLUE),
-                                                     lv_palette_main(LV_PALETTE_RED), dark, g_font_body));
-    lv_theme_apply(screen);
+    theme_apply(screen);
 
     lv_obj_set_style_text_font(screen, g_font_body, 0);
     lv_obj_set_style_pad_all(screen, 0, 0);
@@ -1186,6 +1185,15 @@ static void nightly_housekeeping(void)
                  lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
     } else if (now_wall >= next_nightly_reboot) {
         ESP_LOGW(TAG, "Nightly maintenance reboot (%02d:00 local)", NIGHTLY_REBOOT_HOUR);
+        restart_device();
+    }
+    /* Booted without the clock (a power cut) on the wrong side of the
+     * Christmas season's start or end: once, for the decorations. Only
+     * once this firmware is kept, as a restart on trial would undo it - by
+     * the flag, since firmware_on_trial() maps flash and this task's stack
+     * is in PSRAM. */
+    if (s_firmware_kept && theme_season_changed()) {
+        ESP_LOGW(TAG, "Christmas season %s - restarting for its decorations", theme_christmas() ? "over" : "begun");
         restart_device();
     }
 
@@ -1615,6 +1623,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Starting LVGL YR 48h forecast");
     init_fonts();
+    theme_init();
     if (esp_lv_adapter_lock(-1) == ESP_OK) {
         build_ui(lv_screen_active());
         esp_lv_adapter_unlock();

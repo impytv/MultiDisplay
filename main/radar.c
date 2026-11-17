@@ -28,6 +28,7 @@
 #include "watchdog.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "nb_text.h"
+#include "theme.h"
 
 static const char *TAG = "radar";
 /* The plot as far left as its "V" label allows, to give the table room for
@@ -1336,7 +1337,7 @@ lv_obj_t *radar_build(lv_obj_t *screen)
 
     /* A screen of its own in the theme's radar palette. Text colour is
      * inherited by the labels below. */
-    s_rp = (g_cfg->theme == APP_THEME_DARK) ? &RADAR_DARK : &RADAR_LIGHT;
+    s_rp = theme_dark() ? &RADAR_DARK : &RADAR_LIGHT;
     lv_obj_set_style_bg_color(root, lv_color_hex(s_rp->bg), 0);
     lv_obj_set_style_bg_opa(root, LV_OPA_COVER, 0);
     lv_obj_set_style_text_color(root, lv_color_hex(s_rp->txt), 0);

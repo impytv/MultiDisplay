@@ -48,6 +48,7 @@
 #include "own_events.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "nb_text.h"
+#include "theme.h"
 
 static const char *TAG = "month";
 
@@ -147,11 +148,6 @@ static const char *shown_name(const char *name)
         }
     }
     return name;
-}
-
-static bool dark(void)
-{
-    return g_cfg->theme == APP_THEME_DARK;
 }
 
 /* Today's key for s_shown_day, 0 before the clock is set. */
@@ -363,8 +359,8 @@ static int draw_events(lv_layer_t *layer, int idx, int nx, int ny, int nw, int b
         }
     }
     const int note_lh = lv_font_get_line_height(s_note_font);
-    const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
-    const lv_color_t c_dim = lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
+    const lv_color_t c_txt = theme_color(0xDDE6EE, 0x1B2631);
+    const lv_color_t c_dim = theme_color(0x8AA0B4, 0x5D6D7E);
     for (int drawn = 0; drawn < held; drawn++) {
         const cal_event_t *ev = day[drawn];
         const bool fits = ny + note_lh <= bottom;
@@ -405,16 +401,16 @@ static void month_draw_cb(lv_event_t *e)
     const int lh = lv_font_get_line_height(g_font_body);
     const int date_lh = lv_font_get_line_height(s_date_font);
     const int note_lh = lv_font_get_line_height(s_note_font);
-    const lv_color_t c_txt = lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631);
-    const lv_color_t c_dim = lv_color_hex(dark() ? 0x8AA0B4 : 0x5D6D7E);
-    const lv_color_t c_red = lv_color_hex(dark() ? 0xFF6B5E : 0xC62828);
-    const lv_color_t c_card[2] = { lv_color_hex(dark() ? 0x1E2A36 : 0xECEFF2),
-                                   lv_color_hex(dark() ? 0x2A3846 : 0xDDE3EA) };
-    const lv_color_t c_today = lv_color_hex(dark() ? 0x2A3A4A : 0xDCE6F0);
+    const lv_color_t c_txt = theme_color(0xDDE6EE, 0x1B2631);
+    const lv_color_t c_dim = theme_color(0x8AA0B4, 0x5D6D7E);
+    const lv_color_t c_red = theme_color(0xFF6B5E, 0xC62828);
+    const lv_color_t c_card[2] = { theme_color(0x1E2A36, 0xECEFF2),
+                                   theme_color(0x2A3846, 0xDDE3EA) };
+    const lv_color_t c_today = theme_color(0x2A3A4A, 0xDCE6F0);
     const lv_color_t c_ring = lv_palette_main(LV_PALETTE_BLUE);
-    const lv_color_t c_sky = lv_color_hex(dark() ? 0x7FB3E6 : 0x1F5F9E);
-    const lv_color_t c_moon_dark = lv_color_hex(dark() ? 0x55606B : 0x8A96A3);
-    const lv_color_t c_moon_lit = lv_color_hex(dark() ? 0xF4D35E : 0xE0A800);
+    const lv_color_t c_sky = theme_color(0x7FB3E6, 0x1F5F9E);
+    const lv_color_t c_moon_dark = theme_color(0x55606B, 0x8A96A3);
+    const lv_color_t c_moon_lit = theme_color(0xF4D35E, 0xE0A800);
 
     /* The weekdays over the columns, Sunday in red. */
     text(layer, g_font_body, "Uke", MON_X, MON_TOP, g.wk_w, lh, LV_TEXT_ALIGN_CENTER, c_dim);
@@ -664,10 +660,10 @@ lv_obj_t *month_build(lv_obj_t *screen)
         lv_obj_remove_flag(s_btn[i], LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_shadow_width(s_btn[i], 0, 0);
         lv_obj_set_style_radius(s_btn[i], 8, 0);
-        lv_obj_set_style_bg_color(s_btn[i], lv_color_hex(dark() ? 0x2A3A4A : 0xDCE6F0), 0);
+        lv_obj_set_style_bg_color(s_btn[i], theme_color(0x2A3A4A, 0xDCE6F0), 0);
         lv_obj_t *l = lv_label_create(s_btn[i]);
         lv_obj_set_style_text_font(l, i == BTN_TODAY ? g_font_body : &lv_font_montserrat_24, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(dark() ? 0xDDE6EE : 0x1B2631), 0);
+        lv_obj_set_style_text_color(l, theme_color(0xDDE6EE, 0x1B2631), 0);
         lv_label_set_text(l, LABEL[i]);
         lv_obj_center(l);
         const int w = i == BTN_TODAY ? draw_text_w("I dag") + 28 : MON_BTN_W;
